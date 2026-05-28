@@ -1,8 +1,6 @@
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
+import 'package:path/path.dart' as path;
 import '../models/api_config.dart';
-import '../models/request_history.dart';
-import '../models/group.dart';
 
 class DatabaseService {
   static Database? _database;
@@ -15,10 +13,10 @@ class DatabaseService {
 
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'api_manager.db');
+    final dbPath2 = path.join(dbPath, 'api_manager.db');
 
     return await openDatabase(
-      path,
+      dbPath2,
       version: 1,
       onCreate: _createDatabase,
     );
@@ -176,6 +174,4 @@ class DatabaseService {
       whereArgs: [id],
     );
   }
-
-  // Similar methods for RequestHistory and Group...
 }

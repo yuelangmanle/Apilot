@@ -15,7 +15,11 @@ class _ApiListScreenState extends State<ApiListScreen> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => context.read<ApiProvider>().loadApiConfigs());
+    Future.microtask(() {
+      if (mounted) {
+        context.read<ApiProvider>().loadApiConfigs();
+      }
+    });
   }
 
   @override

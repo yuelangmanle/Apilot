@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/api_config.dart';
-import '../models/request_history.dart';
 
 class ApiService {
   Future<Map<String, dynamic>> sendRequest({

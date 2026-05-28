@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import '../../../core/models/device_info.dart';
 
 class LanDiscoveryService {

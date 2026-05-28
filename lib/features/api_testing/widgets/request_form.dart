@@ -45,7 +45,7 @@ class _RequestFormState extends State<RequestForm> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         DropdownButtonFormField<String>(
-          value: _selectedModel,
+          initialValue: _selectedModel,
           decoration: const InputDecoration(
             labelText: '模型',
             border: OutlineInputBorder(),

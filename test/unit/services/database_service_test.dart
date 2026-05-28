@@ -1,9 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:api_manager/core/services/database_service.dart';
 import 'package:api_manager/core/models/api_config.dart';
 
 void main() {
   late DatabaseService databaseService;
+
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
 
   setUp(() async {
     databaseService = DatabaseService();

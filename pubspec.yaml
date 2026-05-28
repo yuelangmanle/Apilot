@@ -12,6 +12,7 @@ dependencies:
   provider: ^6.1.1
   sqflite: ^2.3.0
   path_provider: ^2.1.1
+  path: ^1.8.0
   uuid: ^4.2.1
   http: ^1.1.0
   encrypt: ^5.0.1

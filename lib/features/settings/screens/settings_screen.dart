@@ -1,7 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../../../core/services/import_export_service.dart';
-import '../../api_management/providers/api_provider.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -56,10 +53,10 @@ class SettingsScreen extends StatelessWidget {
           _buildSection(
             title: '关于',
             children: [
-              ListTile(
-                leading: const Icon(Icons.info),
-                title: const Text('版本'),
-                subtitle: const Text('1.0.0'),
+              const ListTile(
+                leading: Icon(Icons.info),
+                title: Text('版本'),
+                subtitle: Text('1.0.0'),
               ),
               ListTile(
                 leading: const Icon(Icons.code),
