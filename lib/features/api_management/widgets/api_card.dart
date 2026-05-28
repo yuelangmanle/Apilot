@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../core/models/api_config.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../api_testing/screens/test_screen.dart';
 
 class ApiCard extends StatelessWidget {
   final ApiConfig api;
@@ -78,6 +79,29 @@ class ApiCard extends StatelessWidget {
                     _buildTag(api.group!, AppColors.primary),
                   _buildTag(api.environment, AppColors.secondary),
                   ...api.tags.map((tag) => _buildTag(tag, AppColors.accent)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('测试'),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => TestScreen(apiConfig: api),
+                        ),
+                      );
+                    },
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.edit),
+                    label: const Text('编辑'),
+                    onPressed: onTap,
+                  ),
                 ],
               ),
             ],
