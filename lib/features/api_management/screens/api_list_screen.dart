@@ -130,7 +130,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                 return ApiCard(
                   api: api,
                   onTap: () async {
-                    final result = await Navigator.push(
+                    final result = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
                         builder: (context) => ApiDetailScreen(apiConfig: api),
@@ -270,25 +270,27 @@ class _ApiListScreenState extends State<ApiListScreen> {
     );
   }
 
-  void _navigateToForm(BuildContext context, [dynamic apiConfig]) async {
-    final result = await Navigator.push(
-      context,
+  Future<void> _navigateToForm(BuildContext context, [dynamic apiConfig]) async {
+    final navigator = Navigator.of(context);
+    final provider = context.read<ApiProvider>();
+    final result = await navigator.push<bool>(
       MaterialPageRoute(
         builder: (context) => ApiFormScreen(apiConfig: apiConfig),
       ),
     );
     if (result == true && mounted) {
-      context.read<ApiProvider>().loadApiConfigs();
+      provider.loadApiConfigs();
     }
   }
 
-  void _navigateToTemplate(BuildContext context) async {
-    final result = await Navigator.push(
-      context,
+  Future<void> _navigateToTemplate(BuildContext context) async {
+    final navigator = Navigator.of(context);
+    final provider = context.read<ApiProvider>();
+    final result = await navigator.push<bool>(
       MaterialPageRoute(builder: (context) => const TemplateScreen()),
     );
     if (result == true && mounted) {
-      context.read<ApiProvider>().loadApiConfigs();
+      provider.loadApiConfigs();
     }
   }
 }
