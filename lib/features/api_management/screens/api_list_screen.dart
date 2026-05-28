@@ -3,6 +3,10 @@ import 'package:provider/provider.dart';
 import '../providers/api_provider.dart';
 import '../widgets/api_card.dart';
 import '../../../shared/theme/color_scheme.dart';
+import 'api_form_screen.dart';
+import 'api_detail_screen.dart';
+import 'template_screen.dart';
+import '../../settings/screens/settings_screen.dart';
 
 class ApiListScreen extends StatefulWidget {
   const ApiListScreen({super.key});
@@ -12,6 +16,9 @@ class ApiListScreen extends StatefulWidget {
 }
 
 class _ApiListScreenState extends State<ApiListScreen> {
+  bool _isSearching = false;
+  final _searchController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -23,21 +30,50 @@ class _ApiListScreenState extends State<ApiListScreen> {
   }
 
   @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('API管理器'),
+        title: _isSearching
+            ? TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '搜索API...',
+                  border: InputBorder.none,
+                  hintStyle: TextStyle(color: Colors.white70),
+                ),
+                style: const TextStyle(color: Colors.white),
+                onChanged: (value) {
+                  context.read<ApiProvider>().setSearchQuery(value);
+                },
+              )
+            : const Text('API管理器'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search),
+            icon: Icon(_isSearching ? Icons.close : Icons.search),
             onPressed: () {
-              // TODO: Implement search
+              setState(() {
+                _isSearching = !_isSearching;
+                if (!_isSearching) {
+                  _searchController.clear();
+                  context.read<ApiProvider>().setSearchQuery('');
+                }
+              });
             },
           ),
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () {
-              // TODO: Navigate to settings
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              );
             },
           ),
         ],
@@ -45,73 +81,214 @@ class _ApiListScreenState extends State<ApiListScreen> {
       body: Consumer<ApiProvider>(
         builder: (context, provider, child) {
           if (provider.apiConfigs.isEmpty) {
-            return const Center(
+            return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.api, size: 64, color: AppColors.textSecondary),
-                  SizedBox(height: 16),
-                  Text(
+                  const Icon(Icons.api, size: 64, color: AppColors.textSecondary),
+                  const SizedBox(height: 16),
+                  const Text(
                     '还没有API配置',
                     style: TextStyle(fontSize: 18, color: AppColors.textSecondary),
                   ),
-                  SizedBox(height: 8),
-                  Text(
-                    '点击右下角按钮添加',
+                  const SizedBox(height: 8),
+                  const Text(
+                    '点击下方按钮添加',
                     style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.add),
+                        label: const Text('手动添加'),
+                        onPressed: () => _navigateToForm(context),
+                      ),
+                      const SizedBox(width: 16),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.auto_awesome),
+                        label: const Text('从模板创建'),
+                        onPressed: () => _navigateToTemplate(context),
+                      ),
+                    ],
                   ),
                 ],
               ),
             );
           }
 
-          return ListView.builder(
-            itemCount: provider.apiConfigs.length,
-            itemBuilder: (context, index) {
-              final api = provider.apiConfigs[index];
-              return ApiCard(
-                api: api,
-                onTap: () {
-                  // TODO: Navigate to detail screen
-                },
-                onFavoriteToggle: () {
-                  provider.updateApiConfig(
-                    api.copyWith(isFavorite: !api.isFavorite),
-                  );
-                },
-                onDelete: () {
-                  showDialog(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('确认删除'),
-                      content: Text('确定要删除 ${api.name} 吗？'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('取消'),
-                        ),
-                        TextButton(
-                          onPressed: () {
-                            provider.deleteApiConfig(api.id);
-                            Navigator.pop(context);
-                          },
-                          child: const Text('删除'),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              );
-            },
+          return RefreshIndicator(
+            onRefresh: () => provider.loadApiConfigs(),
+            child: ListView.builder(
+              itemCount: provider.apiConfigs.length + 1,
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return _buildQuickActions(context);
+                }
+                final api = provider.apiConfigs[index - 1];
+                return ApiCard(
+                  api: api,
+                  onTap: () async {
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ApiDetailScreen(apiConfig: api),
+                      ),
+                    );
+                    if (result == true && mounted) {
+                      provider.loadApiConfigs();
+                    }
+                  },
+                  onFavoriteToggle: () {
+                    provider.updateApiConfig(
+                      api.copyWith(isFavorite: !api.isFavorite),
+                    );
+                  },
+                  onDelete: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('确认删除'),
+                        content: Text('确定要删除 ${api.name} 吗？'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('取消'),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              provider.deleteApiConfig(api.id);
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('已删除 ${api.name}')),
+                              );
+                            },
+                            child: const Text('删除', style: TextStyle(color: Colors.red)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
           );
         },
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // TODO: Navigate to add screen
-        },
-        child: const Icon(Icons.add),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAddOptions(context),
+        icon: const Icon(Icons.add),
+        label: const Text('添加API'),
       ),
     );
+  }
+
+  Widget _buildQuickActions(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildActionButton(
+              icon: Icons.add_circle_outline,
+              label: '手动添加',
+              onTap: () => _navigateToForm(context),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _buildActionButton(
+              icon: Icons.auto_awesome,
+              label: '从模板创建',
+              onTap: () => _navigateToTemplate(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.primary.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: AppColors.primary, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAddOptions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit, color: AppColors.primary),
+              title: const Text('手动添加'),
+              subtitle: const Text('填写完整的API信息'),
+              onTap: () {
+                Navigator.pop(context);
+                _navigateToForm(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.auto_awesome, color: AppColors.primary),
+              title: const Text('从模板创建'),
+              subtitle: const Text('选择常用API模板快速配置'),
+              onTap: () {
+                Navigator.pop(context);
+                _navigateToTemplate(context);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _navigateToForm(BuildContext context, [dynamic apiConfig]) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ApiFormScreen(apiConfig: apiConfig),
+      ),
+    );
+    if (result == true && mounted) {
+      context.read<ApiProvider>().loadApiConfigs();
+    }
+  }
+
+  void _navigateToTemplate(BuildContext context) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const TemplateScreen()),
+    );
+    if (result == true && mounted) {
+      context.read<ApiProvider>().loadApiConfigs();
+    }
   }
 }

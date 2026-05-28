@@ -4,6 +4,7 @@ import 'shared/theme/app_theme.dart';
 import 'core/services/database_service.dart';
 import 'features/api_management/providers/api_provider.dart';
 import 'features/api_management/screens/api_list_screen.dart';
+import 'features/api_testing/providers/history_provider.dart';
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
@@ -15,11 +16,15 @@ class ApiManagerApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => ApiProvider(DatabaseService()),
         ),
+        ChangeNotifierProvider(
+          create: (_) => HistoryProvider(),
+        ),
       ],
       child: MaterialApp(
         title: 'API管理器',
         theme: AppTheme.lightTheme,
         home: const ApiListScreen(),
+        debugShowCheckedModeBanner: false,
       ),
     );
   }

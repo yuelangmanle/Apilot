@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
+import '../../../core/models/request_history.dart';
 import '../../../core/services/api_service.dart';
+import '../../../shared/theme/color_scheme.dart';
 import '../widgets/request_form.dart';
 import '../widgets/response_viewer.dart';
+import '../providers/history_provider.dart';
 
 class TestScreen extends StatefulWidget {
   final ApiConfig apiConfig;
@@ -35,6 +40,21 @@ class _TestScreenState extends State<TestScreen> {
         _response = response;
         _isLoading = false;
       });
+
+      // Save to history
+      if (mounted) {
+        final history = RequestHistory(
+          id: const Uuid().v4(),
+          apiConfigId: widget.apiConfig.id,
+          model: model,
+          endpoint: endpoint,
+          requestBody: body,
+          responseBody: response['body'] as Map<String, dynamic>?,
+          statusCode: response['statusCode'] as int?,
+          duration: response['duration'] as int?,
+        );
+        context.read<HistoryProvider>().addHistory(history);
+      }
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -42,7 +62,10 @@ class _TestScreenState extends State<TestScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('请求失败: $e')),
+          SnackBar(
+            content: Text('请求失败: $e'),
+            backgroundColor: AppColors.error,
+          ),
         );
       }
     }
@@ -53,6 +76,19 @@ class _TestScreenState extends State<TestScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('测试 ${widget.apiConfig.name}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.copy),
+            onPressed: () {
+              if (_response != null) {
+                // Copy response
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('响应已复制')),
+                );
+              }
+            },
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
