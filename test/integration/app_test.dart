@@ -11,7 +11,7 @@ void main() {
   group('App Integration Test', () {
     testWidgets('should display API list screen', (tester) async {
       await tester.pumpWidget(const ApiManagerApp());
-      await tester.pump();
+      await tester.pumpAndSettle();
 
       expect(find.text('API管理器'), findsOneWidget);
     });

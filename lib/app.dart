@@ -3,8 +3,9 @@ import 'package:provider/provider.dart';
 import 'shared/theme/app_theme.dart';
 import 'core/services/database_service.dart';
 import 'features/api_management/providers/api_provider.dart';
-import 'features/api_management/screens/api_list_screen.dart';
 import 'features/api_testing/providers/history_provider.dart';
+import 'features/settings/providers/settings_provider.dart';
+import 'features/api_management/screens/api_list_screen.dart';
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
@@ -19,12 +20,21 @@ class ApiManagerApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => HistoryProvider(),
         ),
+        ChangeNotifierProvider(
+          create: (_) => SettingsProvider(),
+        ),
       ],
-      child: MaterialApp(
-        title: 'API管理器',
-        theme: AppTheme.lightTheme,
-        home: const ApiListScreen(),
-        debugShowCheckedModeBanner: false,
+      child: Consumer<SettingsProvider>(
+        builder: (context, settings, _) {
+          return MaterialApp(
+            title: 'API管理器',
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: settings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
+            home: const ApiListScreen(),
+            debugShowCheckedModeBanner: false,
+          );
+        },
       ),
     );
   }

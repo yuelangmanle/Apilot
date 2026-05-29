@@ -45,6 +45,20 @@ class ImportExportService {
 
   Future<String> loadFromFile(String filepath) async {
     final file = File(filepath);
+    if (!await file.exists()) {
+      throw Exception('文件不存在: $filepath');
+    }
     return await file.readAsString();
+  }
+
+  Future<String> getDefaultExportDirectory() async {
+    final directory = await getApplicationDocumentsDirectory();
+    return directory.path;
+  }
+
+  Future<List<ApiConfig>> importFromFile(String filepath) async {
+    final jsonString = await loadFromFile(filepath);
+    final result = await importConfigs(jsonString);
+    return result['apiConfigs'] as List<ApiConfig>;
   }
 }

@@ -7,6 +7,7 @@ import 'api_form_screen.dart';
 import 'api_detail_screen.dart';
 import 'template_screen.dart';
 import '../../settings/screens/settings_screen.dart';
+import '../../sync/screens/sync_screen.dart';
 
 class ApiListScreen extends StatefulWidget {
   const ApiListScreen({super.key});
@@ -37,18 +38,24 @@ class _ApiListScreenState extends State<ApiListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
       appBar: AppBar(
         title: _isSearching
             ? TextField(
                 controller: _searchController,
                 autofocus: true,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   hintText: '搜索API...',
                   border: InputBorder.none,
-                  hintStyle: TextStyle(color: Colors.white70),
+                  hintStyle: TextStyle(
+                    color: isDark ? AppColors.darkTextSecondary : Colors.white70,
+                  ),
                 ),
-                style: const TextStyle(color: Colors.white),
+                style: TextStyle(
+                  color: isDark ? AppColors.darkTextPrimary : Colors.white,
+                ),
                 onChanged: (value) {
                   context.read<ApiProvider>().setSearchQuery(value);
                 },
@@ -68,6 +75,16 @@ class _ApiListScreenState extends State<ApiListScreen> {
             },
           ),
           IconButton(
+            icon: const Icon(Icons.sync),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SyncScreen()),
+              );
+            },
+            tooltip: '设备同步',
+          ),
+          IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () {
               Navigator.push(
@@ -75,6 +92,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                 MaterialPageRoute(builder: (context) => const SettingsScreen()),
               );
             },
+            tooltip: '设置',
           ),
         ],
       ),
@@ -85,16 +103,26 @@ class _ApiListScreenState extends State<ApiListScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.api, size: 64, color: AppColors.textSecondary),
+                  Icon(
+                    Icons.api,
+                    size: 64,
+                    color: isDark ? AppColors.darkTextSecondary : AppColors.textSecondary,
+                  ),
                   const SizedBox(height: 16),
-                  const Text(
+                  Text(
                     '还没有API配置',
-                    style: TextStyle(fontSize: 18, color: AppColors.textSecondary),
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: isDark ? AppColors.darkTextSecondary : AppColors.textSecondary,
+                    ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
+                  Text(
                     '点击下方按钮添加',
-                    style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: isDark ? AppColors.darkTextSecondary : AppColors.textSecondary,
+                    ),
                   ),
                   const SizedBox(height: 24),
                   Row(
@@ -185,6 +213,9 @@ class _ApiListScreenState extends State<ApiListScreen> {
   }
 
   Widget _buildQuickActions(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.darkPrimary : AppColors.primary;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
@@ -193,6 +224,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
             child: _buildActionButton(
               icon: Icons.add_circle_outline,
               label: '手动添加',
+              color: primaryColor,
               onTap: () => _navigateToForm(context),
             ),
           ),
@@ -201,7 +233,22 @@ class _ApiListScreenState extends State<ApiListScreen> {
             child: _buildActionButton(
               icon: Icons.auto_awesome,
               label: '从模板创建',
+              color: primaryColor,
               onTap: () => _navigateToTemplate(context),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _buildActionButton(
+              icon: Icons.sync,
+              label: '设备同步',
+              color: primaryColor,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const SyncScreen()),
+                );
+              },
             ),
           ),
         ],
@@ -212,6 +259,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
   Widget _buildActionButton({
     required IconData icon,
     required String label,
+    required Color color,
     required VoidCallback onTap,
   }) {
     return InkWell(
@@ -220,18 +268,18 @@ class _ApiListScreenState extends State<ApiListScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
-          color: AppColors.primary.withValues(alpha: 0.1),
+          color: color.withOpacity(0.1),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+          border: Border.all(color: color.withOpacity(0.3)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, color: AppColors.primary, size: 20),
+            Icon(icon, color: color, size: 20),
             const SizedBox(width: 8),
             Text(
               label,
-              style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold),
+              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13),
             ),
           ],
         ),
@@ -262,6 +310,18 @@ class _ApiListScreenState extends State<ApiListScreen> {
               onTap: () {
                 Navigator.pop(context);
                 _navigateToTemplate(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.download, color: AppColors.primary),
+              title: const Text('导入配置'),
+              subtitle: const Text('从JSON文件导入API配置'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
+                );
               },
             ),
           ],
