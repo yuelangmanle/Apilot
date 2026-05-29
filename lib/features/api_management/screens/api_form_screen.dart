@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/database_service.dart';
+import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 class ApiFormScreen extends StatefulWidget {
@@ -24,6 +26,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   String _environment = 'development';
   bool _isFavorite = false;
   bool _isLoading = false;
+  bool _isFetchingModels = false;
 
   @override
   void initState() {
@@ -96,7 +99,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       controller: _baseUrlController,
                       decoration: const InputDecoration(
                         labelText: 'API地址 *',
-                        hintText: '例如：https://api.deepseek.com',
+                        hintText: '例如：https://api.deepseek.com/v1',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.link),
                       ),
@@ -113,12 +116,22 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _apiKeyController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'API Key *',
                         hintText: '输入你的API密钥',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.key),
-                        suffixIcon: Icon(Icons.visibility_off),
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.key),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.copy, size: 20),
+                          onPressed: () {
+                            if (_apiKeyController.text.isNotEmpty) {
+                              Clipboard.setData(ClipboardData(text: _apiKeyController.text));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('已复制 API Key'), duration: Duration(seconds: 1)),
+                              );
+                            }
+                          },
+                        ),
                       ),
                       obscureText: true,
                       validator: (value) {
@@ -129,19 +142,39 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _modelsController,
-                      decoration: const InputDecoration(
-                        labelText: '模型列表',
-                        hintText: '用逗号分隔，例如：deepseek-chat, deepseek-coder',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.smart_toy),
-                      ),
-                      maxLines: 2,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextFormField(
+                            controller: _modelsController,
+                            decoration: const InputDecoration(
+                              labelText: '模型列表',
+                              hintText: '用逗号分隔，或点击获取',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.smart_toy),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          height: 56,
+                          child: ElevatedButton.icon(
+                            onPressed: _isFetchingModels ? null : _fetchModels,
+                            icon: _isFetchingModels 
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.refresh, size: 18),
+                            label: const Text('获取'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.secondary,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
-                      initialValue: _environment,
+                      value: _environment,
                       decoration: const InputDecoration(
                         labelText: '环境',
                         border: OutlineInputBorder(),
@@ -149,7 +182,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       ),
                       items: const [
                         DropdownMenuItem(value: 'development', child: Text('开发环境')),
-                        DropdownMenuItem(value: 'testing', child: Text('测试环境')),
+                        DropdownMenuItem(value: 'staging', child: Text('测试环境')),
                         DropdownMenuItem(value: 'production', child: Text('生产环境')),
                       ],
                       onChanged: (value) {
@@ -211,6 +244,70 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     );
   }
 
+  Future<void> _fetchModels() async {
+    if (_baseUrlController.text.isEmpty || _apiKeyController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先填写 API 地址和 API Key'),
+          backgroundColor: AppColors.warning,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isFetchingModels = true;
+    });
+
+    try {
+      final apiService = ApiService();
+      final apiConfig = ApiConfig(
+        id: 'temp',
+        name: 'temp',
+        baseUrl: _baseUrlController.text.trim(),
+        apiKey: _apiKeyController.text.trim(),
+        models: [],
+        environment: _environment,
+      );
+
+      final models = await apiService.getAvailableModels(apiConfig);
+      
+      if (mounted) {
+        setState(() {
+          _isFetchingModels = false;
+          if (models.isNotEmpty) {
+            _modelsController.text = models.join(', ');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('成功获取 ${models.length} 个模型'),
+                backgroundColor: AppColors.success,
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('未获取到可用模型，请检查 API 地址和 Key'),
+                backgroundColor: AppColors.warning,
+              ),
+            );
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isFetchingModels = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('获取模型失败: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _saveApi() async {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -258,13 +355,18 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       await databaseService.close();
 
       if (mounted) {
-        Navigator.pop(context, true);
+        // 先显示成功提示，再返回
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(widget.apiConfig != null ? 'API已更新' : 'API已添加'),
+            content: Text(widget.apiConfig != null ? 'API 已更新成功！' : 'API 已添加成功！'),
             backgroundColor: AppColors.success,
+            duration: const Duration(seconds: 2),
           ),
         );
+        
+        // 延迟返回，让用户看到提示
+        await Future.delayed(const Duration(milliseconds: 500));
+        Navigator.pop(context, true);
       }
     } catch (e) {
       setState(() {
@@ -312,13 +414,14 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         await databaseService.close();
 
         if (mounted) {
-          Navigator.pop(context, true);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('已删除 ${widget.apiConfig!.name}'),
               backgroundColor: AppColors.success,
             ),
           );
+          await Future.delayed(const Duration(milliseconds: 500));
+          Navigator.pop(context, true);
         }
       } catch (e) {
         setState(() {

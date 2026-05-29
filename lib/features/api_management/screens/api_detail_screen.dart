@@ -88,24 +88,24 @@ class ApiDetailScreen extends StatelessWidget {
               ],
             ),
             const Divider(height: 24),
-            _buildInfoRow('API地址', apiConfig.baseUrl, true),
+            _buildInfoRow(context, 'API地址', apiConfig.baseUrl, canCopy: true, copyLabel: 'API地址'),
             const SizedBox(height: 12),
-            _buildInfoRow('API Key', _maskApiKey(apiConfig.apiKey), true),
+            _buildInfoRow(context, 'API Key', _maskApiKey(apiConfig.apiKey), canCopy: true, copyValue: apiConfig.apiKey, copyLabel: 'API Key'),
             if (apiConfig.group != null) ...[
               const SizedBox(height: 12),
-              _buildInfoRow('分组', apiConfig.group!, false),
+              _buildInfoRow(context, '分组', apiConfig.group!, canCopy: false),
             ],
             const SizedBox(height: 12),
-            _buildInfoRow('创建时间', _formatDate(apiConfig.createdAt), false),
+            _buildInfoRow(context, '创建时间', _formatDate(apiConfig.createdAt), canCopy: false),
             const SizedBox(height: 12),
-            _buildInfoRow('更新时间', _formatDate(apiConfig.updatedAt), false),
+            _buildInfoRow(context, '更新时间', _formatDate(apiConfig.updatedAt), canCopy: false),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildInfoRow(String label, String value, bool canCopy) {
+  Widget _buildInfoRow(BuildContext context, String label, String value, {required bool canCopy, String? copyValue, String? copyLabel}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -126,11 +126,21 @@ class ApiDetailScreen extends StatelessWidget {
           ),
         ),
         if (canCopy)
-          IconButton(
-            icon: const Icon(Icons.copy, size: 18),
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: value));
+          InkWell(
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: copyValue ?? value));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('${copyLabel ?? label} 已复制'),
+                  duration: const Duration(seconds: 1),
+                ),
+              );
             },
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              child: const Icon(Icons.copy, size: 18, color: AppColors.primary),
+            ),
           ),
       ],
     );
@@ -160,7 +170,7 @@ class ApiDetailScreen extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
+        color: color.withOpacity(0.1),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color),
       ),
@@ -198,12 +208,51 @@ class ApiDetailScreen extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: apiConfig.models.map((model) {
-                return Chip(
-                  label: Text(model),
-                  backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                  side: const BorderSide(color: AppColors.primary),
+                return InkWell(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: model));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('已复制模型: $model'),
+                        duration: const Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Chip(
+                    label: Text(model),
+                    backgroundColor: AppColors.primary.withOpacity(0.1),
+                    side: const BorderSide(color: AppColors.primary),
+                    deleteIcon: const Icon(Icons.copy, size: 16),
+                    onDeleted: () {
+                      Clipboard.setData(ClipboardData(text: model));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('已复制模型: $model'),
+                          duration: const Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                  ),
                 );
               }).toList(),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: apiConfig.models.join('\n')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('已复制所有模型列表'),
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.copy_all, size: 16),
+                label: const Text('复制全部'),
+              ),
             ),
           ],
         ),
@@ -240,7 +289,7 @@ class ApiDetailScreen extends StatelessWidget {
               children: apiConfig.tags.map((tag) {
                 return Chip(
                   label: Text(tag),
-                  backgroundColor: AppColors.secondary.withValues(alpha: 0.1),
+                  backgroundColor: AppColors.secondary.withOpacity(0.1),
                   side: const BorderSide(color: AppColors.secondary),
                 );
               }).toList(),
@@ -252,38 +301,74 @@ class ApiDetailScreen extends StatelessWidget {
   }
 
   Widget _buildActionButtons(BuildContext context) {
-    return Row(
+    return Column(
       children: [
-        Expanded(
-          child: ElevatedButton.icon(
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => TestScreen(apiConfig: apiConfig),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('测试API'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: apiConfig.baseUrl));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('API地址已复制'),
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.link),
+                label: const Text('复制地址'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
             onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => TestScreen(apiConfig: apiConfig),
+              final configText = '''
+API名称: ${apiConfig.name}
+API地址: ${apiConfig.baseUrl}
+API Key: ${apiConfig.apiKey}
+模型列表: ${apiConfig.models.join(', ')}
+环境: ${apiConfig.environment}
+分组: ${apiConfig.group ?? '无'}
+标签: ${apiConfig.tags.join(', ')}
+''';
+              Clipboard.setData(ClipboardData(text: configText));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('已复制完整配置信息'),
+                  backgroundColor: AppColors.success,
                 ),
               );
             },
-            icon: const Icon(Icons.play_arrow),
-            label: const Text('测试API'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
-          ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: apiConfig.baseUrl));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('API地址已复制')),
-              );
-            },
-            icon: const Icon(Icons.copy),
-            label: const Text('复制地址'),
+            icon: const Icon(Icons.content_copy),
+            label: const Text('复制完整配置'),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
