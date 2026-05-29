@@ -1,15 +1,39 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/import_export_service.dart';
 import '../../../core/services/database_service.dart';
+import '../../../core/services/update_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_testing/screens/history_screen.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../sync/screens/sync_screen.dart';
 import '../providers/settings_provider.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final UpdateService _updateService = UpdateService();
+  String _currentVersion = '';
+  bool _isCheckingUpdate = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentVersion();
+  }
+
+  Future<void> _loadCurrentVersion() async {
+    final version = await _updateService.getCurrentVersion();
+    setState(() {
+      _currentVersion = version;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -115,10 +139,26 @@ class SettingsScreen extends StatelessWidget {
             context: context,
             title: '关于',
             children: [
-              const ListTile(
-                leading: Icon(Icons.info),
-                title: Text('版本'),
-                subtitle: Text('1.0.0'),
+              ListTile(
+                leading: const Icon(Icons.info),
+                title: const Text('版本'),
+                subtitle: Text('v$_currentVersion'),
+              ),
+              ListTile(
+                leading: Icon(
+                  _isCheckingUpdate ? Icons.refresh : Icons.system_update,
+                  color: _isCheckingUpdate ? Colors.grey : null,
+                ),
+                title: const Text('检查更新'),
+                subtitle: Text(_isCheckingUpdate ? '正在检查...' : '检查是否有新版本'),
+                trailing: _isCheckingUpdate
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.chevron_right),
+                onTap: _isCheckingUpdate ? null : () => _checkForUpdate(context),
               ),
               ListTile(
                 leading: const Icon(Icons.code),
@@ -130,7 +170,18 @@ class SettingsScreen extends StatelessWidget {
               const ListTile(
                 leading: Icon(Icons.developer_mode),
                 title: Text('开发者'),
-                subtitle: Text('API Manager Team'),
+                subtitle: Text('Apilot Team'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.link),
+                title: const Text('GitHub'),
+                subtitle: const Text('github.com/yuelangmanle/Apilot'),
+                onTap: () {
+                  Clipboard.setData(const ClipboardData(text: 'https://github.com/yuelangmanle/Apilot'));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('GitHub 链接已复制'), duration: Duration(seconds: 1)),
+                  );
+                },
               ),
             ],
           ),
@@ -162,6 +213,125 @@ class SettingsScreen extends StatelessWidget {
         ...children,
         const Divider(),
       ],
+    );
+  }
+
+  Future<void> _checkForUpdate(BuildContext context) async {
+    setState(() {
+      _isCheckingUpdate = true;
+    });
+
+    try {
+      final updateInfo = await _updateService.checkForUpdate();
+
+      if (!mounted) return;
+
+      setState(() {
+        _isCheckingUpdate = false;
+      });
+
+      if (updateInfo != null) {
+        _showUpdateDialog(context, updateInfo);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('当前已是最新版本'),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isCheckingUpdate = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('检查更新失败: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showUpdateDialog(BuildContext context, UpdateInfo updateInfo) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.system_update, color: AppColors.primary),
+            const SizedBox(width: 8),
+            const Text('发现新版本'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'v${updateInfo.version}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                '更新内容:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  updateInfo.releaseNotes,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '发布于: ${updateInfo.publishedAt.toString().substring(0, 19)}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('稍后再说'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              _updateService.downloadUpdate(updateInfo.downloadUrl);
+            },
+            icon: const Icon(Icons.download),
+            label: const Text('立即下载'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -202,7 +372,6 @@ class SettingsScreen extends StatelessWidget {
       final databaseService = DatabaseService();
       await databaseService.initialize();
 
-      // 尝试从默认导出目录加载
       final directory = await importExportService.getDefaultExportDirectory();
       final filePath = '$directory/api_configs_export.json';
       
@@ -217,7 +386,6 @@ class SettingsScreen extends StatelessWidget {
       
       await databaseService.close();
       
-      // 刷新 API 列表
       if (context.mounted) {
         context.read<ApiProvider>().loadApiConfigs();
         
