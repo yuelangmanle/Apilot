@@ -201,4 +201,59 @@ class ApiService {
       rethrow;
     }
   }
+
+
+  /// 发送请求并返回完整响应（包含headers）
+  Future<Map<String, dynamic>> sendRequestWithHeaders({
+    required ApiConfig apiConfig,
+    required String model,
+    required String endpoint,
+    required Map<String, dynamic> requestBody,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      final url = buildUrl(apiConfig.baseUrl, endpoint);
+      final uri = Uri.parse(url);
+      
+      final body = Map<String, dynamic>.from(requestBody);
+      if (!body.containsKey('model')) {
+        body['model'] = model;
+      }
+
+      final response = await http.post(
+        uri,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${apiConfig.apiKey}',
+        },
+        body: jsonEncode(body),
+      ).timeout(const Duration(seconds: 60));
+
+      stopwatch.stop();
+
+      Map<String, dynamic> responseBody;
+      try {
+        responseBody = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {
+        responseBody = {'raw': response.body};
+      }
+
+      final headers = <String, String>{};
+      response.headers.forEach((key, value) {
+        headers[key] = value;
+      });
+
+      return {
+        'statusCode': response.statusCode,
+        'body': responseBody,
+        'headers': headers,
+        'duration': stopwatch.elapsedMilliseconds,
+      };
+    } catch (e) {
+      stopwatch.stop();
+      rethrow;
+    }
+  }
+
 }

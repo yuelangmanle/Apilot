@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../../core/data/api_templates.dart';
 import '../../../core/models/api_config.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
+import '../providers/api_provider.dart';
 import 'api_form_screen.dart';
 
 class TemplateScreen extends StatefulWidget {
@@ -32,10 +34,15 @@ class _TemplateScreenState extends State<TemplateScreen> {
     }).toList();
   }
 
+  bool _isAlreadyAdded(ApiConfig template, List<ApiConfig> existing) {
+    return existing.any((c) => c.baseUrl.trim() == template.baseUrl.trim());
+  }
+
   @override
   Widget build(BuildContext context) {
     final templates = _filteredTemplates;
     final isWide = ResponsiveLayout.isWide(context);
+    final existingConfigs = context.watch<ApiProvider>().apiConfigs;
 
     final content = Column(
       children: [
@@ -47,32 +54,23 @@ class _TemplateScreenState extends State<TemplateScreen> {
               hintText: '搜索模板（名称、地址、标签）...',
               prefixIcon: const Icon(Icons.search),
               suffixIcon: _searchQuery.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() => _searchQuery = '');
-                      },
-                    )
+                  ? IconButton(icon: const Icon(Icons.clear), onPressed: () { _searchController.clear(); setState(() => _searchQuery = ''); })
                   : null,
               border: const OutlineInputBorder(),
             ),
-            onChanged: (value) {
-              setState(() => _searchQuery = value);
-            },
+            onChanged: (value) => setState(() => _searchQuery = value),
           ),
         ),
         Expanded(
           child: templates.isEmpty
-              ? const Center(
-                  child: Text('没有匹配的模板', style: TextStyle(color: AppColors.textSecondary)),
-                )
+              ? const Center(child: Text('没有匹配的模板', style: TextStyle(color: AppColors.textSecondary)))
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: templates.length,
                   itemBuilder: (context, index) {
                     final template = templates[index];
-                    return _buildTemplateCard(context, template);
+                    final added = _isAlreadyAdded(template, existingConfigs);
+                    return _buildTemplateCard(context, template, added);
                   },
                 ),
         ),
@@ -85,7 +83,7 @@ class _TemplateScreenState extends State<TemplateScreen> {
     );
   }
 
-  Widget _buildTemplateCard(BuildContext context, ApiConfig template) {
+  Widget _buildTemplateCard(BuildContext context, ApiConfig template, bool added) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
@@ -93,31 +91,33 @@ class _TemplateScreenState extends State<TemplateScreen> {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: AppColors.primary.withValues(alpha: 0.1),
+            color: added ? AppColors.success.withValues(alpha: 0.1) : AppColors.primary.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(Icons.api, color: AppColors.primary),
+          child: Icon(added ? Icons.check_circle : Icons.api, color: added ? AppColors.success : AppColors.primary),
         ),
-        title: Text(template.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Row(
+          children: [
+            Expanded(child: Text(template.name, style: const TextStyle(fontWeight: FontWeight.bold))),
+            if (added)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(color: AppColors.success.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                child: const Text('已添加', style: TextStyle(fontSize: 11, color: AppColors.success)),
+              ),
+          ],
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              template.baseUrl,
-              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+            Text(template.baseUrl, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
             const SizedBox(height: 4),
             Wrap(
               spacing: 4,
               children: template.tags.take(3).map((tag) {
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppColors.secondary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
+                  decoration: BoxDecoration(color: AppColors.secondary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
                   child: Text(tag, style: const TextStyle(fontSize: 10, color: AppColors.secondary)),
                 );
               }).toList(),
@@ -128,9 +128,7 @@ class _TemplateScreenState extends State<TemplateScreen> {
         onTap: () async {
           final result = await Navigator.push(
             context,
-            MaterialPageRoute(
-              builder: (context) => ApiFormScreen(apiConfig: template),
-            ),
+            MaterialPageRoute(builder: (context) => ApiFormScreen(apiConfig: template)),
           );
           if (result == true && context.mounted) {
             Navigator.pop(context, true);

@@ -253,14 +253,31 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _groupController,
-                      decoration: const InputDecoration(
-                        labelText: '分组',
-                        hintText: '例如：LLM、TTS、多模态',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.folder),
-                      ),
+                    // 分组：支持输入和选择已有分组
+                    Consumer<ApiProvider>(
+                      builder: (context, provider, _) {
+                        final groups = provider.availableGroups;
+                        return DropdownButtonFormField<String>(
+                          value: groups.contains(_groupController.text) ? _groupController.text : null,
+                          decoration: InputDecoration(
+                            labelText: '分组',
+                            hintText: '选择或输入新分组',
+                            border: const OutlineInputBorder(),
+                            prefixIcon: const Icon(Icons.folder),
+                            suffixIcon: groups.isNotEmpty
+                                ? null
+                                : null,
+                          ),
+                          items: [
+                            ...groups.map((g) => DropdownMenuItem(value: g, child: Text(g))),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) {
+                              _groupController.text = value;
+                            }
+                          },
+                        );
+                      },
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
@@ -478,6 +495,30 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         isFavorite: _isFavorite,
         createdAt: widget.isEditing ? widget.apiConfig!.createdAt : null,
       );
+
+      // 重复检测
+      if (!widget.isEditing) {
+        final duplicate = provider.apiConfigs.where((c) =>
+          c.baseUrl.trim() == api.baseUrl.trim() && c.apiKey.trim() == api.apiKey.trim()
+        ).toList();
+        if (duplicate.isNotEmpty) {
+          final proceed = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('检测到重复'),
+              content: Text('已存在相同地址和Key的配置：${duplicate.first.name}'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('仍然添加')),
+              ],
+            ),
+          );
+          if (proceed != true) {
+            setState(() { _isLoading = false; });
+            return;
+          }
+        }
+      }
 
       if (widget.isEditing) {
         await provider.updateApiConfig(api);

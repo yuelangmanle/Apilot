@@ -362,7 +362,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final importExportService = ImportExportService();
       final json = await importExportService.exportConfigs(configs, []);
-      await importExportService.saveToFile(json, 'api_configs_export.json');
+      final timestamp = DateTime.now().toString().substring(0, 19).replaceAll(':', '-').replaceAll(' ', '_');
+      await importExportService.saveToFile(json, 'apilot_export_\$timestamp.json');
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

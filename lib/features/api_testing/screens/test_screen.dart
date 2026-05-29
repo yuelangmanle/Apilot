@@ -7,6 +7,7 @@ import '../../../core/models/request_history.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
+import '../../api_management/providers/api_provider.dart';
 import '../widgets/request_form.dart';
 import '../widgets/response_viewer.dart';
 import '../providers/history_provider.dart';
@@ -22,50 +23,93 @@ class TestScreen extends StatefulWidget {
 
 class _TestScreenState extends State<TestScreen> {
   final ApiService _apiService = ApiService();
+  late ApiConfig _currentApi;
   Map<String, dynamic>? _response;
+  Map<String, String>? _responseHeaders;
   bool _isLoading = false;
   String? _errorMessage;
+  int? _statusCode;
+  int? _duration;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentApi = widget.apiConfig;
+  }
 
   Future<void> _sendRequest(String model, String endpoint, Map<String, dynamic> body) async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
       _response = null;
+      _responseHeaders = null;
+      _statusCode = null;
+      _duration = null;
     });
 
     try {
-      final response = await _apiService.sendRequest(
-        apiConfig: widget.apiConfig,
+      final result = await _apiService.sendRequestWithHeaders(
+        apiConfig: _currentApi,
         model: model,
         endpoint: endpoint,
         requestBody: body,
       );
 
       setState(() {
-        _response = response;
+        _response = result['body'] as Map<String, dynamic>;
+        _responseHeaders = result['headers'] as Map<String, String>?;
+        _statusCode = result['statusCode'] as int;
+        _duration = result['duration'] as int;
         _isLoading = false;
       });
 
-      // 保存到历史
       if (mounted) {
         final history = RequestHistory(
           id: const Uuid().v4(),
-          apiConfigId: widget.apiConfig.id,
+          apiConfigId: _currentApi.id,
           model: model,
           endpoint: endpoint,
           requestBody: body,
-          responseBody: response['body'] as Map<String, dynamic>?,
-          statusCode: response['statusCode'] as int?,
-          duration: response['duration'] as int?,
+          responseBody: _response,
+          statusCode: _statusCode,
+          duration: _duration,
         );
         context.read<HistoryProvider>().addHistory(history);
       }
     } catch (e) {
       setState(() {
         _isLoading = false;
-        _errorMessage = e.toString();
+        _errorMessage = _friendlyError(e);
       });
     }
+  }
+
+  String _friendlyError(dynamic e) {
+    final msg = e.toString();
+    if (msg.contains('SocketException') || msg.contains('Failed host lookup')) {
+      return '无法连接到服务器，请检查网络和API地址是否正确';
+    }
+    if (msg.contains('TimeoutException') || msg.contains('timeout')) {
+      return '请求超时，服务器响应太慢';
+    }
+    if (msg.contains('Connection refused')) {
+      return '连接被拒绝，请检查API地址和端口';
+    }
+    if (msg.contains('HandshakeException')) {
+      return 'SSL握手失败，请检查HTTPS配置';
+    }
+    return '请求失败: $msg';
+  }
+
+  void _switchApi(ApiConfig api) {
+    setState(() {
+      _currentApi = api;
+      _response = null;
+      _responseHeaders = null;
+      _errorMessage = null;
+      _statusCode = null;
+      _duration = null;
+    });
   }
 
   @override
@@ -74,8 +118,14 @@ class _TestScreenState extends State<TestScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('测试 ${widget.apiConfig.name}'),
+        title: Text('测试 ${_currentApi.name}'),
         actions: [
+          // 切换API按钮
+          IconButton(
+            icon: const Icon(Icons.swap_horiz),
+            onPressed: _showApiSwitcher,
+            tooltip: '切换API',
+          ),
           if (_response != null)
             IconButton(
               icon: const Icon(Icons.copy),
@@ -98,35 +148,59 @@ class _TestScreenState extends State<TestScreen> {
                   Expanded(
                     child: SingleChildScrollView(
                       child: RequestForm(
-                        apiConfig: widget.apiConfig,
+                        apiConfig: _currentApi,
                         onSubmit: _sendRequest,
                       ),
                     ),
                   ),
                   const VerticalDivider(width: 32),
-                  Expanded(
-                    child: _buildResponseArea(),
-                  ),
+                  Expanded(child: _buildResponseArea()),
                 ],
               )
             : Column(
                 children: [
                   Expanded(
                     flex: 1,
-                    child: RequestForm(
-                      apiConfig: widget.apiConfig,
-                      onSubmit: _sendRequest,
-                    ),
+                    child: RequestForm(apiConfig: _currentApi, onSubmit: _sendRequest),
                   ),
                   const SizedBox(height: 16),
                   const Divider(),
                   const SizedBox(height: 16),
-                  Expanded(
-                    flex: 1,
-                    child: _buildResponseArea(),
-                  ),
+                  Expanded(flex: 1, child: _buildResponseArea()),
                 ],
               ),
+      ),
+    );
+  }
+
+  void _showApiSwitcher() {
+    final provider = context.read<ApiProvider>();
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('切换到其他API', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ),
+            const Divider(height: 1),
+            ...provider.apiConfigs.map((api) => ListTile(
+              leading: Icon(
+                api.id == _currentApi.id ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                color: api.id == _currentApi.id ? AppColors.primary : null,
+              ),
+              title: Text(api.name),
+              subtitle: Text(api.baseUrl, maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () {
+                Navigator.pop(context);
+                _switchApi(api);
+              },
+            )),
+            const SizedBox(height: 16),
+          ],
+        ),
       ),
     );
   }
@@ -140,6 +214,8 @@ class _TestScreenState extends State<TestScreen> {
             CircularProgressIndicator(),
             SizedBox(height: 16),
             Text('请求中...', style: TextStyle(color: AppColors.textSecondary)),
+            SizedBox(height: 8),
+            Text('等待服务器响应', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
           ],
         ),
       );
@@ -156,11 +232,7 @@ class _TestScreenState extends State<TestScreen> {
             const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                _errorMessage!,
-                style: const TextStyle(color: AppColors.error, fontSize: 13),
-                textAlign: TextAlign.center,
-              ),
+              child: Text(_errorMessage!, style: const TextStyle(color: AppColors.error, fontSize: 14), textAlign: TextAlign.center),
             ),
           ],
         ),
@@ -180,6 +252,83 @@ class _TestScreenState extends State<TestScreen> {
       );
     }
 
-    return ResponseViewer(response: _response, isLoading: false);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 状态栏
+        Row(
+          children: [
+            if (_statusCode != null)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: (_statusCode! >= 200 && _statusCode! < 300) ? AppColors.success : AppColors.error,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text('$_statusCode', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+              ),
+            if (_duration != null) ...[
+              const SizedBox(width: 12),
+              Text('${_duration}ms', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+            ],
+            const Spacer(),
+            if (_responseHeaders != null)
+              TextButton.icon(
+                icon: const Icon(Icons.info_outline, size: 16),
+                label: const Text('Headers'),
+                onPressed: _showHeaders,
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Expanded(child: ResponseViewer(response: _response, isLoading: false)),
+      ],
+    );
+  }
+
+  void _showHeaders() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('响应 Headers'),
+        content: SizedBox(
+          width: 400,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: (_responseHeaders ?? {}).entries.map((e) =>
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 140,
+                        child: Text(e.key, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, fontFamily: 'monospace')),
+                      ),
+                      Expanded(child: Text(e.value, style: const TextStyle(fontSize: 12, fontFamily: 'monospace'))),
+                    ],
+                  ),
+                ),
+              ).toList(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              final text = (_responseHeaders ?? {}).entries.map((e) => '${e.key}: ${e.value}').join('\n');
+              Clipboard.setData(ClipboardData(text: text));
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Headers已复制')));
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+        ],
+      ),
+    );
   }
 }

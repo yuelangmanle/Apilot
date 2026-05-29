@@ -14,6 +14,10 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
+  bool _isSearching = false;
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
@@ -23,13 +27,41 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final isWide = ResponsiveLayout.isWide(context);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('请求历史'),
+        title: _isSearching
+            ? TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '搜索历史...',
+                  border: InputBorder.none,
+                ),
+                onChanged: (value) => setState(() => _searchQuery = value),
+              )
+            : const Text('请求历史'),
         actions: [
+          IconButton(
+            icon: Icon(_isSearching ? Icons.close : Icons.search),
+            onPressed: () {
+              setState(() {
+                _isSearching = !_isSearching;
+                if (!_isSearching) {
+                  _searchController.clear();
+                  _searchQuery = '';
+                }
+              });
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.delete_sweep),
             onPressed: () {
@@ -77,10 +109,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
             );
           }
 
+          final filtered = _searchQuery.isEmpty
+              ? provider.history
+              : provider.history.where((h) =>
+                  h.endpoint.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+                  h.model.toLowerCase().contains(_searchQuery.toLowerCase())
+                ).toList();
           final content = ListView.builder(
-            itemCount: provider.history.length,
+            itemCount: filtered.length,
             itemBuilder: (context, index) {
-              final item = provider.history[index];
+              final item = filtered[index];
               return _buildHistoryItem(context, item);
             },
           );
