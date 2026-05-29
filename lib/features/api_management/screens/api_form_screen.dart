@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/api_provider.dart';
 
 class ApiFormScreen extends StatefulWidget {
@@ -75,7 +76,9 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
+          : CenteredContent(
+        maxWidth: 600,
+        child: SingleChildScrollView(
               padding: const EdgeInsets.all(16),
               child: Form(
                 key: _formKey,
@@ -100,11 +103,27 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _baseUrlController,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'API地址 *',
                         hintText: '例如：https://api.deepseek.com/v1',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.link),
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.link),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.content_paste, size: 20),
+                          onPressed: () async {
+                            final data = await Clipboard.getData(Clipboard.kTextPlain);
+                            if (data?.text != null && data!.text!.isNotEmpty) {
+                              _baseUrlController.text = data.text!.trim();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('已粘贴'),
+                                  duration: Duration(seconds: 1),
+                                ),
+                              );
+                            }
+                          },
+                          tooltip: '粘贴',
+                        ),
                       ),
                       validator: (value) {
                         if (value == null || value.trim().isEmpty) {
@@ -142,19 +161,20 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                               tooltip: _obscureApiKey ? '显示' : '隐藏',
                             ),
                             IconButton(
-                              icon: const Icon(Icons.copy, size: 20),
-                              onPressed: () {
-                                if (_apiKeyController.text.isNotEmpty) {
-                                  Clipboard.setData(ClipboardData(text: _apiKeyController.text));
+                              icon: const Icon(Icons.content_paste, size: 20),
+                              onPressed: () async {
+                                final data = await Clipboard.getData(Clipboard.kTextPlain);
+                                if (data?.text != null && data!.text!.isNotEmpty) {
+                                  _apiKeyController.text = data.text!.trim();
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
-                                      content: Text('API Key已复制'),
+                                      content: Text('已粘贴'),
                                       duration: Duration(seconds: 1),
                                     ),
                                   );
                                 }
                               },
-                              tooltip: '复制',
+                              tooltip: '粘贴',
                             ),
                           ],
                         ),
@@ -302,6 +322,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                 ),
               ),
             ),
+          ),
     );
   }
 

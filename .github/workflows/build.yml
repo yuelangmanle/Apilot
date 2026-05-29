@@ -49,8 +49,37 @@ jobs:
           name: apk
           path: Apilot-${{ github.ref_name }}.apk
 
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: 'stable'
+      
+      - name: Install dependencies
+        run: flutter pub get
+      
+      - name: Build macOS
+        run: flutter build macos --release
+      
+      - name: Create DMG
+        run: |
+          mkdir -p dmg_source
+          cp -r build/macos/Build/Products/Release/Apilot.app dmg_source/
+          hdiutil create -volname "Apilot" -srcfolder dmg_source -ov -format UDZO Apilot-${{ github.ref_name }}.dmg
+      
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: Apilot-${{ github.ref_name }}.dmg
+
   release:
-    needs: build-android
+    needs: [build-android, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -63,10 +92,17 @@ jobs:
         with:
           name: apk
       
+      - name: Download DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+      
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: "Apilot-${{ github.ref_name }}.apk"
+          files: |
+            Apilot-${{ github.ref_name }}.apk
+            Apilot-${{ github.ref_name }}.dmg
           name: "🚀 Apilot ${{ github.ref_name }}"
           body_path: CHANGELOG.md
           draft: false

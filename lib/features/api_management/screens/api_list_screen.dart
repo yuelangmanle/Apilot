@@ -3,11 +3,10 @@ import 'package:provider/provider.dart';
 import '../providers/api_provider.dart';
 import '../widgets/api_card.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/widgets/responsive_layout.dart';
 import 'api_form_screen.dart';
 import 'api_detail_screen.dart';
 import 'template_screen.dart';
-import '../../settings/screens/settings_screen.dart';
-import '../../sync/screens/sync_screen.dart';
 
 class ApiListScreen extends StatefulWidget {
   const ApiListScreen({super.key});
@@ -39,6 +38,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isWide = ResponsiveLayout.isWide(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -73,26 +73,6 @@ class _ApiListScreenState extends State<ApiListScreen> {
                 }
               });
             },
-          ),
-          IconButton(
-            icon: const Icon(Icons.sync),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SyncScreen()),
-              );
-            },
-            tooltip: '设备同步',
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SettingsScreen()),
-              );
-            },
-            tooltip: '设置',
           ),
         ],
       ),
@@ -146,7 +126,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
             );
           }
 
-          return RefreshIndicator(
+          final content = RefreshIndicator(
             onRefresh: () => provider.loadApiConfigs(),
             child: ListView.builder(
               itemCount: provider.apiConfigs.length + 1,
@@ -202,6 +182,11 @@ class _ApiListScreenState extends State<ApiListScreen> {
               },
             ),
           );
+
+          if (isWide) {
+            return CenteredContent(maxWidth: 700, child: content);
+          }
+          return content;
         },
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -237,20 +222,6 @@ class _ApiListScreenState extends State<ApiListScreen> {
               onTap: () => _navigateToTemplate(context),
             ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _buildActionButton(
-              icon: Icons.sync,
-              label: '设备同步',
-              color: primaryColor,
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const SyncScreen()),
-                );
-              },
-            ),
-          ),
         ],
       ),
     );
@@ -268,9 +239,9 @@ class _ApiListScreenState extends State<ApiListScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
+          color: color.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withOpacity(0.3)),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -312,18 +283,6 @@ class _ApiListScreenState extends State<ApiListScreen> {
                 _navigateToTemplate(context);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.download, color: AppColors.primary),
-              title: const Text('导入配置'),
-              subtitle: const Text('从JSON文件导入API配置'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                );
-              },
-            ),
           ],
         ),
       ),
@@ -335,7 +294,9 @@ class _ApiListScreenState extends State<ApiListScreen> {
     final provider = context.read<ApiProvider>();
     final result = await navigator.push<bool>(
       MaterialPageRoute(
-        builder: (context) => ApiFormScreen(apiConfig: apiConfig, isEditing: true),
+        builder: (context) => apiConfig != null
+            ? ApiFormScreen(apiConfig: apiConfig, isEditing: true)
+            : const ApiFormScreen(),
       ),
     );
     if (result == true && mounted) {
