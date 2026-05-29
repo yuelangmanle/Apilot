@@ -11,38 +11,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-      
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
           channel: 'stable'
-      
       - name: Decode Keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release-key.jks
-      
       - name: Create key.properties
         run: |
           echo "storePassword=${{ secrets.KEY_STORE_PASSWORD }}" > android/key.properties
           echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
           echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/key.properties
           echo "storeFile=release-key.jks" >> android/key.properties
-      
       - name: Install dependencies
         run: flutter pub get
-      
       - name: Build APK
         run: flutter build apk --release
-      
       - name: Rename APK
         run: mv build/app/outputs/flutter-apk/app-release.apk Apilot-${{ github.ref_name }}.apk
-      
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -53,25 +45,24 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
           channel: 'stable'
-      
       - name: Install dependencies
         run: flutter pub get
-      
       - name: Build macOS
         run: flutter build macos --release
-      
+      - name: Find app bundle
+        run: find build/macos -name "*.app" -type d
       - name: Create DMG
         run: |
+          APP_PATH=$(find build/macos -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "App bundle not found!" && exit 1; fi
           mkdir -p dmg_source
-          cp -r build/macos/Build/Products/Release/Runner.app dmg_source/Apilot.app
+          cp -r "$APP_PATH" dmg_source/Apilot.app
           hdiutil create -volname "Apilot" -srcfolder dmg_source -ov -format UDZO Apilot-${{ github.ref_name }}.dmg
-      
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
@@ -86,17 +77,14 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      
       - name: Download APK
         uses: actions/download-artifact@v4
         with:
           name: apk
-      
       - name: Download DMG
         uses: actions/download-artifact@v4
         with:
           name: macos-dmg
-      
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

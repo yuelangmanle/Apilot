@@ -1,14 +1,31 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/models/request_history.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/history_provider.dart';
 
-class HistoryScreen extends StatelessWidget {
+class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
   @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(() {
+      if (mounted) context.read<HistoryProvider>().loadHistory();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final isWide = ResponsiveLayout.isWide(context);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('请求历史'),
@@ -52,27 +69,26 @@ class HistoryScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.history, size: 64, color: AppColors.textSecondary),
                   SizedBox(height: 16),
-                  Text(
-                    '暂无请求历史',
-                    style: TextStyle(fontSize: 18, color: AppColors.textSecondary),
-                  ),
+                  Text('暂无请求历史', style: TextStyle(fontSize: 18, color: AppColors.textSecondary)),
                   SizedBox(height: 8),
-                  Text(
-                    '测试API后会自动记录',
-                    style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
-                  ),
+                  Text('测试API后会自动记录', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
                 ],
               ),
             );
           }
 
-          return ListView.builder(
+          final content = ListView.builder(
             itemCount: provider.history.length,
             itemBuilder: (context, index) {
               final item = provider.history[index];
               return _buildHistoryItem(context, item);
             },
           );
+
+          if (isWide) {
+            return CenteredContent(maxWidth: 700, child: content);
+          }
+          return content;
         },
       ),
     );
@@ -80,14 +96,14 @@ class HistoryScreen extends StatelessWidget {
 
   Widget _buildHistoryItem(BuildContext context, RequestHistory item) {
     final isSuccess = item.statusCode != null && item.statusCode! >= 200 && item.statusCode! < 300;
-    
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: ExpansionTile(
         leading: Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: isSuccess ? AppColors.success.withValues(alpha: 0.1) : AppColors.error.withValues(alpha: 0.1),
+            color: (isSuccess ? AppColors.success : AppColors.error).withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Icon(
@@ -105,25 +121,37 @@ class HistoryScreen extends StatelessWidget {
           '${item.model} • ${_formatDate(item.createdAt)}',
           style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
         ),
-        trailing: item.duration != null
-            ? Text(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (item.duration != null)
+              Text(
                 '${item.duration}ms',
                 style: TextStyle(
                   color: item.duration! < 1000 ? AppColors.success : AppColors.warning,
                   fontWeight: FontWeight.bold,
+                  fontSize: 12,
                 ),
-              )
-            : null,
+              ),
+            IconButton(
+              icon: const Icon(Icons.copy, size: 16),
+              onPressed: () {
+                _showHistoryDetail(context, item);
+              },
+              tooltip: '查看详情',
+            ),
+          ],
+        ),
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildSection('请求体', item.requestBody.toString()),
+                _buildSection('请求体', _prettyJson(item.requestBody)),
                 const SizedBox(height: 16),
                 if (item.responseBody != null)
-                  _buildSection('响应体', item.responseBody.toString()),
+                  _buildSection('响应体', _prettyJson(item.responseBody!)),
                 if (item.statusCode != null) ...[
                   const SizedBox(height: 16),
                   Row(
@@ -151,14 +179,46 @@ class HistoryScreen extends StatelessWidget {
     );
   }
 
+  void _showHistoryDetail(BuildContext context, RequestHistory item) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(item.endpoint),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('模型: ${item.model}'),
+              Text('状态码: ${item.statusCode ?? "N/A"}'),
+              Text('耗时: ${item.duration ?? "N/A"}ms'),
+              Text('时间: ${_formatDate(item.createdAt)}'),
+              const Divider(),
+              const Text('请求体:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SelectableText(_prettyJson(item.requestBody)),
+              if (item.responseBody != null) ...[
+                const SizedBox(height: 8),
+                const Text('响应体:', style: TextStyle(fontWeight: FontWeight.bold)),
+                SelectableText(_prettyJson(item.responseBody!)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSection(String title, String content) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title,
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-        ),
+        Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
         const SizedBox(height: 8),
         Container(
           width: double.infinity,
@@ -168,13 +228,22 @@ class HistoryScreen extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             border: Border.all(color: Colors.grey.shade300),
           ),
-          child: Text(
+          child: SelectableText(
             content,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
           ),
         ),
       ],
     );
+  }
+
+  String _prettyJson(Map<String, dynamic> json) {
+    try {
+      const encoder = JsonEncoder.withIndent('  ');
+      return encoder.convert(json);
+    } catch (_) {
+      return json.toString();
+    }
   }
 
   String _formatDate(DateTime date) {

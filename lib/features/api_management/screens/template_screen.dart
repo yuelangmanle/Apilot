@@ -2,27 +2,86 @@ import 'package:flutter/material.dart';
 import '../../../core/data/api_templates.dart';
 import '../../../core/models/api_config.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/widgets/responsive_layout.dart';
 import 'api_form_screen.dart';
 
-class TemplateScreen extends StatelessWidget {
+class TemplateScreen extends StatefulWidget {
   const TemplateScreen({super.key});
 
   @override
+  State<TemplateScreen> createState() => _TemplateScreenState();
+}
+
+class _TemplateScreenState extends State<TemplateScreen> {
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<ApiConfig> get _filteredTemplates {
+    if (_searchQuery.isEmpty) return ApiTemplates.templates;
+    final query = _searchQuery.toLowerCase();
+    return ApiTemplates.templates.where((t) {
+      return t.name.toLowerCase().contains(query) ||
+          t.baseUrl.toLowerCase().contains(query) ||
+          t.tags.any((tag) => tag.toLowerCase().contains(query));
+    }).toList();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final templates = ApiTemplates.templates;
+    final templates = _filteredTemplates;
+    final isWide = ResponsiveLayout.isWide(context);
+
+    final content = Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: '搜索模板（名称、地址、标签）...',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() => _searchQuery = '');
+                      },
+                    )
+                  : null,
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (value) {
+              setState(() => _searchQuery = value);
+            },
+          ),
+        ),
+        Expanded(
+          child: templates.isEmpty
+              ? const Center(
+                  child: Text('没有匹配的模板', style: TextStyle(color: AppColors.textSecondary)),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: templates.length,
+                  itemBuilder: (context, index) {
+                    final template = templates[index];
+                    return _buildTemplateCard(context, template);
+                  },
+                ),
+        ),
+      ],
+    );
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('选择API模板'),
-      ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: templates.length,
-        itemBuilder: (context, index) {
-          final template = templates[index];
-          return _buildTemplateCard(context, template);
-        },
-      ),
+      appBar: AppBar(title: const Text('选择API模板')),
+      body: isWide ? CenteredContent(maxWidth: 600, child: content) : content,
     );
   }
 
@@ -39,10 +98,7 @@ class TemplateScreen extends StatelessWidget {
           ),
           child: const Icon(Icons.api, color: AppColors.primary),
         ),
-        title: Text(
-          template.name,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
+        title: Text(template.name, style: const TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -55,17 +111,14 @@ class TemplateScreen extends StatelessWidget {
             const SizedBox(height: 4),
             Wrap(
               spacing: 4,
-              children: template.models.take(3).map((model) {
+              children: template.tags.take(3).map((tag) {
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
                     color: AppColors.secondary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: Text(
-                    model,
-                    style: const TextStyle(fontSize: 10, color: AppColors.secondary),
-                  ),
+                  child: Text(tag, style: const TextStyle(fontSize: 10, color: AppColors.secondary)),
                 );
               }).toList(),
             ),

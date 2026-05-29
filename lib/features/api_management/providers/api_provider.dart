@@ -8,13 +8,20 @@ class ApiProvider with ChangeNotifier {
   String? _selectedGroup;
   String _searchQuery = '';
   String? _error;
+  bool _showFavoritesOnly = false;
 
   ApiProvider(this._databaseService);
 
   String? get error => _error;
+  bool get showFavoritesOnly => _showFavoritesOnly;
+  String? get selectedGroup => _selectedGroup;
 
   List<ApiConfig> get apiConfigs {
     var configs = _apiConfigs;
+
+    if (_showFavoritesOnly) {
+      configs = configs.where((c) => c.isFavorite).toList();
+    }
 
     if (_selectedGroup != null) {
       configs = configs.where((c) => c.group == _selectedGroup).toList();
@@ -30,11 +37,20 @@ class ApiProvider with ChangeNotifier {
     return configs;
   }
 
+  List<String> get availableGroups {
+    final groups = _apiConfigs
+        .where((c) => c.group != null && c.group!.isNotEmpty)
+        .map((c) => c.group!)
+        .toSet()
+        .toList();
+    groups.sort();
+    return groups;
+  }
+
   Future<void> loadApiConfigs() async {
     try {
       _apiConfigs = await _databaseService.getAllApiConfigs();
       _error = null;
-      debugPrint('加载了 ${_apiConfigs.length} 个API配置');
     } catch (e) {
       debugPrint('loadApiConfigs 错误: $e');
       _error = '加载失败: $e';
@@ -45,16 +61,11 @@ class ApiProvider with ChangeNotifier {
   Future<void> addApiConfig(ApiConfig api) async {
     try {
       await _databaseService.insertApiConfig(api);
-      
-      // 验证写入是否成功
       final saved = await _databaseService.getApiConfig(api.id);
       if (saved != null) {
-        debugPrint('保存验证成功: ${saved.name} (id=${saved.id})');
-        // 重新从数据库加载，确保数据一致
         _apiConfigs = await _databaseService.getAllApiConfigs();
         _error = null;
       } else {
-        debugPrint('保存验证失败: 记录未找到');
         _error = '保存失败：数据未写入';
       }
       notifyListeners();
@@ -104,6 +115,11 @@ class ApiProvider with ChangeNotifier {
 
   void setSearchQuery(String query) {
     _searchQuery = query;
+    notifyListeners();
+  }
+
+  void toggleFavoritesOnly() {
+    _showFavoritesOnly = !_showFavoritesOnly;
     notifyListeners();
   }
 

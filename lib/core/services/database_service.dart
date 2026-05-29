@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as path;
 import 'package:flutter/foundation.dart';
@@ -54,7 +55,7 @@ class DatabaseService {
         api_config_id TEXT NOT NULL,
         model TEXT NOT NULL,
         endpoint TEXT NOT NULL,
-        request_body TEXT NOT NULL,
+        request_body TEXT NOT NULL DEFAULT '{}',
         response_body TEXT,
         status_code INTEGER,
         duration INTEGER,
@@ -139,7 +140,7 @@ class DatabaseService {
         try {
           results.add(_mapToApiConfig(map));
         } catch (e) {
-          debugPrint('跳过损坏的记录 id=${map['id']}: $e');
+          debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
         }
       }
       return results;
@@ -172,11 +173,8 @@ class DatabaseService {
 
   Future<void> deleteApiConfig(String id) async {
     final db = await database;
-    await db.delete(
-      'api_configs',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    await db.delete('api_configs', where: 'id = ?', whereArgs: [id]);
+    await db.delete('request_history', where: 'api_config_id = ?', whereArgs: [id]);
   }
 
   ApiConfig _mapToApiConfig(Map<String, dynamic> map) {
@@ -211,62 +209,42 @@ class DatabaseService {
   // ==================== Group operations ====================
   Future<void> insertGroup(Group group) async {
     final db = await database;
-    await db.insert(
-      'groups',
-      {
-        'id': group.id,
-        'name': group.name,
-        'description': group.description,
-        'color': group.color,
-        'sort_order': group.sortOrder,
-        'created_at': group.createdAt.toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('groups', {
+      'id': group.id,
+      'name': group.name,
+      'description': group.description,
+      'color': group.color,
+      'sort_order': group.sortOrder,
+      'created_at': group.createdAt.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<Group?> getGroup(String id) async {
     final db = await database;
-    final maps = await db.query(
-      'groups',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-
+    final maps = await db.query('groups', where: 'id = ?', whereArgs: [id]);
     if (maps.isEmpty) return null;
-
     return _mapToGroup(maps.first);
   }
 
   Future<List<Group>> getAllGroups() async {
     final db = await database;
     final maps = await db.query('groups', orderBy: 'sort_order ASC');
-
     return maps.map((map) => _mapToGroup(map)).toList();
   }
 
   Future<void> updateGroup(Group group) async {
     final db = await database;
-    await db.update(
-      'groups',
-      {
-        'name': group.name,
-        'description': group.description,
-        'color': group.color,
-        'sort_order': group.sortOrder,
-      },
-      where: 'id = ?',
-      whereArgs: [group.id],
-    );
+    await db.update('groups', {
+      'name': group.name,
+      'description': group.description,
+      'color': group.color,
+      'sort_order': group.sortOrder,
+    }, where: 'id = ?', whereArgs: [group.id]);
   }
 
   Future<void> deleteGroup(String id) async {
     final db = await database;
-    await db.delete(
-      'groups',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    await db.delete('groups', where: 'id = ?', whereArgs: [id]);
   }
 
   Group _mapToGroup(Map<String, dynamic> map) {
@@ -283,53 +261,78 @@ class DatabaseService {
   // ==================== Request History operations ====================
   Future<void> insertRequestHistory(RequestHistory history) async {
     final db = await database;
-    await db.insert(
-      'request_history',
-      {
-        'id': history.id,
-        'api_config_id': history.apiConfigId,
-        'model': history.model,
-        'endpoint': history.endpoint,
-        'request_body': history.requestBody.toString(),
-        'response_body': history.responseBody?.toString(),
-        'status_code': history.statusCode,
-        'duration': history.duration,
-        'created_at': history.createdAt.toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('request_history', {
+      'id': history.id,
+      'api_config_id': history.apiConfigId,
+      'model': history.model,
+      'endpoint': history.endpoint,
+      'request_body': jsonEncode(history.requestBody),
+      'response_body': history.responseBody != null ? jsonEncode(history.responseBody) : null,
+      'status_code': history.statusCode,
+      'duration': history.duration,
+      'created_at': history.createdAt.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<List<RequestHistory>> getRequestHistory({String? apiConfigId, int limit = 50}) async {
-    final db = await database;
-    final maps = await db.query(
-      'request_history',
-      where: apiConfigId != null ? 'api_config_id = ?' : null,
-      whereArgs: apiConfigId != null ? [apiConfigId] : null,
-      orderBy: 'created_at DESC',
-      limit: limit,
-    );
+    try {
+      final db = await database;
+      final maps = await db.query(
+        'request_history',
+        where: apiConfigId != null ? 'api_config_id = ?' : null,
+        whereArgs: apiConfigId != null ? [apiConfigId] : null,
+        orderBy: 'created_at DESC',
+        limit: limit,
+      );
 
-    return maps.map((map) => RequestHistory(
+      final List<RequestHistory> results = [];
+      for (final map in maps) {
+        try {
+          results.add(_mapToRequestHistory(map));
+        } catch (e) {
+          debugPrint('跳过损坏的历史记录: $e');
+        }
+      }
+      return results;
+    } catch (e) {
+      debugPrint('getRequestHistory 错误: $e');
+      return [];
+    }
+  }
+
+  RequestHistory _mapToRequestHistory(Map<String, dynamic> map) {
+    Map<String, dynamic> requestBody = {};
+    try {
+      final bodyStr = map['request_body'] as String? ?? '{}';
+      requestBody = jsonDecode(bodyStr) as Map<String, dynamic>;
+    } catch (_) {}
+
+    Map<String, dynamic>? responseBody;
+    try {
+      final respStr = map['response_body'] as String?;
+      if (respStr != null && respStr.isNotEmpty) {
+        responseBody = jsonDecode(respStr) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+
+    final createdAtStr = map['created_at'] as String?;
+
+    return RequestHistory(
       id: map['id'] as String,
       apiConfigId: map['api_config_id'] as String,
       model: map['model'] as String,
       endpoint: map['endpoint'] as String,
-      requestBody: {},
-      responseBody: map['response_body'] != null ? {} : null,
+      requestBody: requestBody,
+      responseBody: responseBody,
       statusCode: map['status_code'] as int?,
       duration: map['duration'] as int?,
-      createdAt: DateTime.parse(map['created_at'] as String),
-    )).toList();
+      createdAt: createdAtStr != null ? DateTime.tryParse(createdAtStr) ?? DateTime.now() : DateTime.now(),
+    );
   }
 
   Future<void> deleteRequestHistory(String id) async {
     final db = await database;
-    await db.delete(
-      'request_history',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    await db.delete('request_history', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<void> clearRequestHistory() async {
