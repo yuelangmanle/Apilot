@@ -60,7 +60,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                   context.read<ApiProvider>().setSearchQuery(value);
                 },
               )
-            : const Text('API管理器'),
+            : const Text('Apilot'),
         actions: [
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search),

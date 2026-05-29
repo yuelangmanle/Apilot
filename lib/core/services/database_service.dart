@@ -1,5 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as path;
+import 'package:flutter/foundation.dart';
 import '../models/api_config.dart';
 import '../models/group.dart';
 import '../models/request_history.dart';
@@ -36,8 +37,8 @@ class DatabaseService {
         name TEXT NOT NULL,
         base_url TEXT NOT NULL,
         api_key TEXT NOT NULL,
-        models TEXT NOT NULL,
-        environment TEXT NOT NULL,
+        models TEXT NOT NULL DEFAULT '',
+        environment TEXT NOT NULL DEFAULT 'development',
         api_group TEXT,
         tags TEXT,
         is_favorite INTEGER DEFAULT 0,
@@ -79,13 +80,11 @@ class DatabaseService {
   }
 
   Future<void> close() async {
-    // 不再实际关闭数据库，避免其他实例受影响
     if (_refCount > 0) {
       _refCount--;
     }
   }
 
-  // 强制关闭数据库（仅用于测试）
   Future<void> forceClose() async {
     if (_database != null) {
       await _database!.close();
@@ -131,10 +130,23 @@ class DatabaseService {
   }
 
   Future<List<ApiConfig>> getAllApiConfigs() async {
-    final db = await database;
-    final maps = await db.query('api_configs', orderBy: 'name ASC');
+    try {
+      final db = await database;
+      final maps = await db.query('api_configs', orderBy: 'name ASC');
 
-    return maps.map((map) => _mapToApiConfig(map)).toList();
+      final List<ApiConfig> results = [];
+      for (final map in maps) {
+        try {
+          results.add(_mapToApiConfig(map));
+        } catch (e) {
+          debugPrint('跳过损坏的记录 id=${map['id']}: $e');
+        }
+      }
+      return results;
+    } catch (e) {
+      debugPrint('getAllApiConfigs 错误: $e');
+      return [];
+    }
   }
 
   Future<void> updateApiConfig(ApiConfig api) async {
@@ -168,18 +180,31 @@ class DatabaseService {
   }
 
   ApiConfig _mapToApiConfig(Map<String, dynamic> map) {
+    final modelsStr = map['models'] as String? ?? '';
+    final models = modelsStr.isEmpty
+        ? <String>[]
+        : modelsStr.split(',').where((e) => e.trim().isNotEmpty).toList();
+
+    final tagsStr = map['tags'] as String? ?? '';
+    final tags = tagsStr.isEmpty
+        ? <String>[]
+        : tagsStr.split(',').where((e) => e.trim().isNotEmpty).toList();
+
+    final createdAtStr = map['created_at'] as String?;
+    final updatedAtStr = map['updated_at'] as String?;
+
     return ApiConfig(
       id: map['id'] as String,
-      name: map['name'] as String,
-      baseUrl: map['base_url'] as String,
-      apiKey: map['api_key'] as String,
-      models: (map['models'] as String).split(','),
-      environment: map['environment'] as String,
+      name: map['name'] as String? ?? '',
+      baseUrl: map['base_url'] as String? ?? '',
+      apiKey: map['api_key'] as String? ?? '',
+      models: models,
+      environment: map['environment'] as String? ?? 'development',
       group: map['api_group'] as String?,
-      tags: (map['tags'] as String?)?.split(',') ?? [],
-      isFavorite: (map['is_favorite'] as int) == 1,
-      createdAt: DateTime.parse(map['created_at'] as String),
-      updatedAt: DateTime.parse(map['updated_at'] as String),
+      tags: tags,
+      isFavorite: (map['is_favorite'] as int?) == 1,
+      createdAt: createdAtStr != null ? DateTime.tryParse(createdAtStr) ?? DateTime.now() : DateTime.now(),
+      updatedAt: updatedAtStr != null ? DateTime.tryParse(updatedAtStr) ?? DateTime.now() : DateTime.now(),
     );
   }
 
