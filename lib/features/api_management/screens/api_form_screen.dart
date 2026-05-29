@@ -9,8 +9,9 @@ import '../providers/api_provider.dart';
 
 class ApiFormScreen extends StatefulWidget {
   final ApiConfig? apiConfig;
+  final bool isEditing;
 
-  const ApiFormScreen({super.key, this.apiConfig});
+  const ApiFormScreen({super.key, this.apiConfig, this.isEditing = false});
 
   @override
   State<ApiFormScreen> createState() => _ApiFormScreenState();
@@ -29,6 +30,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   bool _isLoading = false;
   bool _isFetchingModels = false;
   bool _isValidating = false;
+  bool _obscureApiKey = true;
   String _validationStatus = '';
 
   @override
@@ -60,13 +62,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isEditing = widget.apiConfig != null;
-
     return Scaffold(
       appBar: AppBar(
-        title: Text(isEditing ? '编辑API' : '添加API'),
+        title: Text(widget.isEditing ? '编辑API' : '添加API'),
         actions: [
-          if (isEditing)
+          if (widget.isEditing)
             IconButton(
               icon: const Icon(Icons.delete),
               onPressed: _deleteApi,
@@ -91,7 +91,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                         prefixIcon: Icon(Icons.label),
                       ),
                       validator: (value) {
-                        if (value == null || value.isEmpty) {
+                        if (value == null || value.trim().isEmpty) {
                           return '请输入API名称';
                         }
                         return null;
@@ -107,10 +107,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                         prefixIcon: Icon(Icons.link),
                       ),
                       validator: (value) {
-                        if (value == null || value.isEmpty) {
+                        if (value == null || value.trim().isEmpty) {
                           return '请输入API地址';
                         }
-                        if (!value.startsWith('http://') && !value.startsWith('https://')) {
+                        final trimmed = value.trim();
+                        if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
                           return '请输入有效的URL';
                         }
                         return null;
@@ -119,143 +120,124 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _apiKeyController,
+                      obscureText: _obscureApiKey,
                       decoration: InputDecoration(
                         labelText: 'API Key *',
                         hintText: '输入你的API密钥',
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.key),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.copy, size: 20),
-                          onPressed: () {
-                            if (_apiKeyController.text.isNotEmpty) {
-                              Clipboard.setData(ClipboardData(text: _apiKeyController.text));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('已复制 API Key'), duration: Duration(seconds: 1)),
-                              );
-                            }
-                          },
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                _obscureApiKey ? Icons.visibility_off : Icons.visibility,
+                                size: 20,
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _obscureApiKey = !_obscureApiKey;
+                                });
+                              },
+                              tooltip: _obscureApiKey ? '显示' : '隐藏',
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.copy, size: 20),
+                              onPressed: () {
+                                if (_apiKeyController.text.isNotEmpty) {
+                                  Clipboard.setData(ClipboardData(text: _apiKeyController.text));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('API Key已复制'),
+                                      duration: Duration(seconds: 1),
+                                    ),
+                                  );
+                                }
+                              },
+                              tooltip: '复制',
+                            ),
+                          ],
                         ),
                       ),
-                      obscureText: true,
                       validator: (value) {
-                        if (value == null || value.isEmpty) {
+                        if (value == null || value.trim().isEmpty) {
                           return '请输入API Key';
                         }
                         return null;
                       },
                     ),
                     const SizedBox(height: 16),
-                    // 验证API按钮
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: _isValidating ? null : _validateApi,
-                        icon: _isValidating 
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.verified, size: 18),
-                        label: Text(_isValidating ? '验证中...' : '验证API'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                      ),
-                    ),
-                    if (_validationStatus.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
-                            ? AppColors.success.withOpacity(0.1)
-                            : AppColors.error.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
-                              ? AppColors.success
-                              : AppColors.error,
-                          ),
-                        ),
-                        child: Row(
+                    TextFormField(
+                      controller: _modelsController,
+                      decoration: InputDecoration(
+                        labelText: '模型列表',
+                        hintText: '用逗号分隔，或点击获取',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.smart_toy),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              _validationStatus.contains('有效') || _validationStatus.contains('成功')
-                                ? Icons.check_circle
-                                : Icons.error,
-                              color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
-                                ? AppColors.success
-                                : AppColors.error,
-                              size: 20,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _validationStatus,
-                                style: TextStyle(
-                                  color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
-                                    ? AppColors.success
-                                    : AppColors.error,
-                                ),
-                              ),
+                            IconButton(
+                              icon: _isFetchingModels
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.download, size: 20),
+                              onPressed: _isFetchingModels ? null : _fetchModels,
+                              tooltip: '获取可用模型',
                             ),
                           ],
                         ),
                       ),
-                    ],
-                    const SizedBox(height: 16),
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 8),
+                    if (_validationStatus.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          _validationStatus,
+                          style: TextStyle(
+                            color: _validationStatus.contains('成功') || _validationStatus.contains('有效')
+                                ? AppColors.success
+                                : AppColors.error,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
                     Row(
                       children: [
                         Expanded(
-                          child: TextFormField(
-                            controller: _modelsController,
-                            decoration: const InputDecoration(
-                              labelText: '模型列表',
-                              hintText: '用逗号分隔，或点击获取',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.smart_toy),
-                            ),
+                          child: OutlinedButton.icon(
+                            onPressed: _isValidating ? null : _validateApi,
+                            icon: _isValidating
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.check_circle_outline),
+                            label: const Text('验证API'),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          height: 56,
-                          child: ElevatedButton.icon(
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
                             onPressed: _isFetchingModels ? null : _fetchModels,
-                            icon: _isFetchingModels 
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                              : const Icon(Icons.refresh, size: 18),
-                            label: const Text('获取'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.secondary,
-                              foregroundColor: Colors.white,
-                            ),
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('获取模型'),
                           ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 16),
-                    DropdownButtonFormField<String>(
-                      value: _environment,
-                      decoration: const InputDecoration(
-                        labelText: '环境',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.cloud),
-                      ),
-                      items: const [
-                        DropdownMenuItem(value: 'development', child: Text('开发环境')),
-                        DropdownMenuItem(value: 'staging', child: Text('测试环境')),
-                        DropdownMenuItem(value: 'production', child: Text('生产环境')),
-                      ],
-                      onChanged: (value) {
-                        setState(() {
-                          _environment = value!;
-                        });
-                      },
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _groupController,
                       decoration: const InputDecoration(
                         labelText: '分组',
-                        hintText: '例如：LLM、TTS',
+                        hintText: '例如：LLM、TTS、多模态',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.folder),
                       ),
@@ -271,9 +253,30 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      value: _environment,
+                      decoration: const InputDecoration(
+                        labelText: '环境',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.cloud),
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 'development', child: Text('开发')),
+                        DropdownMenuItem(value: 'staging', child: Text('测试')),
+                        DropdownMenuItem(value: 'production', child: Text('生产')),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            _environment = value;
+                          });
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 16),
                     SwitchListTile(
                       title: const Text('收藏'),
-                      subtitle: const Text('添加到收藏夹快速访问'),
+                      subtitle: const Text('添加到收藏列表'),
                       value: _isFavorite,
                       onChanged: (value) {
                         setState(() {
@@ -286,15 +289,14 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       ),
                     ),
                     const SizedBox(height: 24),
-                    ElevatedButton.icon(
+                    ElevatedButton(
                       onPressed: _saveApi,
-                      icon: const Icon(Icons.save),
-                      label: Text(isEditing ? '保存修改' : '添加API'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
+                      child: Text(widget.isEditing ? '保存修改' : '添加API'),
                     ),
                   ],
                 ),
@@ -304,7 +306,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   }
 
   Future<void> _validateApi() async {
-    if (_baseUrlController.text.isEmpty || _apiKeyController.text.isEmpty) {
+    if (_baseUrlController.text.trim().isEmpty || _apiKeyController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请先填写 API 地址和 API Key'),
@@ -331,13 +333,12 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       );
 
       final result = await apiService.validateApi(apiConfig);
-      
+
       if (mounted) {
         setState(() {
           _isValidating = false;
-          _validationStatus = result['message'] ?? '验证完成';
-          
-          // 如果验证成功且有模型，自动填充
+          _validationStatus = result['message'] as String? ?? '验证完成';
+
           if (result['valid'] == true && result['models'] != null) {
             final models = result['models'] as List<String>;
             if (models.isNotEmpty) {
@@ -357,7 +358,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   }
 
   Future<void> _fetchModels() async {
-    if (_baseUrlController.text.isEmpty || _apiKeyController.text.isEmpty) {
+    if (_baseUrlController.text.trim().isEmpty || _apiKeyController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请先填写 API 地址和 API Key'),
@@ -383,7 +384,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       );
 
       final models = await apiService.getAvailableModels(apiConfig);
-      
+
       if (mounted) {
         setState(() {
           _isFetchingModels = false;
@@ -431,7 +432,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
 
     try {
       final provider = context.read<ApiProvider>();
-      
+
       final models = _modelsController.text
           .split(',')
           .map((e) => e.trim())
@@ -445,7 +446,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
           .toList();
 
       final api = ApiConfig(
-        id: widget.apiConfig?.id ?? const Uuid().v4(),
+        id: widget.isEditing ? widget.apiConfig!.id : const Uuid().v4(),
         name: _nameController.text.trim(),
         baseUrl: _baseUrlController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
@@ -454,10 +455,10 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         group: _groupController.text.trim().isNotEmpty ? _groupController.text.trim() : null,
         tags: tags,
         isFavorite: _isFavorite,
-        createdAt: widget.apiConfig?.createdAt,
+        createdAt: widget.isEditing ? widget.apiConfig!.createdAt : null,
       );
 
-      if (widget.apiConfig != null) {
+      if (widget.isEditing) {
         await provider.updateApiConfig(api);
       } else {
         await provider.addApiConfig(api);
@@ -466,7 +467,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(widget.apiConfig != null ? 'API已更新' : 'API已添加'),
+            content: Text(widget.isEditing ? 'API已更新' : 'API已添加'),
             backgroundColor: AppColors.success,
           ),
         );

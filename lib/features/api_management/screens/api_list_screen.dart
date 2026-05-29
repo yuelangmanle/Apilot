@@ -335,7 +335,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
     final provider = context.read<ApiProvider>();
     final result = await navigator.push<bool>(
       MaterialPageRoute(
-        builder: (context) => ApiFormScreen(apiConfig: apiConfig),
+        builder: (context) => ApiFormScreen(apiConfig: apiConfig, isEditing: true),
       ),
     );
     if (result == true && mounted) {

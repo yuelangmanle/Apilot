@@ -36,7 +36,7 @@ class ApiDetailScreen extends StatelessWidget {
               final result = await Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => ApiFormScreen(apiConfig: apiConfig),
+                  builder: (context) => ApiFormScreen(apiConfig: apiConfig, isEditing: true),
                 ),
               );
               if (result == true && context.mounted) {

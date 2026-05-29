@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../../core/models/api_config.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -24,11 +25,13 @@ class _RequestFormState extends State<RequestForm> {
   @override
   void initState() {
     super.initState();
-    _selectedModel = widget.apiConfig.models.first;
+    if (widget.apiConfig.models.isNotEmpty) {
+      _selectedModel = widget.apiConfig.models.first;
+    }
     _endpointController.text = '/v1/chat/completions';
     _bodyController.text = '''
 {
-  "model": "$_selectedModel",
+  "model": "${_selectedModel ?? ''}",
   "messages": [
     {
       "role": "user",
@@ -41,63 +44,100 @@ class _RequestFormState extends State<RequestForm> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        DropdownButtonFormField<String>(
-          initialValue: _selectedModel,
-          decoration: const InputDecoration(
-            labelText: '模型',
-            border: OutlineInputBorder(),
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (widget.apiConfig.models.isNotEmpty)
+            DropdownButtonFormField<String>(
+              value: _selectedModel,
+              decoration: const InputDecoration(
+                labelText: '模型',
+                border: OutlineInputBorder(),
+              ),
+              items: widget.apiConfig.models.map((model) {
+                return DropdownMenuItem(
+                  value: model,
+                  child: Text(model, overflow: TextOverflow.ellipsis),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  _selectedModel = value;
+                });
+              },
+            )
+          else
+            TextFormField(
+              decoration: const InputDecoration(
+                labelText: '模型名称',
+                hintText: '输入模型名称',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) {
+                _selectedModel = value;
+              },
+            ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _endpointController,
+            decoration: const InputDecoration(
+              labelText: '端点',
+              border: OutlineInputBorder(),
+            ),
           ),
-          items: widget.apiConfig.models.map((model) {
-            return DropdownMenuItem(
-              value: model,
-              child: Text(model),
-            );
-          }).toList(),
-          onChanged: (value) {
-            setState(() {
-              _selectedModel = value;
-            });
-          },
-        ),
-        const SizedBox(height: 16),
-        TextFormField(
-          controller: _endpointController,
-          decoration: const InputDecoration(
-            labelText: '端点',
-            border: OutlineInputBorder(),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _bodyController,
+            decoration: const InputDecoration(
+              labelText: '请求体 (JSON)',
+              border: OutlineInputBorder(),
+              alignLabelWithHint: true,
+            ),
+            maxLines: 10,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
           ),
-        ),
-        const SizedBox(height: 16),
-        TextFormField(
-          controller: _bodyController,
-          decoration: const InputDecoration(
-            labelText: '请求体 (JSON)',
-            border: OutlineInputBorder(),
-          ),
-          maxLines: 10,
-        ),
-        const SizedBox(height: 16),
-        ElevatedButton(
-          onPressed: () {
-            if (_selectedModel != null) {
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () {
+              if (_selectedModel == null || _selectedModel!.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('请选择或输入模型'),
+                    backgroundColor: AppColors.warning,
+                  ),
+                );
+                return;
+              }
+
+              Map<String, dynamic> body = {};
+              try {
+                body = jsonDecode(_bodyController.text) as Map<String, dynamic>;
+              } catch (e) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('JSON格式错误: $e'),
+                    backgroundColor: AppColors.error,
+                  ),
+                );
+                return;
+              }
+
               widget.onSubmit(
                 _selectedModel!,
                 _endpointController.text,
-                {},
+                body,
               );
-            }
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.primary,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+            child: const Text('发送请求'),
           ),
-          child: const Text('发送请求'),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
