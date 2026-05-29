@@ -92,10 +92,10 @@ class ApiCard extends StatelessWidget {
                 _buildCopyableRow(context, api.baseUrl, Icons.link, secondaryColor, 'URL已复制'),
                 if (api.models.isNotEmpty) ...[
                   const SizedBox(height: 4),
-                  _buildCopyableRow(context, '模型: ${api.models.join(', ')}', Icons.smart_toy, secondaryColor, '模型列表已复制'),
+                  _buildCopyableRow(context, '模型: ${api.models.join(', ')}', Icons.smart_toy, secondaryColor, '模型列表已复制', copyText: api.models.join(', ')),
                 ],
                 const SizedBox(height: 4),
-                _buildCopyableRow(context, 'Key: ${_maskApiKey(api.apiKey)}', Icons.key, secondaryColor, 'API Key已复制'),
+                _buildCopyableRow(context, 'Key: ${_maskApiKey(api.apiKey)}', Icons.key, secondaryColor, 'API Key已复制', copyText: api.apiKey),
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -122,7 +122,7 @@ class ApiCard extends StatelessWidget {
     );
   }
 
-  Widget _buildCopyableRow(BuildContext context, String text, IconData icon, Color color, String snackMsg) {
+  Widget _buildCopyableRow(BuildContext context, String text, IconData icon, Color color, String snackMsg, {String? copyText}) {
     return Row(
       children: [
         Icon(icon, size: 14, color: color),
@@ -130,7 +130,7 @@ class ApiCard extends StatelessWidget {
         Expanded(child: Text(text, style: TextStyle(fontSize: 13, color: color), maxLines: 1, overflow: TextOverflow.ellipsis)),
         InkWell(
           onTap: () {
-            Clipboard.setData(ClipboardData(text: text));
+            Clipboard.setData(ClipboardData(text: copyText ?? text));
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snackMsg), duration: const Duration(seconds: 1)));
           },
           borderRadius: BorderRadius.circular(4),

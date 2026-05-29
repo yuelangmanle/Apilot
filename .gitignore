@@ -45,3 +45,9 @@ app.*.map.json
 /android/app/release
 release-key.jks
 android/key.properties
+
+# Build artifacts
+dmg_staging/
+build/
+*.apk
+*.dmg

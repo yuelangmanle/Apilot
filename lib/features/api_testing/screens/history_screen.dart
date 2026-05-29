@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/models/request_history.dart';
+import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/history_provider.dart';
@@ -111,10 +112,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
           final filtered = _searchQuery.isEmpty
               ? provider.history
-              : provider.history.where((h) =>
-                  h.endpoint.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-                  h.model.toLowerCase().contains(_searchQuery.toLowerCase())
-                ).toList();
+              : provider.history.where((h) {
+                  final q = _searchQuery.toLowerCase();
+                  return h.endpoint.toLowerCase().contains(q) ||
+                      h.model.toLowerCase().contains(q) ||
+                      h.requestBody.toString().toLowerCase().contains(q) ||
+                      (h.responseBody?.toString().toLowerCase().contains(q) ?? false);
+                }).toList();
           final content = ListView.builder(
             itemCount: filtered.length,
             itemBuilder: (context, index) {
@@ -155,9 +159,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Text(
-          '${item.model} • ${_formatDate(item.createdAt)}',
-          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        subtitle: FutureBuilder<String>(
+          future: _getApiName(item.apiConfigId),
+          builder: (context, snapshot) {
+            final apiName = snapshot.data ?? '';
+            final prefix = apiName.isNotEmpty ? '$apiName · ' : '';
+            return Text(
+              '${prefix}${item.model} · ${_formatDate(item.createdAt)}',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            );
+          },
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -215,6 +226,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ],
       ),
     );
+  }
+
+  Future<String> _getApiName(String apiConfigId) async {
+    try {
+      final db = DatabaseService();
+      await db.initialize();
+      final config = await db.getApiConfig(apiConfigId);
+      await db.close();
+      return config?.name ?? '';
+    } catch (_) {
+      return '';
+    }
   }
 
   void _showHistoryDetail(BuildContext context, RequestHistory item) {

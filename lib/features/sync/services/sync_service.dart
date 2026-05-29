@@ -135,20 +135,25 @@ class SyncService {
     }
   }
 
-  void _handleDiscoveryMessage(Datagram datagram) {
+  String? _localIPCache;
+
+  Future<String> _getCachedLocalIP() async {
+    _localIPCache ??= await _getLocalIP();
+    return _localIPCache!;
+  }
+
+  void _handleDiscoveryMessage(Datagram datagram) async {
     try {
       final message = jsonDecode(String.fromCharCodes(datagram.data));
       if (message['header'] != _magicHeader) return;
 
       final device = DeviceInfo.fromJson(message['device'] as Map<String, dynamic>);
 
-      // 不添加自己
+      // 不添加自己 - 异步检查本机IP
       final localIP = _discoverySocket?.address.address;
       if (device.ipAddress == localIP) return;
-      // 也检查本机实际IP
-      _getLocalIP().then((myIP) {
-        if (device.ipAddress == myIP) return;
-      });
+      final myIP = await _getCachedLocalIP();
+      if (device.ipAddress == myIP) return;
 
       final index = _devices.indexWhere((d) => d.id == device.id);
       if (index >= 0) {

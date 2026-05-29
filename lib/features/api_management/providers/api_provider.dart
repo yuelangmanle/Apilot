@@ -6,15 +6,21 @@ class ApiProvider with ChangeNotifier {
   final DatabaseService _databaseService;
   List<ApiConfig> _apiConfigs = [];
   String? _selectedGroup;
+  String? _selectedEnvironment;
+  String? _selectedTag;
   String _searchQuery = '';
   String? _error;
   bool _showFavoritesOnly = false;
+  String _sortBy = 'name'; // name, created, updated
 
   ApiProvider(this._databaseService);
 
   String? get error => _error;
   bool get showFavoritesOnly => _showFavoritesOnly;
   String? get selectedGroup => _selectedGroup;
+  String? get selectedEnvironment => _selectedEnvironment;
+  String? get selectedTag => _selectedTag;
+  String get sortBy => _sortBy;
 
   List<ApiConfig> get apiConfigs {
     var configs = _apiConfigs;
@@ -27,11 +33,34 @@ class ApiProvider with ChangeNotifier {
       configs = configs.where((c) => c.group == _selectedGroup).toList();
     }
 
+    if (_selectedEnvironment != null) {
+      configs = configs.where((c) => c.environment == _selectedEnvironment).toList();
+    }
+
+    if (_selectedTag != null) {
+      configs = configs.where((c) => c.tags.contains(_selectedTag)).toList();
+    }
+
     if (_searchQuery.isNotEmpty) {
       configs = configs.where((c) =>
         c.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-        c.baseUrl.toLowerCase().contains(_searchQuery.toLowerCase())
+        c.baseUrl.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+        c.apiKey.toLowerCase().contains(_searchQuery.toLowerCase())
       ).toList();
+    }
+
+    // 排序
+    switch (_sortBy) {
+      case 'created':
+        configs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        break;
+      case 'updated':
+        configs.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+        break;
+      case 'name':
+      default:
+        configs.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        break;
     }
 
     return configs;
@@ -45,6 +74,18 @@ class ApiProvider with ChangeNotifier {
         .toList();
     groups.sort();
     return groups;
+  }
+
+  List<String> get availableEnvironments {
+    return _apiConfigs.map((c) => c.environment).toSet().toList()..sort();
+  }
+
+  List<String> get availableTags {
+    final tags = <String>{};
+    for (final c in _apiConfigs) {
+      tags.addAll(c.tags);
+    }
+    return tags.toList()..sort();
   }
 
   Future<void> loadApiConfigs() async {
@@ -110,6 +151,30 @@ class ApiProvider with ChangeNotifier {
 
   void setSelectedGroup(String? group) {
     _selectedGroup = group;
+    notifyListeners();
+  }
+
+  void setSelectedEnvironment(String? env) {
+    _selectedEnvironment = env;
+    notifyListeners();
+  }
+
+  void setSelectedTag(String? tag) {
+    _selectedTag = tag;
+    notifyListeners();
+  }
+
+  void setSortBy(String sortBy) {
+    _sortBy = sortBy;
+    notifyListeners();
+  }
+
+  void clearAllFilters() {
+    _selectedGroup = null;
+    _selectedEnvironment = null;
+    _selectedTag = null;
+    _showFavoritesOnly = false;
+    _searchQuery = '';
     notifyListeners();
   }
 

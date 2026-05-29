@@ -14,9 +14,12 @@ class DatabaseService {
   DatabaseService({String? dbPath}) : _customDbPath = dbPath;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    if (_database != null) {
+      _refCount++;
+      return _database!;
+    }
     _database = await _initializeDatabase();
-    _refCount++;
+    _refCount = 1;
     return _database!;
   }
 
@@ -83,6 +86,10 @@ class DatabaseService {
   Future<void> close() async {
     if (_refCount > 0) {
       _refCount--;
+    }
+    if (_refCount == 0 && _database != null) {
+      await _database!.close();
+      _database = null;
     }
   }
 

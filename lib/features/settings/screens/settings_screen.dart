@@ -52,15 +52,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.upload_file),
-                title: const Text('导出配置'),
-                subtitle: const Text('将API配置导出为JSON文件'),
+                title: const Text('备份数据'),
+                subtitle: const Text('将所有API配置备份为JSON文件'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _exportConfigs(context),
               ),
               ListTile(
                 leading: const Icon(Icons.download),
-                title: const Text('导入配置'),
-                subtitle: const Text('从JSON文件导入API配置'),
+                title: const Text('恢复数据'),
+                subtitle: const Text('从备份文件恢复API配置'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _importConfigs(context),
               ),
@@ -133,10 +133,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               SwitchListTile(
                 title: const Text('蓝牙同步'),
-                subtitle: const Text('允许通过蓝牙同步数据'),
-                value: settings.bluetoothSync,
-                onChanged: (_) => settings.toggleBluetoothSync(),
-                secondary: const Icon(Icons.bluetooth),
+                subtitle: const Text('即将推出，敬请期待'),
+                value: false,
+                onChanged: (_) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('蓝牙同步功能开发中，敬请期待'), duration: Duration(seconds: 2)),
+                  );
+                },
+                secondary: const Icon(Icons.bluetooth_disabled),
               ),
             ],
           ),
@@ -363,7 +367,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final importExportService = ImportExportService();
       final json = await importExportService.exportConfigs(configs, []);
       final timestamp = DateTime.now().toString().substring(0, 19).replaceAll(':', '-').replaceAll(' ', '_');
-      await importExportService.saveToFile(json, 'apilot_export_\$timestamp.json');
+      await importExportService.saveToFile(json, 'apilot_export_$timestamp.json');
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -387,32 +391,80 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _importConfigs(BuildContext context) async {
     try {
+      // Show dialog with two options: paste JSON or load from file
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('恢复数据'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.content_paste, color: AppColors.primary),
+                title: const Text('粘贴JSON'),
+                subtitle: const Text('从剪贴板粘贴配置数据'),
+                onTap: () => Navigator.pop(context, 'paste'),
+                contentPadding: EdgeInsets.zero,
+              ),
+              ListTile(
+                leading: const Icon(Icons.folder_open, color: AppColors.secondary),
+                title: const Text('从备份文件加载'),
+                subtitle: const Text('从默认备份目录读取'),
+                onTap: () => Navigator.pop(context, 'file'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          ],
+        ),
+      );
+
+      if (choice == null) return;
+
+      String jsonString;
+
+      if (choice == 'paste') {
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        jsonString = data?.text?.trim() ?? '';
+        if (jsonString.isEmpty) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('剪贴板为空'), backgroundColor: AppColors.warning),
+            );
+          }
+          return;
+        }
+      } else {
+        final importExportService = ImportExportService();
+        final directory = await importExportService.getDefaultExportDirectory();
+        final filePath = '\$directory/api_configs_export.json';
+        jsonString = await importExportService.loadFromFile(filePath);
+      }
+
       final importExportService = ImportExportService();
       final databaseService = DatabaseService();
       await databaseService.initialize();
 
-      final directory = await importExportService.getDefaultExportDirectory();
-      final filePath = '$directory/api_configs_export.json';
-      
-      final jsonString = await importExportService.loadFromFile(filePath);
       final result = await importExportService.importConfigs(jsonString);
-      
       final configs = result['apiConfigs'] as List<dynamic>;
-      
+
+      int importCount = 0;
       for (final config in configs) {
         if (config is ApiConfig) {
           await databaseService.insertApiConfig(config);
+          importCount++;
         }
       }
-      
+
       await databaseService.close();
-      
+
       if (context.mounted) {
         context.read<ApiProvider>().loadApiConfigs();
-        
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('成功导入 ${configs.length} 个API配置'),
+            content: Text('成功导入 \$importCount 个API配置'),
             backgroundColor: AppColors.success,
           ),
         );
@@ -421,7 +473,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('导入失败: $e'),
+            content: Text('导入失败: \$e'),
             backgroundColor: AppColors.error,
           ),
         );

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/models/api_config.dart';
+import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
@@ -349,6 +350,18 @@ class ApiDetailScreen extends StatelessWidget {
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
+            onPressed: () => _refreshModels(context),
+            icon: const Icon(Icons.refresh),
+            label: const Text('刷新模型列表'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
             onPressed: () {
               final configText = '''
 API名称: ${apiConfig.name}
@@ -376,6 +389,35 @@ API Key: ${apiConfig.apiKey}
         ),
       ],
     );
+  }
+
+  Future<void> _refreshModels(BuildContext context) async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('正在获取模型列表...'), duration: Duration(seconds: 1)),
+    );
+    try {
+      final apiService = ApiService();
+      final models = await apiService.getAvailableModels(apiConfig);
+      if (models.isNotEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('获取到 ${models.length} 个模型'), backgroundColor: AppColors.success),
+          );
+        }
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未获取到模型，请检查地址和Key'), backgroundColor: AppColors.warning),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('获取失败: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
   }
 
   String _maskApiKey(String apiKey) {

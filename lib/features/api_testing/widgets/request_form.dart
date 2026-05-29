@@ -26,8 +26,14 @@ class _RequestFormState extends State<RequestForm> {
   @override
   void initState() {
     super.initState();
+    _initFromApiConfig();
+  }
+
+  void _initFromApiConfig() {
     if (widget.apiConfig.models.isNotEmpty) {
       _selectedModel = widget.apiConfig.models.first;
+    } else {
+      _selectedModel = null;
     }
     // 智能设置默认端点：如果 base 已有 /v1，端点只写 /chat/completions
     final base = widget.apiConfig.baseUrl;
@@ -47,6 +53,14 @@ class _RequestFormState extends State<RequestForm> {
   ],
   "temperature": 0.7
 }''';
+  }
+
+  @override
+  void didUpdateWidget(RequestForm oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.apiConfig.id != widget.apiConfig.id) {
+      _initFromApiConfig();
+    }
   }
 
   @override

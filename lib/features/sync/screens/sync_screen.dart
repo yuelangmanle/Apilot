@@ -6,6 +6,7 @@ import '../services/sync_service.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import 'qr_scanner_screen.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
 
@@ -98,6 +99,7 @@ class _SyncScreenState extends State<SyncScreen> {
       appBar: AppBar(
         title: const Text('设备同步'),
         actions: [
+          IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _scanQRCode, tooltip: '扫码连接'),
           IconButton(icon: const Icon(Icons.qr_code), onPressed: _showQRCode, tooltip: '我的二维码'),
           IconButton(icon: const Icon(Icons.edit), onPressed: _showManualConnect, tooltip: '手动连接'),
         ],
@@ -202,6 +204,24 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 
   // ========== 二维码 ==========
+
+  void _scanQRCode() async {
+    try {
+      final scannedIP = await Navigator.push<String>(
+        context,
+        MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+      );
+      if (scannedIP != null && scannedIP.isNotEmpty) {
+        _connectByIP(scannedIP);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('扫码失败: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    }
+  }
 
   void _showQRCode() {
     final qrData = '${_localDevice?.ipAddress ?? "unknown"}|${_localDevice?.id ?? ""}|${_localDevice?.name ?? ""}';
