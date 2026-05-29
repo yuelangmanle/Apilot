@@ -10,6 +10,7 @@ import '../../api_management/providers/api_provider.dart';
 import '../../sync/screens/sync_screen.dart';
 import '../../api_management/screens/group_manage_screen.dart';
 import '../providers/settings_provider.dart';
+import '../../../core/models/api_config.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -39,8 +40,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('设置'),
@@ -400,7 +399,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final configs = result['apiConfigs'] as List<dynamic>;
       
       for (final config in configs) {
-        await databaseService.insertApiConfig(config);
+        if (config is ApiConfig) {
+          await databaseService.insertApiConfig(config);
+        }
       }
       
       await databaseService.close();

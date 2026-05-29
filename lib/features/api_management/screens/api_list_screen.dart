@@ -149,7 +149,6 @@ class _ApiListScreenState extends State<ApiListScreen> {
   }
 
   Widget _buildFilterBar(BuildContext context, ApiProvider provider) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final groups = provider.availableGroups;
 
     return Container(

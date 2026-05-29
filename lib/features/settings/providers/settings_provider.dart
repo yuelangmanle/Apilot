@@ -5,7 +5,6 @@ class SettingsProvider with ChangeNotifier {
   bool _isDarkMode = false;
   bool _autoDiscovery = true;
   bool _bluetoothSync = false;
-  bool _initialized = false;
 
   bool get isDarkMode => _isDarkMode;
   bool get autoDiscovery => _autoDiscovery;
@@ -21,7 +20,6 @@ class SettingsProvider with ChangeNotifier {
       _isDarkMode = prefs.getBool('isDarkMode') ?? false;
       _autoDiscovery = prefs.getBool('autoDiscovery') ?? true;
       _bluetoothSync = prefs.getBool('bluetoothSync') ?? false;
-      _initialized = true;
       notifyListeners();
     } catch (e) {
       debugPrint('加载设置失败: $e');

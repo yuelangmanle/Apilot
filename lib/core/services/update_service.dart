@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -24,42 +25,41 @@ class UpdateService {
 
   Future<UpdateInfo?> checkForUpdate() async {
     try {
-      // 获取当前版本
       final packageInfo = await PackageInfo.fromPlatform();
       final currentVersion = packageInfo.version;
 
-      // 获取最新 release
       final response = await http.get(
         Uri.parse(_apiUrl),
         headers: {'Accept': 'application/vnd.github.v3+json'},
       ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode != 200) {
-        return null;
-      }
+      if (response.statusCode != 200) return null;
 
       final data = jsonDecode(response.body);
       final tagName = data['tag_name'] as String? ?? '';
       final latestVersion = tagName.replaceFirst('v', '');
-      
-      // 解析下载链接
+
+      // 根据平台选择下载链接
       String downloadUrl = '';
       final assets = data['assets'] as List? ?? [];
+      final isMacOS = Platform.isMacOS;
+      final targetExt = isMacOS ? '.dmg' : '.apk';
+
       for (final asset in assets) {
         final name = asset['name'] as String? ?? '';
-        if (name.endsWith('.apk')) {
+        if (name.endsWith(targetExt)) {
           downloadUrl = asset['browser_download_url'] as String? ?? '';
           break;
         }
       }
+      // 降级：如果没有对应格式，取第一个
+      if (downloadUrl.isEmpty && assets.isNotEmpty) {
+        downloadUrl = assets.first['browser_download_url'] as String? ?? '';
+      }
 
-      // 解析发布时间
       final publishedAt = DateTime.tryParse(data['published_at'] as String? ?? '') ?? DateTime.now();
-
-      // 解析更新日志
       final body = data['body'] as String? ?? '';
 
-      // 比较版本
       if (_isNewerVersion(latestVersion, currentVersion)) {
         return UpdateInfo(
           version: latestVersion,
@@ -71,7 +71,6 @@ class UpdateService {
 
       return null;
     } catch (e) {
-      print('检查更新失败: $e');
       return null;
     }
   }

@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:permission_handler/permission_handler.dart';
 import '../services/sync_service.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/database_service.dart';
