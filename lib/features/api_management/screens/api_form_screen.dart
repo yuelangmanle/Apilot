@@ -99,7 +99,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       controller: _baseUrlController,
                       decoration: const InputDecoration(
                         labelText: 'API地址 *',
-                        hintText: '例如：https://api.deepseek.com/v1',
+                        hintText: '例如：https://api.deepseek.com',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.link),
                       ),
@@ -108,7 +108,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                           return '请输入API地址';
                         }
                         if (!value.startsWith('http://') && !value.startsWith('https://')) {
-                          return '请输入有效的URL（以http://或https://开头）';
+                          return '请输入有效的URL';
                         }
                         return null;
                       },
@@ -196,7 +196,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       controller: _groupController,
                       decoration: const InputDecoration(
                         labelText: '分组',
-                        hintText: '例如：LLM、TTS、多模态',
+                        hintText: '例如：LLM、TTS',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.folder),
                       ),
@@ -206,7 +206,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       controller: _tagsController,
                       decoration: const InputDecoration(
                         labelText: '标签',
-                        hintText: '用逗号分隔，例如：coding, chat',
+                        hintText: '用逗号分隔',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.tag),
                       ),
@@ -261,10 +261,22 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
 
     try {
       final apiService = ApiService();
+      final baseUrl = _baseUrlController.text.trim();
+      
+      // 构建正确的 models URL
+      String modelsUrl = baseUrl;
+      if (!modelsUrl.endsWith('/models')) {
+        // 移除末尾的斜杠
+        if (modelsUrl.endsWith('/')) {
+          modelsUrl = modelsUrl.substring(0, modelsUrl.length - 1);
+        }
+        modelsUrl = '$modelsUrl/models';
+      }
+      
       final apiConfig = ApiConfig(
         id: 'temp',
         name: 'temp',
-        baseUrl: _baseUrlController.text.trim(),
+        baseUrl: baseUrl,
         apiKey: _apiKeyController.text.trim(),
         models: [],
         environment: _environment,
@@ -286,7 +298,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('未获取到可用模型，请检查 API 地址和 Key'),
+                content: Text('未获取到模型，请检查地址和Key是否正确'),
                 backgroundColor: AppColors.warning,
               ),
             );
@@ -300,7 +312,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('获取模型失败: $e'),
+            content: Text('获取失败: $e'),
             backgroundColor: AppColors.error,
           ),
         );
@@ -355,17 +367,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       await databaseService.close();
 
       if (mounted) {
-        // 先显示成功提示，再返回
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(widget.apiConfig != null ? 'API 已更新成功！' : 'API 已添加成功！'),
-            backgroundColor: AppColors.success,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-        
-        // 延迟返回，让用户看到提示
-        await Future.delayed(const Duration(milliseconds: 500));
+        // 先返回 true，让列表页面刷新
         Navigator.pop(context, true);
       }
     } catch (e) {
@@ -414,13 +416,6 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         await databaseService.close();
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('已删除 ${widget.apiConfig!.name}'),
-              backgroundColor: AppColors.success,
-            ),
-          );
-          await Future.delayed(const Duration(milliseconds: 500));
           Navigator.pop(context, true);
         }
       } catch (e) {
