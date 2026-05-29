@@ -5,16 +5,16 @@ import '../models/group.dart';
 import '../models/request_history.dart';
 
 class DatabaseService {
-  Database? _database;
-  bool _isInitialized = false;
+  static Database? _database;
+  static int _refCount = 0;
   final String? _customDbPath;
 
   DatabaseService({String? dbPath}) : _customDbPath = dbPath;
 
   Future<Database> get database async {
-    if (_database != null && _isInitialized) return _database!;
+    if (_database != null) return _database!;
     _database = await _initializeDatabase();
-    _isInitialized = true;
+    _refCount++;
     return _database!;
   }
 
@@ -79,10 +79,18 @@ class DatabaseService {
   }
 
   Future<void> close() async {
+    // 不再实际关闭数据库，避免其他实例受影响
+    if (_refCount > 0) {
+      _refCount--;
+    }
+  }
+
+  // 强制关闭数据库（仅用于测试）
+  Future<void> forceClose() async {
     if (_database != null) {
       await _database!.close();
       _database = null;
-      _isInitialized = false;
+      _refCount = 0;
     }
   }
 

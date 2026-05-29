@@ -27,7 +27,7 @@ class ApiTemplates {
     ApiConfig(
       id: 'template_deepseek',
       name: 'DeepSeek',
-      baseUrl: 'https://api.deepseek.com',
+      baseUrl: 'https://api.deepseek.com/v1',
       apiKey: '',
       models: [],
       environment: 'production',

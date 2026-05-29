@@ -31,7 +31,8 @@ void main() {
       expect(retrieved, isNotNull);
       expect(retrieved!.name, 'DeepSeek');
       
-      await databaseService.close();
+      await databaseService.deleteApiConfig('test_1');
+      await databaseService.forceClose();
     });
 
     test('should update API config', () async {
@@ -56,7 +57,8 @@ void main() {
       final retrieved = await databaseService.getApiConfig('test_2');
       expect(retrieved!.name, 'DeepSeek Updated');
       
-      await databaseService.close();
+      await databaseService.deleteApiConfig('test_2');
+      await databaseService.forceClose();
     });
 
     test('should delete API config', () async {
@@ -79,7 +81,7 @@ void main() {
       final retrieved = await databaseService.getApiConfig('test_3');
       expect(retrieved, isNull);
       
-      await databaseService.close();
+      await databaseService.forceClose();
     });
 
     test('should get all API configs', () async {
@@ -111,7 +113,9 @@ void main() {
       final allConfigs = await databaseService.getAllApiConfigs();
       expect(allConfigs.length, 2);
       
-      await databaseService.close();
+      await databaseService.deleteApiConfig('test_4');
+      await databaseService.deleteApiConfig('test_5');
+      await databaseService.forceClose();
     });
   });
 }

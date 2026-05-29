@@ -99,7 +99,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       controller: _baseUrlController,
                       decoration: const InputDecoration(
                         labelText: 'API地址 *',
-                        hintText: '例如：https://api.deepseek.com',
+                        hintText: '例如：https://api.deepseek.com/v1',
                         border: OutlineInputBorder(),
                         prefixIcon: Icon(Icons.link),
                       ),
@@ -261,22 +261,10 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
 
     try {
       final apiService = ApiService();
-      final baseUrl = _baseUrlController.text.trim();
-      
-      // 构建正确的 models URL
-      String modelsUrl = baseUrl;
-      if (!modelsUrl.endsWith('/models')) {
-        // 移除末尾的斜杠
-        if (modelsUrl.endsWith('/')) {
-          modelsUrl = modelsUrl.substring(0, modelsUrl.length - 1);
-        }
-        modelsUrl = '$modelsUrl/models';
-      }
-      
       final apiConfig = ApiConfig(
         id: 'temp',
         name: 'temp',
-        baseUrl: baseUrl,
+        baseUrl: _baseUrlController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
         models: [],
         environment: _environment,

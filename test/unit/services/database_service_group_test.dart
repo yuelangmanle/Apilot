@@ -32,7 +32,8 @@ void main() {
       expect(retrieved.description, 'Large Language Model APIs');
       expect(retrieved.color, '#4A90E2');
       
-      await databaseService.close();
+      await databaseService.deleteGroup('group_test_1');
+      await databaseService.forceClose();
     });
 
     test('should get all groups', () async {
@@ -49,7 +50,9 @@ void main() {
       final groups = await databaseService.getAllGroups();
       expect(groups.length, 2);
       
-      await databaseService.close();
+      await databaseService.deleteGroup('g_all_1');
+      await databaseService.deleteGroup('g_all_2');
+      await databaseService.forceClose();
     });
 
     test('should update group', () async {
@@ -72,7 +75,8 @@ void main() {
       expect(retrieved!.name, 'Updated LLM');
       expect(retrieved.description, 'Updated description');
       
-      await databaseService.close();
+      await databaseService.deleteGroup('g_upd_1');
+      await databaseService.forceClose();
     });
 
     test('should delete group', () async {
@@ -87,7 +91,7 @@ void main() {
       final retrieved = await databaseService.getGroup('g_del_1');
       expect(retrieved, isNull);
       
-      await databaseService.close();
+      await databaseService.forceClose();
     });
   });
 }
