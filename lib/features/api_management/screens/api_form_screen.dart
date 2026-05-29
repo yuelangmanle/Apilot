@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
-import '../../../core/services/database_service.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../providers/api_provider.dart';
 
 class ApiFormScreen extends StatefulWidget {
   final ApiConfig? apiConfig;
@@ -27,6 +28,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _isFetchingModels = false;
+  bool _isValidating = false;
+  String _validationStatus = '';
 
   @override
   void initState() {
@@ -142,6 +145,62 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
+                    // 验证API按钮
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _isValidating ? null : _validateApi,
+                        icon: _isValidating 
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.verified, size: 18),
+                        label: Text(_isValidating ? '验证中...' : '验证API'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                    if (_validationStatus.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
+                            ? AppColors.success.withOpacity(0.1)
+                            : AppColors.error.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
+                              ? AppColors.success
+                              : AppColors.error,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _validationStatus.contains('有效') || _validationStatus.contains('成功')
+                                ? Icons.check_circle
+                                : Icons.error,
+                              color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
+                                ? AppColors.success
+                                : AppColors.error,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _validationStatus,
+                                style: TextStyle(
+                                  color: _validationStatus.contains('有效') || _validationStatus.contains('成功')
+                                    ? AppColors.success
+                                    : AppColors.error,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
                     Row(
                       children: [
                         Expanded(
@@ -161,7 +220,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                           child: ElevatedButton.icon(
                             onPressed: _isFetchingModels ? null : _fetchModels,
                             icon: _isFetchingModels 
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                               : const Icon(Icons.refresh, size: 18),
                             label: const Text('获取'),
                             style: ElevatedButton.styleFrom(
@@ -244,6 +303,59 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     );
   }
 
+  Future<void> _validateApi() async {
+    if (_baseUrlController.text.isEmpty || _apiKeyController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先填写 API 地址和 API Key'),
+          backgroundColor: AppColors.warning,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isValidating = true;
+      _validationStatus = '';
+    });
+
+    try {
+      final apiService = ApiService();
+      final apiConfig = ApiConfig(
+        id: 'temp',
+        name: 'temp',
+        baseUrl: _baseUrlController.text.trim(),
+        apiKey: _apiKeyController.text.trim(),
+        models: [],
+        environment: _environment,
+      );
+
+      final result = await apiService.validateApi(apiConfig);
+      
+      if (mounted) {
+        setState(() {
+          _isValidating = false;
+          _validationStatus = result['message'] ?? '验证完成';
+          
+          // 如果验证成功且有模型，自动填充
+          if (result['valid'] == true && result['models'] != null) {
+            final models = result['models'] as List<String>;
+            if (models.isNotEmpty) {
+              _modelsController.text = models.join(', ');
+            }
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isValidating = false;
+          _validationStatus = '验证失败: $e';
+        });
+      }
+    }
+  }
+
   Future<void> _fetchModels() async {
     if (_baseUrlController.text.isEmpty || _apiKeyController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -318,9 +430,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     });
 
     try {
-      final databaseService = DatabaseService();
-      await databaseService.initialize();
-
+      final provider = context.read<ApiProvider>();
+      
       final models = _modelsController.text
           .split(',')
           .map((e) => e.trim())
@@ -347,15 +458,18 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       );
 
       if (widget.apiConfig != null) {
-        await databaseService.updateApiConfig(api);
+        await provider.updateApiConfig(api);
       } else {
-        await databaseService.insertApiConfig(api);
+        await provider.addApiConfig(api);
       }
 
-      await databaseService.close();
-
       if (mounted) {
-        // 先返回 true，让列表页面刷新
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(widget.apiConfig != null ? 'API已更新' : 'API已添加'),
+            backgroundColor: AppColors.success,
+          ),
+        );
         Navigator.pop(context, true);
       }
     } catch (e) {
@@ -398,12 +512,16 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       });
 
       try {
-        final databaseService = DatabaseService();
-        await databaseService.initialize();
-        await databaseService.deleteApiConfig(widget.apiConfig!.id);
-        await databaseService.close();
+        final provider = context.read<ApiProvider>();
+        await provider.deleteApiConfig(widget.apiConfig!.id);
 
         if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已删除 ${widget.apiConfig!.name}'),
+              backgroundColor: AppColors.success,
+            ),
+          );
           Navigator.pop(context, true);
         }
       } catch (e) {
