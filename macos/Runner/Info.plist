@@ -26,16 +26,14 @@
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
-		<key>NSCameraUsageDescription</key>
+	</dict>
+	<key>NSCameraUsageDescription</key>
 	<string>Apilot需要摄像头权限来扫描QR码进行设备配对</string>
-</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Apilot需要摄像头权限来扫描QR码进行设备配对</string>
 </dict>
 </plist>

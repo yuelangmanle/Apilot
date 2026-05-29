@@ -495,40 +495,120 @@ class QRScannerPage extends StatefulWidget {
 
 class _QRScannerPageState extends State<QRScannerPage> {
   bool _handled = false;
+  bool _hasError = false;
+  String _errorMsg = '';
+  MobileScannerController? _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _initScanner();
+  }
+
+  void _initScanner() {
+    try {
+      _controller = MobileScannerController();
+    } catch (e) {
+      setState(() {
+        _hasError = true;
+        _errorMsg = '初始化摄像头失败: $e';
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('扫描二维码')),
-      body: Column(
-        children: [
-          Expanded(
-            child: MobileScanner(
-              onDetect: (capture) {
-                if (_handled) return;
-                final barcodes = capture.barcodes;
-                for (final barcode in barcodes) {
-                  final raw = barcode.rawValue ?? '';
-                  if (raw.isNotEmpty) {
-                    _handled = true;
-                    _parseQRData(raw);
-                    break;
-                  }
-                }
+      appBar: AppBar(
+        title: const Text('扫描二维码'),
+        actions: [
+          if (_controller != null)
+            IconButton(
+              icon: const Icon(Icons.flash_on),
+              onPressed: () => _controller?.toggleTorch(),
+              tooltip: '闪光灯',
+            ),
+        ],
+      ),
+      body: _hasError ? _buildErrorView() : _buildScannerView(),
+    );
+  }
+
+  Widget _buildScannerView() {
+    return Column(
+      children: [
+        Expanded(
+          child: _controller != null
+              ? MobileScanner(
+                  controller: _controller!,
+                  onDetect: (capture) {
+                    if (_handled) return;
+                    final barcodes = capture.barcodes;
+                    for (final barcode in barcodes) {
+                      final raw = barcode.rawValue ?? '';
+                      if (raw.isNotEmpty) {
+                        _handled = true;
+                        _parseQRData(raw);
+                        break;
+                      }
+                    }
+                  },
+                )
+              : const Center(child: CircularProgressIndicator()),
+        ),
+        Container(
+          padding: const EdgeInsets.all(16),
+          child: const Text('将二维码放入框内自动扫描', style: TextStyle(color: AppColors.textSecondary)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildErrorView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: AppColors.error),
+            const SizedBox(height: 16),
+            const Text('摄像头不可用', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(_errorMsg, style: const TextStyle(color: AppColors.textSecondary, fontSize: 13), textAlign: TextAlign.center),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+              onPressed: () {
+                setState(() {
+                  _hasError = false;
+                  _handled = false;
+                });
+                _initScanner();
               },
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.all(16),
-            child: const Text('将二维码放入框内自动扫描', style: TextStyle(color: AppColors.textSecondary)),
-          ),
-        ],
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.edit),
+              label: const Text('手动输入IP'),
+              onPressed: () {
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
 
   void _parseQRData(String data) {
-    // QR 格式: "ip|deviceId|deviceName"
     final parts = data.split('|');
     final ip = parts.isNotEmpty ? parts[0] : data;
     final deviceId = parts.length > 1 ? parts[1] : '';
