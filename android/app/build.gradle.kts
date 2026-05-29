@@ -33,14 +33,19 @@ android {
         create("release") {
             keyAlias = keystoreProperties["keyAlias"] as String? ?: ""
             keyPassword = keystoreProperties["keyPassword"] as String? ?: ""
-            storeFile = if (keystoreProperties["storeFile"] != null) file(keystoreProperties["storeFile"] as String) else null
             storePassword = keystoreProperties["storePassword"] as String? ?: ""
+            // storeFile路径相对于android目录
+            storeFile = if (keystoreProperties["storeFile"] != null) {
+                rootProject.file("app/${keystoreProperties["storeFile"]}")
+            } else {
+                null
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = if (keystorePropertiesFile.exists()) {
+            signingConfig = if (keystorePropertiesFile.exists() && keystoreProperties["storeFile"] != null) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug")
