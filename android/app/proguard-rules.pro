@@ -9,3 +9,8 @@
 # Keep SQLite
 -keep class org.sqlite.** { *; }
 -keep class org.sqlite.database.** { *; }
+
+# Ignore Google Play Core (not used in direct APK install)
+-dontwarn com.google.android.play.core.splitcompat.SplitCompatApplication
+-dontwarn com.google.android.play.core.splitinstall.**
+-dontwarn com.google.android.play.core.tasks.**
