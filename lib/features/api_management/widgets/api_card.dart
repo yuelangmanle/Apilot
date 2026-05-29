@@ -134,7 +134,7 @@ class ApiCard extends StatelessWidget {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snackMsg), duration: const Duration(seconds: 1)));
           },
           borderRadius: BorderRadius.circular(4),
-          child: Padding(padding: const EdgeInsets.all(4), child: Icon(Icons.copy, size: 16, color: AppColors.primary)),
+          child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.copy, size: 16, color: AppColors.primary)),
         ),
       ],
     );

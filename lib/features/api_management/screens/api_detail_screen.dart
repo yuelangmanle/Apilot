@@ -171,7 +171,7 @@ class ApiDetailScreen extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
+        color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color),
       ),
@@ -222,7 +222,7 @@ class ApiDetailScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                   child: Chip(
                     label: Text(model),
-                    backgroundColor: AppColors.primary.withOpacity(0.1),
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.1),
                     side: const BorderSide(color: AppColors.primary),
                     deleteIcon: const Icon(Icons.copy, size: 16),
                     onDeleted: () {
@@ -290,7 +290,7 @@ class ApiDetailScreen extends StatelessWidget {
               children: apiConfig.tags.map((tag) {
                 return Chip(
                   label: Text(tag),
-                  backgroundColor: AppColors.secondary.withOpacity(0.1),
+                  backgroundColor: AppColors.secondary.withValues(alpha: 0.1),
                   side: const BorderSide(color: AppColors.secondary),
                 );
               }).toList(),

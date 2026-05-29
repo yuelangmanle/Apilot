@@ -40,7 +40,6 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
     _isProcessing = true;
 
     // Try to extract IP from QR code
-    // QR format: expected to be an IP address or a URL containing IP
     String ip = value.trim();
 
     // If it's a URL like http://192.168.1.1:45679, extract the host
@@ -59,6 +58,8 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
 
     if (mounted) {
       Navigator.pop(context, ip);
+    } else {
+      _isProcessing = false; // Reset if not mounted, allow retry
     }
   }
 

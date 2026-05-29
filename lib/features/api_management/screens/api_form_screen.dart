@@ -112,8 +112,10 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                           icon: const Icon(Icons.content_paste, size: 20),
                           onPressed: () async {
                             final data = await Clipboard.getData(Clipboard.kTextPlain);
+                            if (!mounted) return;
                             if (data?.text != null && data!.text!.isNotEmpty) {
                               _baseUrlController.text = data.text!.trim();
+                              if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                   content: Text('已粘贴'),
@@ -258,7 +260,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                       builder: (context, provider, _) {
                         final groups = provider.availableGroups;
                         return DropdownButtonFormField<String>(
-                          value: groups.contains(_groupController.text) ? _groupController.text : null,
+                          initialValue: groups.contains(_groupController.text) ? _groupController.text : null,
                           decoration: InputDecoration(
                             labelText: '分组',
                             hintText: '选择或输入新分组',
@@ -291,7 +293,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                     ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
-                      value: _environment,
+                      initialValue: _environment,
                       decoration: const InputDecoration(
                         labelText: '环境',
                         border: OutlineInputBorder(),

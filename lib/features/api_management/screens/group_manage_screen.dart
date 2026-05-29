@@ -36,7 +36,7 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.folder_open, size: 64, color: AppColors.textSecondary),
+                const Icon(Icons.folder_open, size: 64, color: AppColors.textSecondary),
                 const SizedBox(height: 16),
                 const Text('还没有分组', style: TextStyle(fontSize: 18, color: AppColors.textSecondary)),
                 const SizedBox(height: 8),
@@ -128,6 +128,7 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
               final name = nameController.text.trim();
               if (name.isEmpty) return;
 
+              final navigator = Navigator.of(context);
               if (isEditing) {
                 final updated = Group(
                   id: group.id,
@@ -147,7 +148,7 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
                 await _db.insertGroup(newGroup);
               }
 
-              Navigator.pop(context);
+              navigator.pop();
               _loadGroups();
             },
             child: Text(isEditing ? '保存' : '创建'),
@@ -171,7 +172,8 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
           TextButton(
             onPressed: () async {
               await _db.deleteGroup(group.id);
-              Navigator.pop(context);
+              if (!context.mounted) return;
+              Navigator.of(context).pop();
               _loadGroups();
             },
             child: const Text('删除', style: TextStyle(color: Colors.red)),

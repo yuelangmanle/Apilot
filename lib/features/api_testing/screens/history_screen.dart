@@ -165,7 +165,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             final apiName = snapshot.data ?? '';
             final prefix = apiName.isNotEmpty ? '$apiName · ' : '';
             return Text(
-              '${prefix}${item.model} · ${_formatDate(item.createdAt)}',
+              '$prefix${item.model} · ${_formatDate(item.createdAt)}',
               style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
             );
           },

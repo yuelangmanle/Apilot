@@ -92,7 +92,7 @@ class _RequestFormState extends State<RequestForm> {
           const SizedBox(height: 16),
           if (widget.apiConfig.models.isNotEmpty)
             DropdownButtonFormField<String>(
-              value: _selectedModel,
+              initialValue: _selectedModel,
               decoration: const InputDecoration(
                 labelText: '模型',
                 border: OutlineInputBorder(),

@@ -296,7 +296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.1),
+                  color: AppColors.primary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
@@ -316,7 +316,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.grey.withOpacity(0.1),
+                  color: Colors.grey.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
@@ -439,7 +439,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } else {
         final importExportService = ImportExportService();
         final directory = await importExportService.getDefaultExportDirectory();
-        final filePath = '\$directory/api_configs_export.json';
+        final filePath = '$directory/api_configs_export.json';
         jsonString = await importExportService.loadFromFile(filePath);
       }
 
@@ -464,7 +464,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         context.read<ApiProvider>().loadApiConfigs();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('成功导入 \$importCount 个API配置'),
+            content: Text('成功导入 $importCount 个API配置'),
             backgroundColor: AppColors.success,
           ),
         );
@@ -473,7 +473,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('导入失败: \$e'),
+            content: Text('导入失败: $e'),
             backgroundColor: AppColors.error,
           ),
         );
