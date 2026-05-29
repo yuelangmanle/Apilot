@@ -8,6 +8,7 @@ import '../../../shared/theme/color_scheme.dart';
 import '../../api_testing/screens/history_screen.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../sync/screens/sync_screen.dart';
+import '../../api_management/screens/group_manage_screen.dart';
 import '../providers/settings_provider.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -63,6 +64,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: const Text('从JSON文件导入API配置'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _importConfigs(context),
+              ),
+            ],
+          ),
+          _buildSection(
+            context: context,
+            title: '分组管理',
+            children: [
+              ListTile(
+                leading: const Icon(Icons.folder),
+                title: const Text('分组管理'),
+                subtitle: const Text('创建和管理API分组'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const GroupManageScreen()),
+                  );
+                },
               ),
             ],
           ),

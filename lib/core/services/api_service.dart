@@ -3,7 +3,32 @@ import 'package:http/http.dart' as http;
 import '../models/api_config.dart';
 
 class ApiService {
-  // 验证API是否有效
+  /// 智能拼接 URL，避免重复路径段
+  static String buildUrl(String baseUrl, String endpoint) {
+    String base = baseUrl.trim();
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+
+    String ep = endpoint.trim();
+    if (ep.isEmpty) return base;
+    if (!ep.startsWith('/')) ep = '/$ep';
+
+    // 提取 base 的路径部分
+    final baseUri = Uri.parse(base);
+    final basePath = baseUri.path; // e.g. "/v1"
+
+    // 如果 endpoint 以 basePath 结尾，说明重复了，去掉
+    // 例如 base="/v1", endpoint="/v1/chat/completions" → 只用 base + "/chat/completions"
+    if (basePath.isNotEmpty && ep.startsWith(basePath)) {
+      final remainder = ep.substring(basePath.length);
+      if (remainder.isEmpty || remainder.startsWith('/')) {
+        return '$base$remainder';
+      }
+    }
+
+    return '$base$ep';
+  }
+
+  /// 验证API是否有效
   Future<Map<String, dynamic>> validateApi(ApiConfig apiConfig) async {
     try {
       final models = await getAvailableModels(apiConfig);
@@ -14,8 +39,7 @@ class ApiService {
           'models': models,
         };
       }
-      
-      // 尝试发送一个简单的请求来验证
+
       final testResult = await _testConnection(apiConfig);
       return testResult;
     } catch (e) {
@@ -32,8 +56,7 @@ class ApiService {
       if (baseUrl.endsWith('/')) {
         baseUrl = baseUrl.substring(0, baseUrl.length - 1);
       }
-      
-      // 尝试访问根路径
+
       final uri = Uri.parse(baseUrl);
       final response = await http.get(
         uri,
@@ -41,7 +64,7 @@ class ApiService {
           'Authorization': 'Bearer ${apiConfig.apiKey}',
         },
       ).timeout(const Duration(seconds: 10));
-      
+
       if (response.statusCode < 500) {
         return {
           'valid': true,
@@ -63,32 +86,25 @@ class ApiService {
   Future<List<String>> getAvailableModels(ApiConfig apiConfig) async {
     try {
       String baseUrl = apiConfig.baseUrl.trim();
-      
-      // 移除末尾的斜杠
       if (baseUrl.endsWith('/')) {
         baseUrl = baseUrl.substring(0, baseUrl.length - 1);
       }
-      
-      // 构建 models URL - 尝试多种路径
+
       List<String> urlsToTry = [];
-      
+
       if (baseUrl.endsWith('/models')) {
         urlsToTry.add(baseUrl);
       } else {
-        // 如果已经有版本号，直接加 /models
         if (baseUrl.endsWith('/v1') || baseUrl.endsWith('/v2') || baseUrl.endsWith('/v3')) {
           urlsToTry.add('$baseUrl/models');
         }
-        // 否则尝试 /v1/models 和 /models
         urlsToTry.add('$baseUrl/v1/models');
         urlsToTry.add('$baseUrl/models');
       }
-      
+
       for (final modelsUrl in urlsToTry) {
         try {
-          print('尝试获取模型: $modelsUrl');
           final uri = Uri.parse(modelsUrl);
-          
           final response = await http.get(
             uri,
             headers: {
@@ -97,24 +113,17 @@ class ApiService {
             },
           ).timeout(const Duration(seconds: 15));
 
-          print('响应状态码: ${response.statusCode}');
-
           if (response.statusCode == 200) {
             final data = jsonDecode(response.body);
             List<String> models = [];
-            
-            // 处理 OpenAI 格式 {"data": [{"id": "model-name"}]}
+
             if (data is Map && data.containsKey('data')) {
               final modelsList = data['data'] as List;
               models = modelsList.map((m) {
-                if (m is Map && m.containsKey('id')) {
-                  return m['id'] as String;
-                }
+                if (m is Map && m.containsKey('id')) return m['id'] as String;
                 return m.toString();
               }).toList();
-            }
-            // 处理 {"models": [{"name": "model-name"}]}
-            else if (data is Map && data.containsKey('models')) {
+            } else if (data is Map && data.containsKey('models')) {
               final modelsList = data['models'] as List;
               models = modelsList.map((m) {
                 if (m is Map) {
@@ -123,9 +132,7 @@ class ApiService {
                 }
                 return m.toString();
               }).toList();
-            }
-            // 处理数组格式
-            else if (data is List) {
+            } else if (data is List) {
               models = data.map((m) {
                 if (m is Map) {
                   if (m.containsKey('id')) return m['id'] as String;
@@ -134,21 +141,16 @@ class ApiService {
                 return m.toString();
               }).toList();
             }
-            
-            if (models.isNotEmpty) {
-              print('成功获取 ${models.length} 个模型');
-              return models;
-            }
+
+            if (models.isNotEmpty) return models;
           }
         } catch (e) {
-          print('尝试 $modelsUrl 失败: $e');
           continue;
         }
       }
-      
+
       return [];
     } catch (e) {
-      print('获取模型失败: $e');
       return [];
     }
   }
@@ -162,21 +164,36 @@ class ApiService {
     final stopwatch = Stopwatch()..start();
 
     try {
-      final uri = Uri.parse('${apiConfig.baseUrl}$endpoint');
+      final url = buildUrl(apiConfig.baseUrl, endpoint);
+      final uri = Uri.parse(url);
+      
+      // 确保 model 在请求体中
+      final body = Map<String, dynamic>.from(requestBody);
+      if (!body.containsKey('model')) {
+        body['model'] = model;
+      }
+
       final response = await http.post(
         uri,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer ${apiConfig.apiKey}',
         },
-        body: jsonEncode(requestBody),
-      );
+        body: jsonEncode(body),
+      ).timeout(const Duration(seconds: 60));
 
       stopwatch.stop();
 
+      Map<String, dynamic> responseBody;
+      try {
+        responseBody = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {
+        responseBody = {'raw': response.body};
+      }
+
       return {
         'statusCode': response.statusCode,
-        'body': jsonDecode(response.body),
+        'body': responseBody,
         'duration': stopwatch.elapsedMilliseconds,
       };
     } catch (e) {
