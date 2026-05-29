@@ -27,7 +27,7 @@ class ApiManagerApp extends StatelessWidget {
       child: Consumer<SettingsProvider>(
         builder: (context, settings, _) {
           return MaterialApp(
-            title: 'API管理器',
+            title: 'Apilot',
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: settings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
