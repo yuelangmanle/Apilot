@@ -26,15 +26,15 @@ jobs:
       
       - name: Decode Keystore and Create Key Properties
         run: |
-          # 解码keystore文件到android目录
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/release-key.jks
+          # 解码keystore文件到app目录
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release-key.jks
           # 创建key.properties文件
           cat > android/key.properties << KEYEOF
-          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          storeFile=release-key.jks
-          KEYEOF
+storePassword=${{ secrets.KEY_STORE_PASSWORD }}
+keyPassword=${{ secrets.KEY_PASSWORD }}
+keyAlias=${{ secrets.KEY_ALIAS }}
+storeFile=release-key.jks
+KEYEOF
       
       - name: Install dependencies
         run: flutter pub get
