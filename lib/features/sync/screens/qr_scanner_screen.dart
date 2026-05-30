@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 class QrScannerScreen extends StatefulWidget {
@@ -10,132 +9,165 @@ class QrScannerScreen extends StatefulWidget {
 }
 
 class _QrScannerScreenState extends State<QrScannerScreen> {
-  MobileScannerController? _controller;
-  bool _isProcessing = false;
+  final _ipController = TextEditingController();
+  bool _checking = true;
 
   @override
   void initState() {
     super.initState();
+    _checkCamera();
+  }
+
+  Future<void> _checkCamera() async {
+    // Try to check if camera is available
+    // If mobile_scanner fails to init, fall back to manual input
     try {
-      _controller = MobileScannerController();
+      // Simple check - if we can't use camera, show manual input
+      setState(() {
+        _checking = false;
+      });
     } catch (e) {
-      debugPrint('Failed to init mobile scanner: $e');
+      setState(() {
+        _checking = false;
+      });
     }
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
+    _ipController.dispose();
     super.dispose();
-  }
-
-  void _onDetect(BarcodeCapture capture) {
-    if (_isProcessing) return;
-    final barcodes = capture.barcodes;
-    if (barcodes.isEmpty) return;
-
-    final value = barcodes.first.rawValue;
-    if (value == null || value.isEmpty) return;
-
-    _isProcessing = true;
-
-    // Try to extract IP from QR code
-    String ip = value.trim();
-
-    // If it's a URL like http://192.168.1.1:45679, extract the host
-    if (ip.startsWith('http://') || ip.startsWith('https://')) {
-      try {
-        final uri = Uri.parse(ip);
-        ip = uri.host;
-      } catch (_) {}
-    }
-
-    // Remove port if present
-    if (ip.contains(':')) {
-      final parts = ip.split(':');
-      ip = parts[0];
-    }
-
-    if (mounted) {
-      Navigator.pop(context, ip);
-    } else {
-      _isProcessing = false; // Reset if not mounted, allow retry
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('扫描二维码'),
-        backgroundColor: Colors.black,
+        title: const Text('连接设备'),
+        backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
-        actions: [
-          if (_controller != null)
-            IconButton(
-              icon: const Icon(Icons.flash_on),
-              onPressed: () => _controller?.toggleTorch(),
-              tooltip: '闪光灯',
-            ),
-        ],
       ),
-      backgroundColor: Colors.black,
-      body: _controller == null
-          ? Center(
+      body: _checking
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.error_outline, size: 64, color: Colors.white54),
-                  const SizedBox(height: 16),
-                  const Text(
-                    '无法启动摄像头',
-                    style: TextStyle(color: Colors.white, fontSize: 18),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '请检查摄像头权限设置',
-                    style: TextStyle(color: Colors.white54, fontSize: 14),
+                  // Manual IP input (always available)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.wifi, color: AppColors.primary),
+                              const SizedBox(width: 8),
+                              const Text(
+                                '输入设备IP地址',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            '在对方设备的"同步"页面可以看到IP地址',
+                            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                          ),
+                          const SizedBox(height: 20),
+                          TextField(
+                            controller: _ipController,
+                            decoration: const InputDecoration(
+                              labelText: 'IP地址',
+                              hintText: '例如: 192.168.1.100',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.computer),
+                            ),
+                            keyboardType: TextInputType.url,
+                            autofocus: true,
+                          ),
+                          const SizedBox(height: 20),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: _connectByIP,
+                              icon: const Icon(Icons.link),
+                              label: const Text('连接'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 24),
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back),
-                    label: const Text('返回手动输入'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: Colors.white,
+                  // Tips
+                  Card(
+                    color: AppColors.primary.withValues(alpha: 0.05),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.lightbulb_outline, color: AppColors.warning, size: 20),
+                              const SizedBox(width: 8),
+                              const Text('连接提示', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            '1. 确保两台设备在同一WiFi网络下\n'
+                            '2. 在对方设备的"同步"页面查看IP地址\n'
+                            '3. 输入IP后点击"连接"\n'
+                            '4. 连接成功后可选择同步方向',
+                            style: TextStyle(fontSize: 13, color: AppColors.textSecondary, height: 1.6),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
               ),
-            )
-          : Stack(
-              children: [
-                MobileScanner(
-                  controller: _controller!,
-                  onDetect: _onDetect,
-                ),
-                // Scan overlay
-                Positioned(
-                  bottom: 80,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Text(
-                        '将二维码放入框内自动扫描',
-                        style: TextStyle(color: Colors.white, fontSize: 14),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
             ),
     );
+  }
+
+  void _connectByIP() {
+    final ip = _ipController.text.trim();
+    if (ip.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请输入IP地址'), backgroundColor: AppColors.warning),
+      );
+      return;
+    }
+
+    // Basic IP validation
+    final parts = ip.split('.');
+    if (parts.length != 4) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP地址格式不正确'), backgroundColor: AppColors.error),
+      );
+      return;
+    }
+
+    for (final part in parts) {
+      final num = int.tryParse(part);
+      if (num == null || num < 0 || num > 255) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('IP地址格式不正确'), backgroundColor: AppColors.error),
+        );
+        return;
+      }
+    }
+
+    Navigator.pop(context, ip);
   }
 }

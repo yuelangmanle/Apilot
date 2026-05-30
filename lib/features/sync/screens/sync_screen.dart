@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../services/sync_service.dart';
+import '../services/bluetooth_sync_service.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -19,18 +20,21 @@ class SyncScreen extends StatefulWidget {
 
 class _SyncScreenState extends State<SyncScreen> {
   final SyncService _syncService = SyncService();
+  final BluetoothSyncService _btService = BluetoothSyncService();
   final DatabaseService _databaseService = DatabaseService();
   List<DeviceInfo> _devices = [];
   bool _isScanning = false;
   DeviceInfo? _localDevice;
   Timer? _refreshTimer;
   String? _syncStatus;
+  int _syncMode = 0; // 0 = WiFi, 1 = Bluetooth
 
   @override
   void initState() {
     super.initState();
     _initSync();
   }
+
 
   Future<void> _initSync() async {
     _localDevice = await _syncService.getLocalDeviceInfo();
@@ -54,6 +58,7 @@ class _SyncScreenState extends State<SyncScreen> {
   void dispose() {
     _refreshTimer?.cancel();
     _syncService.stop();
+    _btService.dispose();
     super.dispose();
   }
 
@@ -65,6 +70,19 @@ class _SyncScreenState extends State<SyncScreen> {
     final content = Column(
       children: [
         _buildLocalDeviceCard(isDark),
+        // Mode indicator
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Row(
+            children: [
+              Icon(_syncMode == 0 ? Icons.wifi : Icons.bluetooth,
+                color: AppColors.primary, size: 16),
+              const SizedBox(width: 8),
+              Text(_syncMode == 0 ? 'WiFi 局域网同步' : '蓝牙近场同步',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            ],
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
@@ -99,12 +117,25 @@ class _SyncScreenState extends State<SyncScreen> {
       appBar: AppBar(
         title: const Text('设备同步'),
         actions: [
-          IconButton(icon: const Icon(Icons.qr_code_scanner), onPressed: _scanQRCode, tooltip: '扫码连接'),
+          IconButton(icon: const Icon(Icons.phonelink), onPressed: _scanQRCode, tooltip: '输入IP连接'),
           IconButton(icon: const Icon(Icons.qr_code), onPressed: _showQRCode, tooltip: '我的二维码'),
           IconButton(icon: const Icon(Icons.edit), onPressed: _showManualConnect, tooltip: '手动连接'),
         ],
       ),
       body: isWide ? CenteredContent(maxWidth: 600, child: content) : content,
+      bottomNavigationBar: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: SegmentedButton<int>(
+          segments: const [
+            ButtonSegment(value: 0, label: Text('WiFi'), icon: Icon(Icons.wifi)),
+            ButtonSegment(value: 1, label: Text('蓝牙'), icon: Icon(Icons.bluetooth)),
+          ],
+          selected: {_syncMode},
+          onSelectionChanged: (Set<int> selection) {
+            setState(() => _syncMode = selection.first);
+          },
+        ),
+      ),
     );
   }
 
