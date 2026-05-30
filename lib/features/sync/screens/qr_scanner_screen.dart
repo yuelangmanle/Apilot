@@ -117,7 +117,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.lightbulb_outline, color: AppColors.warning, size: 20),
+                              const Icon(Icons.lightbulb_outline, color: AppColors.warning, size: 20),
                               const SizedBox(width: 8),
                               const Text('连接提示', style: TextStyle(fontWeight: FontWeight.bold)),
                             ],

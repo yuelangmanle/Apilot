@@ -116,7 +116,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                             if (data?.text != null && data!.text!.isNotEmpty) {
                               _baseUrlController.text = data.text!.trim();
                               if (!mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              final messenger = ScaffoldMessenger.of(context);
+                              messenger.showSnackBar(
                                 const SnackBar(
                                   content: Text('已粘贴'),
                                   duration: Duration(seconds: 1),
@@ -577,6 +578,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       });
 
       try {
+        if (!mounted) return;
         final provider = context.read<ApiProvider>();
         await provider.deleteApiConfig(widget.apiConfig!.id);
 

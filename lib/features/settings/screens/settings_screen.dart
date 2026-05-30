@@ -252,6 +252,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _isCheckingUpdate = false;
       });
 
+      if (!mounted) return;
       if (updateInfo != null) {
         _showUpdateDialog(context, updateInfo);
       } else {
