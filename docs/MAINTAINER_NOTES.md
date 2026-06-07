@@ -4,8 +4,8 @@
 
 ## 当前版本
 
-- 应用版本：`1.17.0+19`
-- GitHub Release 标签建议：`v1.17.0`
+- 应用版本：`1.17.1+20`
+- GitHub Release 标签建议：`v1.17.1`
 - 项目/软件名称统一为：`Apilot`
 
 ## Android 签名策略
@@ -78,6 +78,7 @@
 - Inno Setup 脚本：`windows/installer/Apilot.iss`
 - CI 在 `windows-latest` 上安装 Inno Setup 并产出 `.exe`。
 - 同时保留 portable zip，方便无需安装的场景。
+- CI 里的 Inno Setup 不一定带中文语言文件；脚本只使用 `compiler:Default.isl`，不要直接引用 `Languages\ChineseSimplified.isl`。
 
 ## 后续建议
 
