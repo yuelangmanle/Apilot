@@ -24,6 +24,7 @@ class _SyncScreenState extends State<SyncScreen> {
   final DatabaseService _databaseService = DatabaseService();
   List<DeviceInfo> _devices = [];
   bool _isScanning = false;
+  bool _isBluetoothBusy = false;
   DeviceInfo? _localDevice;
   Timer? _refreshTimer;
   String? _syncStatus;
@@ -79,7 +80,15 @@ class _SyncScreenState extends State<SyncScreen> {
                 color: AppColors.primary, size: 16),
               const SizedBox(width: 8),
               Text(_syncMode == 0 ? 'WiFi 局域网同步' : '蓝牙近场同步',
-                style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              if (_syncMode == 1) ...[
+                const Spacer(),
+                TextButton.icon(
+                  icon: Icon(_isBluetoothBusy ? Icons.hourglass_empty : Icons.bluetooth_searching, size: 16),
+                  label: Text(_isBluetoothBusy ? '扫描中' : '蓝牙发现'),
+                  onPressed: _isBluetoothBusy ? null : _discoverBluetoothDevices,
+                ),
+              ],
             ],
           ),
         ),
@@ -310,11 +319,8 @@ class _SyncScreenState extends State<SyncScreen> {
 
     final device = await _syncService.pingDevice(ip);
     if (device != null) {
-      // 检查是否已存在
-      final exists = _devices.any((d) => d.ipAddress == ip);
-      if (!exists) {
-        setState(() => _devices.add(device));
-      }
+      await _syncService.upsertDiscoveredDevice(device, sourceIp: ip);
+      setState(() => _devices = _syncService.discoveredDevices);
       setState(() => _syncStatus = '已连接到 ${device.name} (${device.ipAddress})');
     } else {
       // 添加为手动设备
@@ -322,8 +328,9 @@ class _SyncScreenState extends State<SyncScreen> {
         id: 'manual_$ip', name: '设备 ($ip)', platform: 'unknown',
         ipAddress: ip, lastSeen: DateTime.now(), isOnline: true,
       );
+      await _syncService.upsertDiscoveredDevice(manualDevice, sourceIp: ip);
       setState(() {
-        _devices.add(manualDevice);
+        _devices = _syncService.discoveredDevices;
         _syncStatus = '已添加 $ip，请确认对方已开启同步';
       });
     }
@@ -365,6 +372,14 @@ class _SyncScreenState extends State<SyncScreen> {
       final configs = await _databaseService.getAllApiConfigs();
       final success = await _syncService.sendConfigs(device, configs);
       setState(() => _syncStatus = success ? '已发送 ${configs.length} 个配置' : '发送失败');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? '已发送 ${configs.length} 个配置到 ${device.name}' : '发送到 ${device.name} 失败'),
+            backgroundColor: success ? AppColors.success : AppColors.error,
+          ),
+        );
+      }
     } catch (e) {
       setState(() => _syncStatus = '发送失败: $e');
     }
@@ -380,6 +395,11 @@ class _SyncScreenState extends State<SyncScreen> {
         for (final config in configs) { await _databaseService.insertApiConfig(config); }
         setState(() => _syncStatus = '已接收 ${configs.length} 个配置');
         if (mounted) context.read<ApiProvider>().loadApiConfigs();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已从 ${device.name} 接收 ${configs.length} 个配置'), backgroundColor: AppColors.success),
+          );
+        }
       } else {
         setState(() => _syncStatus = '未收到配置');
       }
@@ -401,9 +421,53 @@ class _SyncScreenState extends State<SyncScreen> {
       for (final config in newConfigs) { await _databaseService.insertApiConfig(config); }
       setState(() => _syncStatus = '同步完成，新增 ${newConfigs.length} 个配置');
       if (mounted) context.read<ApiProvider>().loadApiConfigs();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('双向同步完成，新增 ${newConfigs.length} 个配置'), backgroundColor: AppColors.success),
+        );
+      }
     } catch (e) {
       setState(() => _syncStatus = '同步失败: $e');
     }
     Future.delayed(const Duration(seconds: 3), () { if (mounted) setState(() => _syncStatus = null); });
+  }
+
+  Future<void> _discoverBluetoothDevices() async {
+    setState(() {
+      _isBluetoothBusy = true;
+      _syncStatus = '正在通过蓝牙发现附近的 Apilot 设备...';
+    });
+    try {
+      final localDevice = await _syncService.getLocalDeviceInfo();
+      await _btService.startAdvertising(localDevice);
+      final devices = await _btService.discoverApilotDevices();
+      var added = 0;
+      for (final device in devices) {
+        final didAdd = await _syncService.upsertDiscoveredDevice(device, sourceIp: device.ipAddress);
+        if (didAdd) added++;
+      }
+      if (!mounted) return;
+      setState(() {
+        _devices = _syncService.discoveredDevices;
+        _syncStatus = devices.isEmpty ? '蓝牙未发现设备，可继续使用 WiFi/扫码/手动连接' : '蓝牙发现 ${devices.length} 台设备，新增/更新 $added 台';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(devices.isEmpty ? '蓝牙未发现 Apilot 设备' : '蓝牙发现 ${devices.length} 台 Apilot 设备'),
+          backgroundColor: devices.isEmpty ? AppColors.warning : AppColors.success,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _syncStatus = '蓝牙发现失败: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('蓝牙发现失败: $e'), backgroundColor: AppColors.error),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isBluetoothBusy = false);
+      }
+      Future.delayed(const Duration(seconds: 5), () { if (mounted) setState(() => _syncStatus = null); });
+    }
   }
 }

@@ -32,15 +32,15 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
     final isWide = ResponsiveLayout.isWide(context);
 
     final content = _groups.isEmpty
-        ? Center(
+        ? const Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.folder_open, size: 64, color: AppColors.textSecondary),
-                const SizedBox(height: 16),
-                const Text('还没有分组', style: TextStyle(fontSize: 18, color: AppColors.textSecondary)),
-                const SizedBox(height: 8),
-                const Text('点击右下角按钮创建', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+                Icon(Icons.folder_open, size: 64, color: AppColors.textSecondary),
+                SizedBox(height: 16),
+                Text('还没有分组', style: TextStyle(fontSize: 18, color: AppColors.textSecondary)),
+                SizedBox(height: 8),
+                Text('点击右下角按钮创建', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
               ],
             ),
           )

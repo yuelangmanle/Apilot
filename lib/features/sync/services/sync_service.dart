@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/database_service.dart';
@@ -11,15 +13,21 @@ class SyncService {
   static const int _syncPort = 45679;
   static const String _magicHeader = 'API_MANAGER_SYNC';
   static const String _multicastGroup = '224.0.0.1';
+  static const String _deviceIdPrefsKey = 'apilot_sync_device_id';
 
   final List<DeviceInfo> _devices = [];
+  final String? _localDeviceIdOverride;
   HttpServer? _syncServer;
   RawDatagramSocket? _discoverySocket;
   Timer? _broadcastTimer;
   bool _isRunning = false;
+  String? _localDeviceIdCache;
 
   List<DeviceInfo> get discoveredDevices => List.unmodifiable(_devices);
   bool get isRunning => _isRunning;
+
+  SyncService({String? localDeviceIdOverride})
+      : _localDeviceIdOverride = localDeviceIdOverride;
 
   Future<DeviceInfo> getLocalDeviceInfo() async {
     final hostname = Platform.localHostname;
@@ -27,13 +35,31 @@ class SyncService {
     final ip = await _getLocalIP();
 
     return DeviceInfo(
-      id: 'local_${DateTime.now().millisecondsSinceEpoch}',
+      id: await _getLocalDeviceId(),
       name: hostname,
       platform: platform,
       ipAddress: ip,
       lastSeen: DateTime.now(),
       isOnline: true,
     );
+  }
+
+  Future<String> _getLocalDeviceId() async {
+    final override = _localDeviceIdOverride;
+    if (override != null) return override;
+    if (_localDeviceIdCache != null) return _localDeviceIdCache!;
+
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_deviceIdPrefsKey);
+    if (saved != null && saved.isNotEmpty) {
+      _localDeviceIdCache = saved;
+      return saved;
+    }
+
+    final generated = 'apilot_${const Uuid().v4()}';
+    await prefs.setString(_deviceIdPrefsKey, generated);
+    _localDeviceIdCache = generated;
+    return generated;
   }
 
   String _getPlatformName() {
@@ -135,36 +161,83 @@ class SyncService {
     }
   }
 
-  String? _localIPCache;
-
-  Future<String> _getCachedLocalIP() async {
-    _localIPCache ??= await _getLocalIP();
-    return _localIPCache!;
-  }
-
   void _handleDiscoveryMessage(Datagram datagram) async {
     try {
       final message = jsonDecode(String.fromCharCodes(datagram.data));
       if (message['header'] != _magicHeader) return;
 
       final device = DeviceInfo.fromJson(message['device'] as Map<String, dynamic>);
-
-      // 不添加自己 - 异步检查本机IP
-      final localIP = _discoverySocket?.address.address;
-      if (device.ipAddress == localIP) return;
-      final myIP = await _getCachedLocalIP();
-      if (device.ipAddress == myIP) return;
-
-      final index = _devices.indexWhere((d) => d.id == device.id);
-      if (index >= 0) {
-        _devices[index] = device;
-      } else {
-        _devices.add(device);
-        debugPrint('[Sync] 发现设备: ${device.name} (${device.ipAddress})');
-      }
+      await upsertDiscoveredDevice(device, sourceIp: datagram.address.address);
     } catch (e) {
       debugPrint('[Sync] 解析发现消息失败: $e');
     }
+  }
+
+  Future<bool> upsertDiscoveredDevice(
+    DeviceInfo device, {
+    String? sourceIp,
+  }) async {
+    if (await _isLocalDevice(device, sourceIp: sourceIp)) return false;
+
+    final normalized = DeviceInfo(
+      id: device.id,
+      name: device.name.isEmpty ? '未知设备' : device.name,
+      platform: device.platform,
+      ipAddress: sourceIp != null && _isUsableRemoteIP(sourceIp) ? sourceIp : device.ipAddress,
+      lastSeen: DateTime.now(),
+      isOnline: true,
+    );
+
+    final index = _devices.indexWhere((existing) {
+      if (existing.id == normalized.id) return true;
+      return existing.ipAddress == normalized.ipAddress && normalized.ipAddress.isNotEmpty;
+    });
+
+    if (index >= 0) {
+      _devices[index] = normalized;
+    } else {
+      _devices.add(normalized);
+      debugPrint('[Sync] 发现设备: ${normalized.name} (${normalized.ipAddress})');
+    }
+    _devices.sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+    return true;
+  }
+
+  Future<bool> _isLocalDevice(DeviceInfo device, {String? sourceIp}) async {
+    final localDeviceId = await _getLocalDeviceId();
+    if (device.id == localDeviceId) return true;
+
+    final localIPs = await _getLocalIPv4Addresses();
+    if (localIPs.contains(device.ipAddress)) return true;
+    if (sourceIp != null && localIPs.contains(sourceIp)) return true;
+
+    final socketAddress = _discoverySocket?.address.address;
+    if (socketAddress != null && socketAddress != '0.0.0.0') {
+      if (device.ipAddress == socketAddress || sourceIp == socketAddress) return true;
+    }
+
+    return false;
+  }
+
+  bool _isUsableRemoteIP(String ip) {
+    return ip.isNotEmpty && ip != '0.0.0.0' && ip != '127.0.0.1';
+  }
+
+  Future<Set<String>> _getLocalIPv4Addresses() async {
+    final addresses = <String>{'127.0.0.1'};
+    try {
+      for (final interface in await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLinkLocal: false,
+      )) {
+        for (final addr in interface.addresses) {
+          addresses.add(addr.address);
+        }
+      }
+    } catch (e) {
+      debugPrint('[Sync] 获取本机IP列表失败: $e');
+    }
+    return addresses;
   }
 
   Future<void> _startSyncServer() async {
@@ -241,6 +314,7 @@ class SyncService {
   /// 直接通过IP ping检测设备
   Future<DeviceInfo?> pingDevice(String ip) async {
     try {
+      if ((await _getLocalIPv4Addresses()).contains(ip)) return null;
       final client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 5);
       final request = await client.getUrl(Uri.parse('http://$ip:$_syncPort/ping'));
@@ -251,7 +325,9 @@ class SyncService {
       if (response.statusCode == 200) {
         final data = jsonDecode(body) as Map<String, dynamic>;
         if (data.containsKey('device')) {
-          return DeviceInfo.fromJson(data['device'] as Map<String, dynamic>);
+          final device = DeviceInfo.fromJson(data['device'] as Map<String, dynamic>);
+          await upsertDiscoveredDevice(device, sourceIp: ip);
+          return device;
         }
       }
     } catch (e) {

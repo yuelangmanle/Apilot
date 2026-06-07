@@ -29,6 +29,10 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Apilot需要摄像头权限来扫描QR码进行设备配对</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Apilot需要蓝牙权限来发现附近设备并辅助同步API配置</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Apilot需要作为蓝牙外设广播设备信息，方便其他设备发现并连接同步</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>

@@ -111,12 +111,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                         suffixIcon: IconButton(
                           icon: const Icon(Icons.content_paste, size: 20),
                           onPressed: () async {
+                            final messenger = ScaffoldMessenger.of(context);
                             final data = await Clipboard.getData(Clipboard.kTextPlain);
                             if (!mounted) return;
                             if (data?.text != null && data!.text!.isNotEmpty) {
                               _baseUrlController.text = data.text!.trim();
-                              if (!mounted) return;
-                              final messenger = ScaffoldMessenger.of(context);
                               messenger.showSnackBar(
                                 const SnackBar(
                                   content: Text('已粘贴'),
@@ -166,10 +165,12 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                             IconButton(
                               icon: const Icon(Icons.content_paste, size: 20),
                               onPressed: () async {
+                                final messenger = ScaffoldMessenger.of(context);
                                 final data = await Clipboard.getData(Clipboard.kTextPlain);
+                                if (!mounted) return;
                                 if (data?.text != null && data!.text!.isNotEmpty) {
                                   _apiKeyController.text = data.text!.trim();
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  messenger.showSnackBar(
                                     const SnackBar(
                                       content: Text('已粘贴'),
                                       duration: Duration(seconds: 1),

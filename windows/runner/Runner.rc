@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "api_manager" "\0"
+            VALUE "CompanyName", "Apilot Team" "\0"
+            VALUE "FileDescription", "Apilot" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "api_manager" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "api_manager.exe" "\0"
-            VALUE "ProductName", "api_manager" "\0"
+            VALUE "InternalName", "Apilot" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Apilot Team. All rights reserved." "\0"
+            VALUE "OriginalFilename", "Apilot.exe" "\0"
+            VALUE "ProductName", "Apilot" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

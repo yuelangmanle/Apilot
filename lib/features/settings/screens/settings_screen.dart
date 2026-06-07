@@ -133,14 +133,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               SwitchListTile(
                 title: const Text('蓝牙同步'),
-                subtitle: const Text('即将推出，敬请期待'),
-                value: false,
-                onChanged: (_) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('蓝牙同步功能开发中，敬请期待'), duration: Duration(seconds: 2)),
-                  );
-                },
-                secondary: const Icon(Icons.bluetooth_disabled),
+                subtitle: const Text('通过蓝牙发现附近设备，再使用局域网同步配置'),
+                value: settings.bluetoothSync,
+                onChanged: (_) => settings.toggleBluetoothSync(),
+                secondary: const Icon(Icons.bluetooth_searching),
               ),
             ],
           ),
@@ -180,7 +176,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.chevron_right),
-                onTap: _isCheckingUpdate ? null : () => _checkForUpdate(context),
+                onTap: _isCheckingUpdate ? null : _checkForUpdate,
               ),
               ListTile(
                 leading: const Icon(Icons.code),
@@ -238,7 +234,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Future<void> _checkForUpdate(BuildContext context) async {
+  Future<void> _checkForUpdate() async {
+    final messenger = ScaffoldMessenger.of(context);
     setState(() {
       _isCheckingUpdate = true;
     });
@@ -256,7 +253,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (updateInfo != null) {
         _showUpdateDialog(context, updateInfo);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           const SnackBar(
             content: Text('当前已是最新版本'),
             backgroundColor: AppColors.success,
@@ -268,7 +265,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         setState(() {
           _isCheckingUpdate = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(
             content: Text('检查更新失败: $e'),
             backgroundColor: AppColors.error,
@@ -282,11 +279,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Row(
+        title: const Row(
           children: [
-            const Icon(Icons.system_update, color: AppColors.primary),
-            const SizedBox(width: 8),
-            const Text('发现新版本'),
+            Icon(Icons.system_update, color: AppColors.primary),
+            SizedBox(width: 8),
+            Text('发现新版本'),
           ],
         ),
         content: SingleChildScrollView(

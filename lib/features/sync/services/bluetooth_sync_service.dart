@@ -1,226 +1,224 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import '../../../core/models/api_config.dart';
+import '../../../core/models/device_info.dart';
 
 class BluetoothSyncService {
-  // Custom UUIDs for our sync service
-  static final Guid _serviceUuid = Guid("12345678-1234-1234-1234-123456789abc");
-  static final Guid _configCharUuid = Guid("12345678-1234-1234-1234-123456789abd");
+  static final UUID _serviceUuid = UUID.fromString('12345678-1234-1234-1234-123456789abc');
+  static final UUID _deviceInfoCharUuid = UUID.fromString('12345678-1234-1234-1234-123456789abd');
 
-  BluetoothDevice? _connectedDevice;
+  final CentralManager _centralManager = CentralManager();
+  final PeripheralManager _peripheralManager = PeripheralManager();
+  final List<DeviceInfo> _discoveredDevices = [];
+
+  StreamSubscription<DiscoveredEventArgs>? _discoveredSubscription;
+  StreamSubscription<GATTCharacteristicReadRequestedEventArgs>? _readSubscription;
   bool _isScanning = false;
-  final List<BluetoothDevice> _discoveredDevices = [];
-  StreamSubscription<List<ScanResult>>? _scanSubscription;
+  bool _isAdvertising = false;
+  DeviceInfo? _advertisedDevice;
+  GATTCharacteristic? _deviceInfoCharacteristic;
 
   bool get isScanning => _isScanning;
-  bool get isConnected => _connectedDevice != null;
-  List<BluetoothDevice> get discoveredDevices => List.unmodifiable(_discoveredDevices);
-  BluetoothDevice? get connectedDevice => _connectedDevice;
+  bool get isAdvertising => _isAdvertising;
+  List<DeviceInfo> get discoveredDevices => List.unmodifiable(_discoveredDevices);
 
-  /// Check if Bluetooth is available and enabled
   Future<bool> isAvailable() async {
     try {
-      final isSupported = await FlutterBluePlus.isSupported;
-      if (!isSupported) return false;
-      final adapterState = await FlutterBluePlus.adapterState.first;
-      return adapterState == BluetoothAdapterState.on;
+      final state = _centralManager.state;
+      if (state == BluetoothLowEnergyState.poweredOn) return true;
+      if (state == BluetoothLowEnergyState.unauthorized && Platform.isAndroid) {
+        return await _centralManager.authorize();
+      }
+      return false;
     } catch (e) {
-      debugPrint('[BT] Bluetooth check failed: $e');
+      debugPrint('[BT] 蓝牙状态检查失败: $e');
       return false;
     }
   }
 
-  /// Turn on Bluetooth (Android only)
-  Future<void> turnOn() async {
+  Future<void> startAdvertising(DeviceInfo localDevice) async {
+    _advertisedDevice = localDevice;
+    if (_isAdvertising) return;
+
     try {
-      await FlutterBluePlus.turnOn();
+      if (_peripheralManager.state == BluetoothLowEnergyState.unauthorized && Platform.isAndroid) {
+        await _peripheralManager.authorize();
+      }
+      if (_peripheralManager.state != BluetoothLowEnergyState.poweredOn) {
+        throw StateError('蓝牙未开启或未授权');
+      }
+
+      await _peripheralManager.removeAllServices();
+      _deviceInfoCharacteristic = GATTCharacteristic.mutable(
+        uuid: _deviceInfoCharUuid,
+        properties: const [GATTCharacteristicProperty.read],
+        permissions: const [GATTCharacteristicPermission.read],
+        descriptors: const [],
+      );
+      final service = GATTService(
+        uuid: _serviceUuid,
+        isPrimary: true,
+        includedServices: const [],
+        characteristics: [_deviceInfoCharacteristic!],
+      );
+      await _peripheralManager.addService(service);
+      await _readSubscription?.cancel();
+      _readSubscription = _peripheralManager.characteristicReadRequested.listen(_handleReadRequest);
+
+      await _peripheralManager.startAdvertising(
+        Advertisement(
+          name: Platform.isWindows ? null : 'Apilot',
+          serviceUUIDs: [_serviceUuid],
+          serviceData: Platform.isAndroid || Platform.isWindows
+              ? {_serviceUuid: Uint8List.fromList(utf8.encode(localDevice.ipAddress))}
+              : const {},
+        ),
+      );
+      _isAdvertising = true;
+      debugPrint('[BT] 已开始广播 Apilot 设备信息');
     } catch (e) {
-      debugPrint('[BT] Turn on failed: $e');
+      debugPrint('[BT] 开始广播失败: $e');
+      rethrow;
     }
   }
 
-  /// Start scanning for nearby devices
-  Future<void> startScan({Duration timeout = const Duration(seconds: 15)}) async {
-    if (_isScanning) return;
+  Future<List<DeviceInfo>> discoverApilotDevices({
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    if (_isScanning) return discoveredDevices;
+
+    if (!await isAvailable()) {
+      throw StateError('蓝牙未开启或未授权');
+    }
+
     _isScanning = true;
     _discoveredDevices.clear();
+    await _discoveredSubscription?.cancel();
+
+    final completer = Completer<List<DeviceInfo>>();
+    Timer? timer;
+    _discoveredSubscription = _centralManager.discovered.listen((eventArgs) async {
+      try {
+        final device = await _readDeviceInfo(eventArgs);
+        if (device == null) return;
+        final index = _discoveredDevices.indexWhere(
+          (existing) => existing.id == device.id || existing.ipAddress == device.ipAddress,
+        );
+        if (index >= 0) {
+          _discoveredDevices[index] = device;
+        } else {
+          _discoveredDevices.add(device);
+        }
+      } catch (e) {
+        debugPrint('[BT] 读取蓝牙设备信息失败: $e');
+      }
+    });
 
     try {
-      _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
-        for (final result in results) {
-          final device = result.device;
-          if (!_discoveredDevices.any((d) => d.remoteId == device.remoteId)) {
-            _discoveredDevices.add(device);
-            debugPrint('[BT] Found device: ${device.platformName} (${device.remoteId})');
-          }
+      await _centralManager.startDiscovery(serviceUUIDs: [_serviceUuid]);
+      timer = Timer(timeout, () {
+        if (!completer.isCompleted) {
+          completer.complete(discoveredDevices);
         }
       });
-
-      await FlutterBluePlus.startScan(
-        timeout: timeout,
-        withServices: [_serviceUuid], // Only find our sync service
-      );
-
-      // Also scan without service filter to find any device
-      await FlutterBluePlus.startScan(timeout: timeout);
-    } catch (e) {
-      debugPrint('[BT] Scan failed: $e');
+      return await completer.future;
+    } finally {
+      timer?.cancel();
+      await stopScan();
     }
   }
 
-  /// Stop scanning
+  Future<DeviceInfo?> _readDeviceInfo(DiscoveredEventArgs eventArgs) async {
+    try {
+      final peripheral = eventArgs.peripheral;
+      await _centralManager.connect(peripheral);
+      try {
+        final services = await _centralManager.discoverGATT(peripheral);
+        final service = services.where((item) => item.uuid == _serviceUuid).firstOrNull;
+        if (service == null) return null;
+        final characteristic = service.characteristics.where((item) => item.uuid == _deviceInfoCharUuid).firstOrNull;
+        if (characteristic == null) return null;
+
+        final bytes = await _centralManager.readCharacteristic(peripheral, characteristic);
+        final json = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        return DeviceInfo.fromJson(json);
+      } finally {
+        await _centralManager.disconnect(peripheral);
+      }
+    } catch (e) {
+      debugPrint('[BT] 连接蓝牙外设失败: $e');
+      return _deviceFromAdvertisement(eventArgs);
+    }
+  }
+
+  DeviceInfo? _deviceFromAdvertisement(DiscoveredEventArgs eventArgs) {
+    try {
+      final serviceData = eventArgs.advertisement.serviceData[_serviceUuid];
+      if (serviceData == null || serviceData.isEmpty) return null;
+      final ip = utf8.decode(serviceData);
+      if (ip.isEmpty) return null;
+      return DeviceInfo(
+        id: 'bt_${eventArgs.peripheral.uuid}',
+        name: eventArgs.advertisement.name ?? 'Apilot 设备',
+        platform: 'unknown',
+        ipAddress: ip,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _handleReadRequest(GATTCharacteristicReadRequestedEventArgs eventArgs) async {
+    final characteristic = _deviceInfoCharacteristic;
+    final localDevice = _advertisedDevice;
+    if (characteristic == null || localDevice == null || eventArgs.characteristic != characteristic) {
+      await _peripheralManager.respondReadRequestWithError(
+        eventArgs.request,
+        error: GATTError.attributeNotFound,
+      );
+      return;
+    }
+
+    final bytes = Uint8List.fromList(utf8.encode(jsonEncode(localDevice.toJson())));
+    final offset = eventArgs.request.offset;
+    if (offset > bytes.length) {
+      await _peripheralManager.respondReadRequestWithError(
+        eventArgs.request,
+        error: GATTError.invalidOffset,
+      );
+      return;
+    }
+    await _peripheralManager.respondReadRequestWithValue(
+      eventArgs.request,
+      value: bytes.sublist(offset),
+    );
+  }
+
   Future<void> stopScan() async {
     _isScanning = false;
-    await _scanSubscription?.cancel();
-    _scanSubscription = null;
     try {
-      await FlutterBluePlus.stopScan();
+      await _centralManager.stopDiscovery();
     } catch (_) {}
+    await _discoveredSubscription?.cancel();
+    _discoveredSubscription = null;
   }
 
-  /// Connect to a device
-  Future<bool> connect(BluetoothDevice device) async {
+  Future<void> stopAdvertising() async {
+    if (!_isAdvertising) return;
     try {
-      await device.connect(timeout: const Duration(seconds: 10));
-      _connectedDevice = device;
-
-      // Discover services
-      final services = await device.discoverServices();
-      final hasSyncService = services.any((s) => s.uuid == _serviceUuid);
-
-      if (!hasSyncService) {
-        debugPrint('[BT] Device does not have sync service');
-        // Still connected, might be a generic device
-      }
-
-      return true;
+      await _peripheralManager.stopAdvertising();
+      await _peripheralManager.removeAllServices();
     } catch (e) {
-      debugPrint('[BT] Connect failed: $e');
-      return false;
+      debugPrint('[BT] 停止广播失败: $e');
     }
-  }
-
-  /// Disconnect from current device
-  Future<void> disconnect() async {
-    try {
-      await _connectedDevice?.disconnect();
-    } catch (_) {}
-    _connectedDevice = null;
-  }
-
-  /// Send configs via BLE
-  Future<bool> sendConfigs(List<ApiConfig> configs) async {
-    if (_connectedDevice == null) return false;
-
-    try {
-      final services = await _connectedDevice!.discoverServices();
-      BluetoothService? syncService;
-      for (final s in services) {
-        if (s.uuid == _serviceUuid) {
-          syncService = s;
-          break;
-        }
-      }
-
-      if (syncService == null) {
-        debugPrint('[BT] Sync service not found, trying generic write');
-        return false;
-      }
-
-      // Find the config characteristic
-      BluetoothCharacteristic? configChar;
-      for (final c in syncService.characteristics) {
-        if (c.uuid == _configCharUuid) {
-          configChar = c;
-          break;
-        }
-      }
-
-      if (configChar == null) return false;
-
-      // Serialize configs
-      final payload = {
-        'version': '1.0',
-        'timestamp': DateTime.now().toIso8601String(),
-        'configs': configs.map((c) => c.toJson()).toList(),
-      };
-      final data = utf8.encode(jsonEncode(payload));
-
-      // BLE has MTU limit, split into chunks if needed
-      final mtu = await _connectedDevice!.mtu.first;
-      final chunkSize = (mtu - 3).clamp(20, 512); // BLE overhead
-
-      for (int i = 0; i < data.length; i += chunkSize) {
-        final end = (i + chunkSize).clamp(0, data.length);
-        final chunk = data.sublist(i, end);
-        await configChar.write(chunk, withoutResponse: false);
-      }
-
-      debugPrint('[BT] Sent ${configs.length} configs via BLE');
-      return true;
-    } catch (e) {
-      debugPrint('[BT] Send failed: $e');
-      return false;
-    }
-  }
-
-  /// Receive configs via BLE
-  Future<List<ApiConfig>> receiveConfigs() async {
-    if (_connectedDevice == null) return [];
-
-    try {
-      final services = await _connectedDevice!.discoverServices();
-      BluetoothService? syncService;
-      for (final s in services) {
-        if (s.uuid == _serviceUuid) {
-          syncService = s;
-          break;
-        }
-      }
-
-      if (syncService == null) return [];
-
-      BluetoothCharacteristic? configChar;
-      for (final c in syncService.characteristics) {
-        if (c.uuid == _configCharUuid) {
-          configChar = c;
-          break;
-        }
-      }
-
-      if (configChar == null) return [];
-
-      final data = await configChar.read();
-      if (data.isEmpty) return [];
-
-      final json = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
-      final configs = (json['configs'] as List)
-          .map((c) => ApiConfig.fromJson(c as Map<String, dynamic>))
-          .toList();
-
-      debugPrint('[BT] Received ${configs.length} configs via BLE');
-      return configs;
-    } catch (e) {
-      debugPrint('[BT] Receive failed: $e');
-      return [];
-    }
-  }
-
-  /// Start advertising as a sync server (Android only for now)
-  Future<void> startAdvertising() async {
-    try {
-      // Note: BLE advertising requires platform-specific implementation
-      // For now, we rely on scanning from the other device
-      debugPrint('[BT] BLE advertising not yet implemented');
-    } catch (e) {
-      debugPrint('[BT] Advertising failed: $e');
-    }
+    _isAdvertising = false;
   }
 
   void dispose() {
     stopScan();
-    disconnect();
+    stopAdvertising();
+    _readSubscription?.cancel();
   }
 }

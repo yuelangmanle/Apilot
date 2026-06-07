@@ -38,5 +38,23 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+
+    if target.name == 'bluetooth_low_energy_darwin'
+      privacy_refs = target.source_build_phase.files_references.select do |file_ref|
+        file_ref.path&.end_with?('PrivacyInfo.xcprivacy')
+      end
+
+      target.source_build_phase.files.each do |build_file|
+        next unless build_file.file_ref&.path&.end_with?('PrivacyInfo.xcprivacy')
+
+        build_file.remove_from_project
+      end
+
+      privacy_refs.each do |file_ref|
+        next if target.resources_build_phase.files_references.include?(file_ref)
+
+        target.resources_build_phase.add_file_reference(file_ref)
+      end
+    end
   end
 end

@@ -13,7 +13,7 @@ void main() {
       await tester.pumpWidget(const ApiManagerApp());
       await tester.pumpAndSettle();
 
-      expect(find.text('API管理器'), findsOneWidget);
+      expect(find.text('Apilot'), findsOneWidget);
     });
   });
 }

@@ -10,6 +10,6 @@ void main() {
 
   testWidgets('App should render', (WidgetTester tester) async {
     await tester.pumpWidget(const ApiManagerApp());
-    expect(find.text('API管理器'), findsOneWidget);
+    expect(find.text('Apilot'), findsOneWidget);
   });
 }

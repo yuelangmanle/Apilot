@@ -50,19 +50,16 @@
 
 ## 📥 下载安装
 
-### Android
+前往 [GitHub Releases](https://github.com/yuelangmanle/Apilot/releases) 下载最新版安装包：
 
-📱 **直接安装**
+| 平台 | 推荐文件 | 说明 |
+|:---|:---|:---|
+| Android | `Apilot-vX.Y.Z.apk` | 固定 release keystore 签名，可覆盖升级 |
+| macOS | `Apilot-vX.Y.Z.dmg` | 拖入 Applications 安装 |
+| Windows | `Apilot-vX.Y.Z-windows-setup.exe` | 标准安装包 |
+| Windows 绿色版 | `Apilot-vX.Y.Z-windows-portable.zip` | 解压即用 |
 
-前往 [GitHub Releases](https://github.com/yuelangmanle/Apilot/releases) 下载最新版 APK：
-
-```
-API管理器.apk
-```
-
-### macOS / Windows
-
-💻 **从源码构建**
+### 从源码构建
 
 ```bash
 # 1. 克隆仓库

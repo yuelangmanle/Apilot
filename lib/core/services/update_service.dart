@@ -39,28 +39,25 @@ class UpdateService {
       final tagName = data['tag_name'] as String? ?? '';
       final latestVersion = tagName.replaceFirst('v', '');
 
-      // 根据平台选择下载链接
       String downloadUrl = '';
       final assets = data['assets'] as List? ?? [];
-      final isMacOS = Platform.isMacOS;
-      final targetExt = isMacOS ? '.dmg' : '.apk';
+      final targetExts = _targetAssetExtensions();
 
       for (final asset in assets) {
         final name = asset['name'] as String? ?? '';
-        if (name.endsWith(targetExt)) {
+        if (targetExts.any(name.endsWith)) {
           downloadUrl = asset['browser_download_url'] as String? ?? '';
           break;
         }
-      }
-      // 降级：如果没有对应格式，取第一个
-      if (downloadUrl.isEmpty && assets.isNotEmpty) {
-        downloadUrl = assets.first['browser_download_url'] as String? ?? '';
       }
 
       final publishedAt = DateTime.tryParse(data['published_at'] as String? ?? '') ?? DateTime.now();
       final body = data['body'] as String? ?? '';
 
       if (_isNewerVersion(latestVersion, currentVersion)) {
+        if (downloadUrl.isEmpty) {
+          throw Exception('GitHub Release 中没有当前平台可用的安装包');
+        }
         return UpdateInfo(
           version: latestVersion,
           downloadUrl: downloadUrl,
@@ -73,6 +70,13 @@ class UpdateService {
     } catch (e) {
       return null;
     }
+  }
+
+  List<String> _targetAssetExtensions() {
+    if (Platform.isMacOS) return const ['.dmg'];
+    if (Platform.isWindows) return const ['.exe', '.msix', '.zip'];
+    if (Platform.isAndroid) return const ['.apk'];
+    return const ['.apk', '.dmg', '.exe', '.msix', '.zip'];
   }
 
   bool _isNewerVersion(String latest, String current) {

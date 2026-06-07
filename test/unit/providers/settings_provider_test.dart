@@ -1,11 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:api_manager/features/settings/providers/settings_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('SettingsProvider', () {
     late SettingsProvider provider;
 
     setUp(() {
+      SharedPreferences.setMockInitialValues({});
       provider = SettingsProvider();
     });
 
