@@ -4,6 +4,15 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+enum ReleasePlatform {
+  macOS,
+  windows,
+  android,
+  ios,
+  linux,
+  unknown,
+}
+
 class UpdateInfo {
   final String version;
   final String downloadUrl;
@@ -21,7 +30,8 @@ class UpdateInfo {
 class UpdateService {
   static const String _repoOwner = 'yuelangmanle';
   static const String _repoName = 'Apilot';
-  static const String _apiUrl = 'https://api.github.com/repos/$_repoOwner/$_repoName/releases/latest';
+  static const String _apiUrl =
+      'https://api.github.com/repos/$_repoOwner/$_repoName/releases/latest';
 
   Future<UpdateInfo?> checkForUpdate() async {
     try {
@@ -39,19 +49,12 @@ class UpdateService {
       final tagName = data['tag_name'] as String? ?? '';
       final latestVersion = tagName.replaceFirst('v', '');
 
-      String downloadUrl = '';
       final assets = data['assets'] as List? ?? [];
-      final targetExts = _targetAssetExtensions();
+      final downloadUrl = selectReleaseAssetUrl(assets) ?? '';
 
-      for (final asset in assets) {
-        final name = asset['name'] as String? ?? '';
-        if (targetExts.any(name.endsWith)) {
-          downloadUrl = asset['browser_download_url'] as String? ?? '';
-          break;
-        }
-      }
-
-      final publishedAt = DateTime.tryParse(data['published_at'] as String? ?? '') ?? DateTime.now();
+      final publishedAt =
+          DateTime.tryParse(data['published_at'] as String? ?? '') ??
+              DateTime.now();
       final body = data['body'] as String? ?? '';
 
       if (_isNewerVersion(latestVersion, currentVersion)) {
@@ -72,11 +75,48 @@ class UpdateService {
     }
   }
 
-  List<String> _targetAssetExtensions() {
-    if (Platform.isMacOS) return const ['.dmg'];
-    if (Platform.isWindows) return const ['.exe', '.msix', '.zip'];
-    if (Platform.isAndroid) return const ['.apk'];
-    return const ['.apk', '.dmg', '.exe', '.msix', '.zip'];
+  static String? selectReleaseAssetUrl(
+    List<dynamic> assets, {
+    ReleasePlatform? platform,
+  }) {
+    final targetPlatform = platform ?? currentReleasePlatform();
+    final extensions = _targetAssetExtensions(targetPlatform);
+
+    for (final extension in extensions) {
+      for (final asset in assets) {
+        if (asset is! Map) continue;
+        final name = (asset['name'] as String? ?? '').toLowerCase();
+        if (!name.endsWith(extension)) continue;
+
+        final url = asset['browser_download_url'] as String? ?? '';
+        if (url.isNotEmpty) return url;
+      }
+    }
+    return null;
+  }
+
+  static ReleasePlatform currentReleasePlatform() {
+    if (Platform.isMacOS) return ReleasePlatform.macOS;
+    if (Platform.isWindows) return ReleasePlatform.windows;
+    if (Platform.isAndroid) return ReleasePlatform.android;
+    if (Platform.isIOS) return ReleasePlatform.ios;
+    if (Platform.isLinux) return ReleasePlatform.linux;
+    return ReleasePlatform.unknown;
+  }
+
+  static List<String> _targetAssetExtensions(ReleasePlatform platform) {
+    switch (platform) {
+      case ReleasePlatform.macOS:
+        return const ['.dmg'];
+      case ReleasePlatform.windows:
+        return const ['.exe', '.msix', '.zip'];
+      case ReleasePlatform.android:
+        return const ['.apk'];
+      case ReleasePlatform.ios:
+      case ReleasePlatform.linux:
+      case ReleasePlatform.unknown:
+        return const ['.dmg', '.exe', '.msix', '.zip', '.apk'];
+    }
   }
 
   bool _isNewerVersion(String latest, String current) {

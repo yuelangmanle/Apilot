@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../utils/qr_sync_payload.dart';
 
 class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
@@ -18,6 +20,17 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
   );
   bool _useManualInput = false;
   bool _handledScan = false;
+  bool _cameraReady = false;
+  String? _cameraError;
+
+  bool get _scannerSupported =>
+      Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepareCamera();
+  }
 
   @override
   void dispose() {
@@ -35,28 +48,75 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
         foregroundColor: Colors.white,
         actions: [
           TextButton.icon(
-            onPressed: () => setState(() => _useManualInput = !_useManualInput),
-            icon: Icon(_useManualInput ? Icons.qr_code_scanner : Icons.edit, color: Colors.white),
-            label: Text(_useManualInput ? '扫码' : '手动', style: const TextStyle(color: Colors.white)),
+            onPressed: _toggleInputMode,
+            icon: Icon(_useManualInput ? Icons.qr_code_scanner : Icons.edit,
+                color: Colors.white),
+            label: Text(_useManualInput ? '扫码' : '手动',
+                style: const TextStyle(color: Colors.white)),
           ),
         ],
       ),
-      body: _useManualInput || !(Platform.isAndroid || Platform.isIOS || Platform.isMacOS)
+      body: _useManualInput || !_scannerSupported
           ? _buildManualInput()
-          : Column(
-              children: [
-                Expanded(
-                  child: MobileScanner(
-                    controller: _scannerController,
-                    onDetect: _handleBarcodeCapture,
-                    errorBuilder: (context, error) {
-                      return _buildScannerError(error.toString());
-                    },
-                  ),
-                ),
-                _buildScannerTips(),
-              ],
-            ),
+          : _cameraError != null
+              ? _buildScannerError(_cameraError!)
+              : !_cameraReady
+                  ? _buildPreparingCamera()
+                  : Column(
+                      children: [
+                        Expanded(
+                          child: MobileScanner(
+                            controller: _scannerController,
+                            onDetect: _handleBarcodeCapture,
+                            errorBuilder: (context, error) {
+                              return _buildScannerError(error.toString());
+                            },
+                          ),
+                        ),
+                        _buildScannerTips(),
+                      ],
+                    ),
+    );
+  }
+
+  Future<void> _prepareCamera() async {
+    if (!_scannerSupported) return;
+    setState(() {
+      _cameraError = null;
+    });
+    final status = await Permission.camera.request();
+    if (!mounted) return;
+    if (status.isGranted || status.isLimited) {
+      setState(() => _cameraReady = true);
+      return;
+    }
+    setState(() {
+      _cameraReady = false;
+      _cameraError = status.isPermanentlyDenied
+          ? '相机权限已被系统拒绝，请在系统设置中允许 Apilot 使用相机'
+          : '需要相机权限才能扫描二维码';
+    });
+  }
+
+  void _toggleInputMode() {
+    if (_useManualInput) {
+      setState(() => _useManualInput = false);
+      _prepareCamera();
+    } else {
+      setState(() => _useManualInput = true);
+    }
+  }
+
+  Widget _buildPreparingCamera() {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('正在请求相机权限...'),
+        ],
+      ),
     );
   }
 
@@ -67,16 +127,27 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.camera_alt_outlined, size: 56, color: AppColors.warning),
+            const Icon(Icons.camera_alt_outlined,
+                size: 56, color: AppColors.warning),
             const SizedBox(height: 16),
-            const Text('无法打开摄像头', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('无法打开摄像头',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text(error, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary), textAlign: TextAlign.center),
+            Text(error,
+                style: const TextStyle(
+                    fontSize: 12, color: AppColors.textSecondary),
+                textAlign: TextAlign.center),
             const SizedBox(height: 20),
             ElevatedButton.icon(
               onPressed: () => setState(() => _useManualInput = true),
               icon: const Icon(Icons.keyboard),
               label: const Text('改用手动输入'),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: openAppSettings,
+              icon: const Icon(Icons.settings),
+              label: const Text('打开系统设置'),
             ),
           ],
         ),
@@ -113,11 +184,15 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                     children: [
                       Icon(Icons.wifi, color: AppColors.primary),
                       SizedBox(width: 8),
-                      Text('输入设备IP地址', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text('输入设备IP地址',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
                     ],
                   ),
                   const SizedBox(height: 8),
-                  const Text('在对方设备的“同步”页面可以看到IP地址', style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                  const Text('在对方设备的“同步”页面可以看到IP地址',
+                      style: TextStyle(
+                          fontSize: 13, color: AppColors.textSecondary)),
                   const SizedBox(height: 20),
                   TextField(
                     controller: _ipController,
@@ -155,10 +230,11 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
               padding: EdgeInsets.all(16),
               child: Text(
                 '连接提示\n'
-                '1. 确保两台设备在同一WiFi网络下\n'
+                '1. 确保对方设备的同步页面保持打开\n'
                 '2. 在对方设备的“同步”页面查看IP地址或二维码\n'
                 '3. 连接成功后可选择发送、接收或双向同步',
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary, height: 1.6),
+                style: TextStyle(
+                    fontSize: 13, color: AppColors.textSecondary, height: 1.6),
               ),
             ),
           ),
@@ -169,34 +245,25 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
 
   void _handleBarcodeCapture(BarcodeCapture capture) {
     if (_handledScan) return;
-    final rawValue = capture.barcodes.where((barcode) => barcode.rawValue != null).map((barcode) => barcode.rawValue!).firstOrNull;
+    final rawValue = capture.barcodes
+        .where((barcode) => barcode.rawValue != null)
+        .map((barcode) => barcode.rawValue!)
+        .firstOrNull;
     if (rawValue == null) return;
     _handledScan = true;
     _connectByText(rawValue);
   }
 
   void _connectByText(String text) {
-    final ip = _extractIP(text.trim());
+    final ip = extractSyncIp(text.trim());
     if (ip == null) {
       _handledScan = false;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('二维码或IP地址格式不正确'), backgroundColor: AppColors.error),
+        const SnackBar(
+            content: Text('二维码或IP地址格式不正确'), backgroundColor: AppColors.error),
       );
       return;
     }
     Navigator.pop(context, ip);
-  }
-
-  String? _extractIP(String value) {
-    final firstField = value.split('|').first.trim();
-    final uri = Uri.tryParse(firstField);
-    final candidate = uri != null && uri.hasScheme ? uri.host : firstField;
-    final parts = candidate.split('.');
-    if (parts.length != 4) return null;
-    for (final part in parts) {
-      final number = int.tryParse(part);
-      if (number == null || number < 0 || number > 255) return null;
-    }
-    return candidate;
   }
 }

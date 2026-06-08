@@ -1,5 +1,24 @@
 # 更新日志
 
+## v1.17.2 (2026-06-08)
+
+### Bug修复
+- **修复macOS更新包选择错误** - 检查更新严格按当前平台匹配发布资产，macOS 只选择 `.dmg`，避免下载到 Android APK。
+- **修复同步设备重复显示** - 继续按设备ID和IP去重，并覆盖同一设备IP变化场景，减少macOS发现列表重复设备。
+- **修复蓝牙模式混入WiFi发现结果** - WiFi UDP发现和蓝牙近场发现分离，切换到蓝牙模式时停止并清空WiFi发现列表。
+- **修复Android蓝牙权限请求** - Android 12+ 主动申请 Nearby Devices 蓝牙扫描/连接/广播权限，旧版Android保留定位权限用于BLE发现。
+- **修复手机扫码连接** - 扫码前主动请求相机权限，二维码解析支持旧格式、URL和JSON格式，并保留手动输入兜底。
+- **修复蓝牙界面误导文案** - 蓝牙发现页面不再提示同一WiFi/热点，避免和蓝牙近场发现模式混淆。
+- **修复macOS更新后数据看似消失** - macOS bundle id 恢复为历史值 `com.example.apiManager`，继续使用原沙盒容器中的数据库。
+
+### 验证
+- `flutter test`
+- `flutter analyze`
+- `flutter build apk --debug`
+- `flutter build macos --debug`
+
+---
+
 ## v1.17.1 (2026-06-08)
 
 ### 发布修复

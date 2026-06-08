@@ -43,6 +43,49 @@ void main() {
       expect(service.discoveredDevices.single.id, 'remote-2');
     });
 
+    test('dedupes discovered devices by stable device id when IP changes',
+        () async {
+      final service = SyncService(localDeviceIdOverride: 'local-device');
+
+      await service.upsertDiscoveredDevice(
+        DeviceInfo(
+          id: 'remote-1',
+          name: 'Phone',
+          platform: 'android',
+          ipAddress: '192.168.1.23',
+        ),
+      );
+      await service.upsertDiscoveredDevice(
+        DeviceInfo(
+          id: 'remote-1',
+          name: 'Phone',
+          platform: 'android',
+          ipAddress: '192.168.1.24',
+        ),
+      );
+
+      expect(service.discoveredDevices, hasLength(1));
+      expect(service.discoveredDevices.single.ipAddress, '192.168.1.24');
+    });
+
+    test('clears WiFi-discovered devices when discovery is disabled', () async {
+      final service = SyncService(localDeviceIdOverride: 'local-device');
+
+      await service.upsertDiscoveredDevice(
+        DeviceInfo(
+          id: 'remote-1',
+          name: 'Phone',
+          platform: 'android',
+          ipAddress: '192.168.1.23',
+        ),
+      );
+
+      await service.setDiscoveryEnabled(false, clearDevices: true);
+
+      expect(service.discoveredDevices, isEmpty);
+      expect(service.isDiscoveryRunning, isFalse);
+    });
+
     test('ignores discovered records from the local device id', () async {
       final service = SyncService(localDeviceIdOverride: 'local-device');
 

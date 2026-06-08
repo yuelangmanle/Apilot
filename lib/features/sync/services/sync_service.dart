@@ -21,10 +21,12 @@ class SyncService {
   RawDatagramSocket? _discoverySocket;
   Timer? _broadcastTimer;
   bool _isRunning = false;
+  bool _isDiscoveryRunning = false;
   String? _localDeviceIdCache;
 
   List<DeviceInfo> get discoveredDevices => List.unmodifiable(_devices);
   bool get isRunning => _isRunning;
+  bool get isDiscoveryRunning => _isDiscoveryRunning;
 
   SyncService({String? localDeviceIdOverride})
       : _localDeviceIdOverride = localDeviceIdOverride;
@@ -87,25 +89,47 @@ class SyncService {
     return '127.0.0.1';
   }
 
-  Future<void> start() async {
-    if (_isRunning) return;
-    _isRunning = true;
+  Future<void> start({bool enableDiscovery = true}) async {
     debugPrint('[Sync] 启动同步服务...');
-    await _startDiscovery();
     await _startSyncServer();
+    if (enableDiscovery) {
+      await startDiscovery();
+    }
+    _isRunning = _syncServer != null;
     debugPrint('[Sync] 同步服务已启动，IP: ${await _getLocalIP()}');
   }
 
   Future<void> stop() async {
     _isRunning = false;
+    await stopDiscovery(clearDevices: true);
+    await _syncServer?.close();
+    _syncServer = null;
+    debugPrint('[Sync] 同步服务已停止');
+  }
+
+  Future<void> setDiscoveryEnabled(
+    bool enabled, {
+    bool clearDevices = false,
+  }) async {
+    if (enabled) {
+      await startDiscovery();
+    } else {
+      await stopDiscovery(clearDevices: clearDevices);
+    }
+  }
+
+  Future<void> startDiscovery() async {
+    if (_isDiscoveryRunning) return;
+    await _startDiscovery();
+  }
+
+  Future<void> stopDiscovery({bool clearDevices = false}) async {
     _broadcastTimer?.cancel();
     _broadcastTimer = null;
     _discoverySocket?.close();
     _discoverySocket = null;
-    await _syncServer?.close();
-    _syncServer = null;
-    _devices.clear();
-    debugPrint('[Sync] 同步服务已停止');
+    _isDiscoveryRunning = false;
+    if (clearDevices) _devices.clear();
   }
 
   Future<void> _startDiscovery() async {
@@ -135,10 +159,13 @@ class SyncService {
       });
 
       // 定期广播自己的存在
-      _broadcastTimer = Timer.periodic(const Duration(seconds: 3), (_) => _broadcastPresence());
+      _broadcastTimer = Timer.periodic(
+          const Duration(seconds: 3), (_) => _broadcastPresence());
       _broadcastPresence(); // 立即广播一次
+      _isDiscoveryRunning = true;
       debugPrint('[Sync] UDP发现已启动，端口: $_discoveryPort');
     } catch (e) {
+      _isDiscoveryRunning = false;
       debugPrint('[Sync] UDP发现启动失败: $e');
     }
   }
@@ -146,15 +173,18 @@ class SyncService {
   void _broadcastPresence() async {
     try {
       final device = await getLocalDeviceInfo();
-      final message = jsonEncode({'header': _magicHeader, 'device': device.toJson()});
+      final message =
+          jsonEncode({'header': _magicHeader, 'device': device.toJson()});
       final data = message.codeUnits;
 
       // 同时发送到多播组和广播地址
       try {
-        _discoverySocket?.send(data, InternetAddress(_multicastGroup), _discoveryPort);
+        _discoverySocket?.send(
+            data, InternetAddress(_multicastGroup), _discoveryPort);
       } catch (_) {}
       try {
-        _discoverySocket?.send(data, InternetAddress('255.255.255.255'), _discoveryPort);
+        _discoverySocket?.send(
+            data, InternetAddress('255.255.255.255'), _discoveryPort);
       } catch (_) {}
     } catch (e) {
       debugPrint('[Sync] 广播失败: $e');
@@ -166,7 +196,8 @@ class SyncService {
       final message = jsonDecode(String.fromCharCodes(datagram.data));
       if (message['header'] != _magicHeader) return;
 
-      final device = DeviceInfo.fromJson(message['device'] as Map<String, dynamic>);
+      final device =
+          DeviceInfo.fromJson(message['device'] as Map<String, dynamic>);
       await upsertDiscoveredDevice(device, sourceIp: datagram.address.address);
     } catch (e) {
       debugPrint('[Sync] 解析发现消息失败: $e');
@@ -183,14 +214,17 @@ class SyncService {
       id: device.id,
       name: device.name.isEmpty ? '未知设备' : device.name,
       platform: device.platform,
-      ipAddress: sourceIp != null && _isUsableRemoteIP(sourceIp) ? sourceIp : device.ipAddress,
+      ipAddress: sourceIp != null && _isUsableRemoteIP(sourceIp)
+          ? sourceIp
+          : device.ipAddress,
       lastSeen: DateTime.now(),
       isOnline: true,
     );
 
     final index = _devices.indexWhere((existing) {
       if (existing.id == normalized.id) return true;
-      return existing.ipAddress == normalized.ipAddress && normalized.ipAddress.isNotEmpty;
+      return existing.ipAddress == normalized.ipAddress &&
+          normalized.ipAddress.isNotEmpty;
     });
 
     if (index >= 0) {
@@ -213,7 +247,9 @@ class SyncService {
 
     final socketAddress = _discoverySocket?.address.address;
     if (socketAddress != null && socketAddress != '0.0.0.0') {
-      if (device.ipAddress == socketAddress || sourceIp == socketAddress) return true;
+      if (device.ipAddress == socketAddress || sourceIp == socketAddress) {
+        return true;
+      }
     }
 
     return false;
@@ -241,8 +277,10 @@ class SyncService {
   }
 
   Future<void> _startSyncServer() async {
+    if (_syncServer != null) return;
     try {
       _syncServer = await HttpServer.bind(InternetAddress.anyIPv4, _syncPort);
+      _isRunning = true;
       debugPrint('[Sync] HTTP同步服务器已启动，端口: $_syncPort');
 
       _syncServer!.listen((request) async {
@@ -255,13 +293,19 @@ class SyncService {
           request.response
             ..statusCode = HttpStatus.ok
             ..headers.contentType = ContentType.json
-            ..write(jsonEncode({'status': 'ok', 'device': (await getLocalDeviceInfo()).toJson()}))
+            ..write(jsonEncode({
+              'status': 'ok',
+              'device': (await getLocalDeviceInfo()).toJson()
+            }))
             ..close();
         } else {
-          request.response..statusCode = HttpStatus.notFound..close();
+          request.response
+            ..statusCode = HttpStatus.notFound
+            ..close();
         }
       });
     } catch (e) {
+      _isRunning = false;
       debugPrint('[Sync] HTTP服务器启动失败: $e');
     }
   }
@@ -286,7 +330,8 @@ class SyncService {
         ..close();
     } catch (e) {
       debugPrint('[Sync] 处理同步请求失败: $e');
-      request.response..statusCode = HttpStatus.badRequest
+      request.response
+        ..statusCode = HttpStatus.badRequest
         ..write(jsonEncode({'error': e.toString()}))
         ..close();
     }
@@ -307,7 +352,9 @@ class SyncService {
         ..close();
     } catch (e) {
       debugPrint('[Sync] 获取配置失败: $e');
-      request.response..statusCode = HttpStatus.internalServerError..close();
+      request.response
+        ..statusCode = HttpStatus.internalServerError
+        ..close();
     }
   }
 
@@ -317,7 +364,8 @@ class SyncService {
       if ((await _getLocalIPv4Addresses()).contains(ip)) return null;
       final client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 5);
-      final request = await client.getUrl(Uri.parse('http://$ip:$_syncPort/ping'));
+      final request =
+          await client.getUrl(Uri.parse('http://$ip:$_syncPort/ping'));
       final response = await request.close();
       final body = await utf8.decoder.bind(response).join();
       client.close();
@@ -325,7 +373,8 @@ class SyncService {
       if (response.statusCode == 200) {
         final data = jsonDecode(body) as Map<String, dynamic>;
         if (data.containsKey('device')) {
-          final device = DeviceInfo.fromJson(data['device'] as Map<String, dynamic>);
+          final device =
+              DeviceInfo.fromJson(data['device'] as Map<String, dynamic>);
           await upsertDiscoveredDevice(device, sourceIp: ip);
           return device;
         }
@@ -387,6 +436,8 @@ class SyncService {
 
   static List<ApiConfig> parseSyncPayload(Map<String, dynamic> data) {
     final configs = data['configs'] as List;
-    return configs.map((c) => ApiConfig.fromJson(c as Map<String, dynamic>)).toList();
+    return configs
+        .map((c) => ApiConfig.fromJson(c as Map<String, dynamic>))
+        .toList();
   }
 }
