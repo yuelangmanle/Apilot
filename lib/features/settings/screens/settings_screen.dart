@@ -9,6 +9,7 @@ import '../../api_testing/screens/history_screen.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../sync/screens/sync_screen.dart';
 import '../../api_management/screens/group_manage_screen.dart';
+import '../../third_party_import/screens/third_party_import_docs_screen.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/models/api_config.dart';
 
@@ -78,7 +79,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onTap: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (context) => const GroupManageScreen()),
+                    MaterialPageRoute(
+                        builder: (context) => const GroupManageScreen()),
                   );
                 },
               ),
@@ -114,7 +116,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onTap: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (context) => const HistoryScreen()),
+                    MaterialPageRoute(
+                        builder: (context) => const HistoryScreen()),
                   );
                 },
               ),
@@ -150,6 +153,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: settings.isDarkMode,
                 onChanged: (_) => settings.toggleDarkMode(),
                 secondary: const Icon(Icons.dark_mode),
+              ),
+            ],
+          ),
+          _buildSection(
+            context: context,
+            title: '开发者',
+            children: [
+              ListTile(
+                leading: const Icon(Icons.integration_instructions),
+                title: const Text('第三方导入接入文档'),
+                subtitle: const Text('让其他Android App唤起Apilot导入API配置'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ThirdPartyImportDocsScreen(),
+                    ),
+                  );
+                },
               ),
             ],
           ),
@@ -195,9 +218,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 title: const Text('GitHub'),
                 subtitle: const Text('github.com/yuelangmanle/Apilot'),
                 onTap: () {
-                  Clipboard.setData(const ClipboardData(text: 'https://github.com/yuelangmanle/Apilot'));
+                  Clipboard.setData(const ClipboardData(
+                      text: 'https://github.com/yuelangmanle/Apilot'));
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('GitHub 链接已复制'), duration: Duration(seconds: 1)),
+                    const SnackBar(
+                        content: Text('GitHub 链接已复制'),
+                        duration: Duration(seconds: 1)),
                   );
                 },
               ),
@@ -292,7 +318,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: AppColors.primary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
@@ -364,8 +391,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final importExportService = ImportExportService();
       final json = await importExportService.exportConfigs(configs, []);
-      final timestamp = DateTime.now().toString().substring(0, 19).replaceAll(':', '-').replaceAll(' ', '_');
-      await importExportService.saveToFile(json, 'apilot_export_$timestamp.json');
+      final timestamp = DateTime.now()
+          .toString()
+          .substring(0, 19)
+          .replaceAll(':', '-')
+          .replaceAll(' ', '_');
+      await importExportService.saveToFile(
+          json, 'apilot_export_$timestamp.json');
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -398,14 +430,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(Icons.content_paste, color: AppColors.primary),
+                leading:
+                    const Icon(Icons.content_paste, color: AppColors.primary),
                 title: const Text('粘贴JSON'),
                 subtitle: const Text('从剪贴板粘贴配置数据'),
                 onTap: () => Navigator.pop(context, 'paste'),
                 contentPadding: EdgeInsets.zero,
               ),
               ListTile(
-                leading: const Icon(Icons.folder_open, color: AppColors.secondary),
+                leading:
+                    const Icon(Icons.folder_open, color: AppColors.secondary),
                 title: const Text('从备份文件加载'),
                 subtitle: const Text('从默认备份目录读取'),
                 onTap: () => Navigator.pop(context, 'file'),
@@ -414,7 +448,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消')),
           ],
         ),
       );
@@ -429,7 +465,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (jsonString.isEmpty) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('剪贴板为空'), backgroundColor: AppColors.warning),
+              const SnackBar(
+                  content: Text('剪贴板为空'), backgroundColor: AppColors.warning),
             );
           }
           return;

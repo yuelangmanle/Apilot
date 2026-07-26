@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'shared/theme/app_theme.dart';
@@ -10,6 +12,10 @@ import 'features/api_management/screens/api_list_screen.dart';
 import 'features/api_testing/screens/history_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_screen.dart';
+import 'features/third_party_import/models/third_party_import_models.dart';
+import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
+import 'features/third_party_import/screens/third_party_import_source_screen.dart';
+import 'features/third_party_import/services/third_party_import_channel.dart';
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
@@ -53,6 +59,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _selectedIndex = 0;
+  final ThirdPartyImportChannel _thirdPartyImportChannel =
+      ThirdPartyImportChannel.instance;
 
   static const List<Widget> _screens = [
     ApiListScreen(),
@@ -67,6 +75,17 @@ class _AppShellState extends State<AppShell> {
     _NavItem(icon: Icons.sync, label: '同步'),
     _NavItem(icon: Icons.settings, label: '设置'),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !Platform.isAndroid) return;
+      _thirdPartyImportChannel.initialize(
+        onRequest: _handleThirdPartyImportRequest,
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -124,6 +143,31 @@ class _AppShellState extends State<AppShell> {
         }).toList(),
       ),
     );
+  }
+
+  Future<void> _handleThirdPartyImportRequest(
+    ThirdPartyImportRequest request,
+  ) async {
+    if (!mounted) return;
+
+    if (request.openDocs) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => const ThirdPartyImportDocsScreen(),
+        ),
+      );
+      return;
+    }
+
+    final imported = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (context) => ThirdPartyImportSourceScreen(request: request),
+      ),
+    );
+
+    if (imported == true && mounted) {
+      await context.read<ApiProvider>().loadApiConfigs();
+    }
   }
 }
 

@@ -22,6 +22,8 @@ class ApiProvider with ChangeNotifier {
   String? get selectedTag => _selectedTag;
   String get sortBy => _sortBy;
 
+  List<ApiConfig> get allApiConfigs => List.unmodifiable(_apiConfigs);
+
   List<ApiConfig> get apiConfigs {
     var configs = _apiConfigs;
 
@@ -34,7 +36,8 @@ class ApiProvider with ChangeNotifier {
     }
 
     if (_selectedEnvironment != null) {
-      configs = configs.where((c) => c.environment == _selectedEnvironment).toList();
+      configs =
+          configs.where((c) => c.environment == _selectedEnvironment).toList();
     }
 
     if (_selectedTag != null) {
@@ -42,11 +45,12 @@ class ApiProvider with ChangeNotifier {
     }
 
     if (_searchQuery.isNotEmpty) {
-      configs = configs.where((c) =>
-        c.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-        c.baseUrl.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-        c.apiKey.toLowerCase().contains(_searchQuery.toLowerCase())
-      ).toList();
+      configs = configs
+          .where((c) =>
+              c.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+              c.baseUrl.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+              c.apiKey.toLowerCase().contains(_searchQuery.toLowerCase()))
+          .toList();
     }
 
     // 排序
@@ -59,7 +63,8 @@ class ApiProvider with ChangeNotifier {
         break;
       case 'name':
       default:
-        configs.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        configs.sort(
+            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
         break;
     }
 
