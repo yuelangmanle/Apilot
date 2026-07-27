@@ -71,7 +71,8 @@ jobs:
           path: Apilot-${{ github.ref_name }}.dmg
 
   build-windows:
-    runs-on: windows-latest
+    # windows-latest 已切到 VS 2026；现有 Windows 插件仍依赖 experimental coroutine。
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Setup Flutter
