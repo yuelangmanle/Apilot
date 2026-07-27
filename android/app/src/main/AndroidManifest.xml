@@ -53,6 +53,12 @@
                 <data android:scheme="apilot" android:host="import"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name=".ApilotQrCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/zxing_CaptureTheme"
+            android:windowSoftInputMode="stateAlwaysHidden" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.third_party_results"

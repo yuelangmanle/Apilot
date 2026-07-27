@@ -7,6 +7,7 @@ import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/api_provider.dart';
+import '../services/api_connection_paste_parser.dart';
 
 class ApiFormScreen extends StatefulWidget {
   final ApiConfig? apiConfig;
@@ -84,6 +85,12 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      OutlinedButton.icon(
+                        onPressed: _recognizePastedConnection,
+                        icon: const Icon(Icons.content_paste_search),
+                        label: const Text('粘贴识别地址和 Key'),
+                      ),
+                      const SizedBox(height: 16),
                       TextFormField(
                         controller: _nameController,
                         decoration: const InputDecoration(
@@ -364,6 +371,89 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                 ),
               ),
             ),
+    );
+  }
+
+  Future<void> _recognizePastedConnection() async {
+    final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted) return;
+    final textController = TextEditingController(text: clipboard?.text ?? '');
+    ApiConnectionPasteResult? parsed;
+    String? error;
+
+    final result = await showDialog<ApiConnectionPasteResult>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('识别 API 连接信息'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: textController,
+                  autofocus: textController.text.isEmpty,
+                  minLines: 5,
+                  maxLines: 10,
+                  decoration: const InputDecoration(
+                    labelText: '粘贴包含地址和 Key 的文本',
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    error!,
+                    style: const TextStyle(color: AppColors.error),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final candidate =
+                    ApiConnectionPasteParser.parse(textController.text);
+                if (candidate == null) {
+                  setDialogState(() {
+                    error = '未同时识别到有效的 API 地址和 Key';
+                  });
+                  return;
+                }
+                parsed = candidate;
+                Navigator.pop(dialogContext, candidate);
+              },
+              icon: const Icon(Icons.auto_fix_high),
+              label: const Text('识别并填入'),
+            ),
+          ],
+        ),
+      ),
+    );
+    textController.dispose();
+    if (!mounted || result == null || parsed == null) return;
+
+    setState(() {
+      _baseUrlController.text = result.baseUrl;
+      _apiKeyController.text = result.apiKey;
+      _validationStatus = '';
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.urlWasNormalized
+              ? '已识别并修正 API 地址格式，请继续填写名称、模型和分组'
+              : '已识别 API 地址和 Key，请继续填写名称、模型和分组',
+        ),
+        backgroundColor: AppColors.success,
+      ),
     );
   }
 

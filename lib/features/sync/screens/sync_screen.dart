@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../services/sync_service.dart';
 import '../services/bluetooth_sync_service.dart';
 import '../utils/sync_mode_policy.dart';
+import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -29,12 +32,19 @@ class _SyncScreenState extends State<SyncScreen> {
   bool _isBluetoothBusy = false;
   DeviceInfo? _localDevice;
   Timer? _refreshTimer;
+  StreamSubscription<BluetoothIncomingTransferOffer>?
+      _incomingOfferSubscription;
+  StreamSubscription<BluetoothReceivedTransfer>? _receivedTransferSubscription;
   String? _syncStatus;
   SyncMode _syncMode = SyncMode.wifi;
 
   @override
   void initState() {
     super.initState();
+    _incomingOfferSubscription = _btService.incomingOffers
+        .listen((offer) => unawaited(_handleIncomingBluetoothOffer(offer)));
+    _receivedTransferSubscription = _btService.receivedTransfers.listen(
+        (transfer) => unawaited(_handleReceivedBluetoothTransfer(transfer)));
     _initSync();
   }
 
@@ -61,16 +71,26 @@ class _SyncScreenState extends State<SyncScreen> {
       shouldRunWifiDiscovery,
       clearDevices: clearDevices && !shouldRunWifiDiscovery,
     );
-    if (!shouldRunWifiDiscovery) {
+    if (shouldRunWifiDiscovery) {
       await _btService.stopScan();
+      await _btService.stopAdvertising();
+    } else {
+      final localDevice =
+          _localDevice ?? await _syncService.getLocalDeviceInfo();
+      _localDevice = localDevice;
+      await _btService.startAdvertising(localDevice);
     }
     if (mounted) _refreshSyncState();
   }
 
   void _refreshSyncState() {
     setState(() {
-      _devices = _syncService.discoveredDevices;
-      _isServiceOnline = _syncService.isRunning;
+      _devices = _syncMode == SyncMode.wifi
+          ? _syncService.discoveredDevices
+          : _btService.discoveredDevices;
+      _isServiceOnline = _syncMode == SyncMode.wifi
+          ? _syncService.isRunning
+          : _btService.isAdvertising;
       _isDiscoveryActive = _syncMode == SyncMode.wifi
           ? _syncService.isDiscoveryRunning
           : _isBluetoothBusy;
@@ -82,7 +102,7 @@ class _SyncScreenState extends State<SyncScreen> {
     setState(() {
       _syncMode = mode;
       _syncStatus =
-          mode == SyncMode.bluetooth ? '已切换到蓝牙发现模式' : '已切换到 WiFi 局域网发现模式';
+          mode == SyncMode.bluetooth ? '已切换到真实蓝牙传输模式' : '已切换到 WiFi 局域网同步模式';
     });
     await _applySyncMode(clearDevices: true);
   }
@@ -90,6 +110,8 @@ class _SyncScreenState extends State<SyncScreen> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _incomingOfferSubscription?.cancel();
+    _receivedTransferSubscription?.cancel();
     _syncService.stop();
     _btService.dispose();
     super.dispose();
@@ -189,18 +211,20 @@ class _SyncScreenState extends State<SyncScreen> {
       appBar: AppBar(
         title: const Text('设备同步'),
         actions: [
-          IconButton(
-              icon: const Icon(Icons.phonelink),
-              onPressed: _scanQRCode,
-              tooltip: '输入IP连接'),
-          IconButton(
-              icon: const Icon(Icons.qr_code),
-              onPressed: _showQRCode,
-              tooltip: '我的二维码'),
-          IconButton(
-              icon: const Icon(Icons.edit),
-              onPressed: _showManualConnect,
-              tooltip: '手动连接'),
+          if (_syncMode == SyncMode.wifi) ...[
+            IconButton(
+                icon: const Icon(Icons.phonelink),
+                onPressed: _scanQRCode,
+                tooltip: '扫码连接'),
+            IconButton(
+                icon: const Icon(Icons.qr_code),
+                onPressed: _showQRCode,
+                tooltip: '我的二维码'),
+            IconButton(
+                icon: const Icon(Icons.edit),
+                onPressed: _showManualConnect,
+                tooltip: '手动连接'),
+          ],
         ],
       ),
       body: isWide ? CenteredContent(maxWidth: 600, child: content) : content,
@@ -232,7 +256,11 @@ class _SyncScreenState extends State<SyncScreen> {
       case SyncMode.wifi:
         return _isDiscoveryActive ? '已发现 ${_devices.length} 台设备' : 'WiFi 发现未启动';
       case SyncMode.bluetooth:
-        return _isBluetoothBusy ? '正在蓝牙发现附近设备...' : '蓝牙发现未运行';
+        return _isBluetoothBusy
+            ? '正在发现附近设备...'
+            : _btService.isAdvertising
+                ? '蓝牙传输已就绪，等待附近设备'
+                : '蓝牙传输未就绪';
     }
   }
 
@@ -331,10 +359,6 @@ class _SyncScreenState extends State<SyncScreen> {
           onPressed: _isBluetoothBusy ? null : _discoverBluetoothDevices,
         ),
         const SizedBox(width: 16),
-        OutlinedButton.icon(
-            icon: const Icon(Icons.edit),
-            label: const Text('手动连接'),
-            onPressed: _showManualConnect),
       ]);
     }
     return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -368,7 +392,9 @@ class _SyncScreenState extends State<SyncScreen> {
             ),
             title: Text(device.name,
                 style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text('${device.ipAddress} • ${device.platform}'),
+            subtitle: Text(_syncMode == SyncMode.bluetooth
+                ? '蓝牙近场 • ${device.platform}'
+                : '${device.ipAddress} • ${device.platform}'),
             trailing: PopupMenuButton<String>(
               onSelected: (value) => _handleDeviceAction(value, device),
               itemBuilder: (context) => [
@@ -548,7 +574,9 @@ class _SyncScreenState extends State<SyncScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('设备: ${device.name}'),
-              Text('IP: ${device.ipAddress}'),
+              Text(_syncMode == SyncMode.bluetooth
+                  ? '传输方式：直接蓝牙'
+                  : 'IP: ${device.ipAddress}'),
               const SizedBox(height: 16),
               const Text('请选择同步方向：'),
             ]),
@@ -584,7 +612,14 @@ class _SyncScreenState extends State<SyncScreen> {
     try {
       await _databaseService.initialize();
       final configs = await _databaseService.getAllApiConfigs();
-      final success = await _syncService.sendConfigs(device, configs);
+      final success = _syncMode == SyncMode.bluetooth
+          ? (await _btService.sendPayload(
+              device: device,
+              payload: _encodeSyncPayload(configs),
+              configCount: configs.length,
+            ))
+              .success
+          : await _syncService.sendConfigs(device, configs);
       setState(
           () => _syncStatus = success ? '已发送 ${configs.length} 个配置' : '发送失败');
       if (mounted) {
@@ -608,13 +643,13 @@ class _SyncScreenState extends State<SyncScreen> {
   Future<void> _receiveFromDevice(DeviceInfo device) async {
     setState(() => _syncStatus = '正在从 ${device.name} 接收...');
     try {
-      final configs = await _syncService.receiveConfigs(device);
+      final configs = _syncMode == SyncMode.bluetooth
+          ? _decodeSyncPayload(await _btService.requestPayload(device: device))
+          : await _syncService.receiveConfigs(device);
       if (configs.isNotEmpty) {
-        await _databaseService.initialize();
-        for (final config in configs) {
-          await _databaseService.insertApiConfig(config);
-        }
-        setState(() => _syncStatus = '已接收 ${configs.length} 个配置');
+        final inserted = await _syncService.storeSyncedConfigs(configs);
+        setState(
+            () => _syncStatus = '已接收 ${configs.length} 个配置，新增 $inserted 个');
         if (mounted) context.read<ApiProvider>().loadApiConfigs();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -639,20 +674,27 @@ class _SyncScreenState extends State<SyncScreen> {
     try {
       await _databaseService.initialize();
       final localConfigs = await _databaseService.getAllApiConfigs();
-      await _syncService.sendConfigs(device, localConfigs);
-      final remoteConfigs = await _syncService.receiveConfigs(device);
-      final existingIds = localConfigs.map((c) => c.id).toSet();
-      final newConfigs =
-          remoteConfigs.where((c) => !existingIds.contains(c.id)).toList();
-      for (final config in newConfigs) {
-        await _databaseService.insertApiConfig(config);
+      if (_syncMode == SyncMode.bluetooth) {
+        final result = await _btService.sendPayload(
+          device: device,
+          payload: _encodeSyncPayload(localConfigs),
+          configCount: localConfigs.length,
+        );
+        if (!result.success) throw StateError(result.message);
+      } else {
+        final success = await _syncService.sendConfigs(device, localConfigs);
+        if (!success) throw StateError('发送配置失败');
       }
-      setState(() => _syncStatus = '同步完成，新增 ${newConfigs.length} 个配置');
+      final remoteConfigs = _syncMode == SyncMode.bluetooth
+          ? _decodeSyncPayload(await _btService.requestPayload(device: device))
+          : await _syncService.receiveConfigs(device);
+      final inserted = await _syncService.storeSyncedConfigs(remoteConfigs);
+      setState(() => _syncStatus = '同步完成，新增 $inserted 个配置');
       if (mounted) context.read<ApiProvider>().loadApiConfigs();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('双向同步完成，新增 ${newConfigs.length} 个配置'),
+              content: Text('双向同步完成，新增 $inserted 个配置'),
               backgroundColor: AppColors.success),
         );
       }
@@ -675,21 +717,13 @@ class _SyncScreenState extends State<SyncScreen> {
       _syncStatus = '正在通过蓝牙发现附近的 Apilot 设备...';
     });
     try {
-      final localDevice = await _syncService.getLocalDeviceInfo();
-      await _btService.startAdvertising(localDevice);
       final devices = await _btService.discoverApilotDevices();
-      var added = 0;
-      for (final device in devices) {
-        final didAdd = await _syncService.upsertDiscoveredDevice(device,
-            sourceIp: device.ipAddress);
-        if (didAdd) added++;
-      }
       if (!mounted) return;
       setState(() {
-        _devices = _syncService.discoveredDevices;
+        _devices = devices;
         _syncStatus = SyncModePolicy.bluetoothDiscoveryStatus(
           discovered: devices.length,
-          added: added,
+          added: devices.length,
         );
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -714,6 +748,105 @@ class _SyncScreenState extends State<SyncScreen> {
       Future.delayed(const Duration(seconds: 5), () {
         if (mounted) setState(() => _syncStatus = null);
       });
+    }
+  }
+
+  Uint8List _encodeSyncPayload(List<ApiConfig> configs) {
+    final payload = SyncService.createSyncPayload(configs);
+    return Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+  }
+
+  List<ApiConfig> _decodeSyncPayload(Uint8List payload) {
+    final decoded = jsonDecode(utf8.decode(payload));
+    if (decoded is! Map) throw const FormatException('蓝牙配置内容格式错误');
+    return SyncService.parseSyncPayload(Map<String, dynamic>.from(decoded));
+  }
+
+  Future<void> _handleIncomingBluetoothOffer(
+    BluetoothIncomingTransferOffer offer,
+  ) async {
+    if (!mounted) return;
+    final action = offer.operation == BluetoothTransferOperation.push
+        ? '向本机发送 ${offer.configCount} 个配置'
+        : '读取本机已保存的 API 配置';
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('蓝牙传输请求'),
+        content: Text(
+            '${offer.senderName} 请求通过蓝牙$action。\n\n确认后会直接传输配置，其中可能包含 API Key。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('拒绝'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (accepted != true) {
+      await _btService.rejectIncomingTransfer(offer.sessionId);
+      return;
+    }
+    try {
+      if (offer.operation == BluetoothTransferOperation.pull) {
+        await _databaseService.initialize();
+        final configs = await _databaseService.getAllApiConfigs();
+        await _btService.acceptIncomingTransfer(
+          offer.sessionId,
+          payload: _encodeSyncPayload(configs),
+        );
+        if (mounted) {
+          setState(() => _syncStatus = '已通过蓝牙发送 ${configs.length} 个配置');
+        }
+      } else {
+        await _btService.acceptIncomingTransfer(offer.sessionId);
+        if (mounted) {
+          setState(() => _syncStatus = '已接受蓝牙传输，正在接收配置...');
+        }
+      }
+    } catch (error) {
+      await _btService.rejectIncomingTransfer(
+        offer.sessionId,
+        reason: '无法处理蓝牙传输请求',
+      );
+      if (mounted) setState(() => _syncStatus = '蓝牙传输失败: $error');
+    }
+  }
+
+  Future<void> _handleReceivedBluetoothTransfer(
+    BluetoothReceivedTransfer transfer,
+  ) async {
+    try {
+      final configs = _decodeSyncPayload(transfer.payload);
+      final inserted = await _syncService.storeSyncedConfigs(configs);
+      await _btService.completeIncomingTransfer(
+        transfer.sessionId,
+        success: true,
+        message: '已接收 ${configs.length} 个配置，新增 $inserted 个',
+      );
+      if (!mounted) return;
+      final provider = context.read<ApiProvider>();
+      await provider.loadApiConfigs();
+      if (!mounted) return;
+      setState(() => _syncStatus = '已通过蓝牙接收 ${configs.length} 个配置');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已通过蓝牙接收 ${configs.length} 个配置'),
+          backgroundColor: AppColors.success,
+        ),
+      );
+    } catch (error) {
+      await _btService.completeIncomingTransfer(
+        transfer.sessionId,
+        success: false,
+        message: '无法保存收到的配置',
+      );
+      if (mounted) setState(() => _syncStatus = '蓝牙接收失败: $error');
     }
   }
 }

@@ -3,6 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('SyncModePolicy', () {
+    test('Bluetooth mode describes direct configuration transfer', () {
+      expect(SyncModePolicy.title(SyncMode.bluetooth), '蓝牙直接传输');
+    });
+
     test('Bluetooth mode does not run WiFi discovery automatically', () {
       expect(
           SyncModePolicy.shouldRunWifiDiscovery(SyncMode.bluetooth), isFalse);

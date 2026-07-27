@@ -156,7 +156,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               SwitchListTile(
                 title: const Text('蓝牙同步'),
-                subtitle: const Text('通过蓝牙发现附近设备，再使用局域网同步配置'),
+                subtitle: const Text('通过蓝牙直接发现并传输配置，双方确认后才发送'),
                 value: settings.bluetoothSync,
                 onChanged: (_) => settings.toggleBluetoothSync(),
                 secondary: const Icon(Icons.bluetooth_searching),
@@ -244,8 +244,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const ListTile(
                 leading: Icon(Icons.developer_mode),
-                title: Text('开发者'),
-                subtitle: Text('Apilot Team'),
+                title: Text('开发人员'),
+                subtitle: Text('月亮满了  |  QQ：3335196397'),
               ),
               ListTile(
                 leading: const Icon(Icons.link),

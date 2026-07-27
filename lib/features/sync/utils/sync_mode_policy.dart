@@ -11,7 +11,7 @@ class SyncModePolicy {
       case SyncMode.wifi:
         return 'WiFi 局域网同步';
       case SyncMode.bluetooth:
-        return '蓝牙近场发现';
+        return '蓝牙直接传输';
     }
   }
 

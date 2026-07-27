@@ -4,8 +4,8 @@
 
 ## 当前版本
 
-- 应用版本：`1.20.0+25`
-- GitHub Release 标签建议：`v1.20.0`
+- 应用版本：`1.21.0+26`
+- GitHub Release 标签建议：`v1.21.0`
 - 项目/软件名称统一为：`Apilot`
 
 ## 发布验证记录
@@ -45,11 +45,11 @@
 
 - 核心文件：`lib/features/sync/services/bluetooth_sync_service.dart`
 - 依赖：`bluetooth_low_energy`。
-- 蓝牙当前承担“近场发现/配对辅助”：
-  - 本机作为 BLE Peripheral 广播 Apilot 服务。
-  - 对方作为 BLE Central 扫描并读取设备信息。
-  - 读到 IP 后回写到局域网同步设备列表。
-- 配置数据仍通过 HTTP 局域网同步传输，原因是 API Key 配置体可能超过 BLE 小包传输的稳定范围。
+- 本机作为 BLE Peripheral 广播 Apilot GATT 服务，对方作为 BLE Central 扫描、读取设备信息并建立直接连接；蓝牙模式不依赖 UDP、IP 或 HTTP。
+- 服务包含只读设备信息 characteristic 和可写/indicate 的传输 characteristic。所有配置数据使用长度前缀 JSON 帧，内容按 BLE MTU 切分；单个传输最大 1 MiB，完整内容使用 SHA-256 校验。
+- 传输方向为发送、接收和双向。接收方必须在弹窗中确认，确认前不能发送 payload；接收端落库后会回传成功或失败结果。
+- 每个 ATT 写请求只能响应一次：解码错误返回 ATT 错误，已确认后的业务错误改用协议错误帧反馈。启动广播时会等待 BLE 状态从 unknown 进入可用状态，避免刚进入页面时误报蓝牙未开启。
+- 配置中可能包含 API Key。当前使用系统 BLE 链路安全能力，不额外实现应用层加密；面向不可信近距离环境的后续版本应增加端到端加密、会话恢复和冲突解决。
 - macOS 需要 `NSBluetoothAlwaysUsageDescription`、`NSBluetoothPeripheralUsageDescription` 和沙盒蓝牙 entitlement。
 - Windows BLE 广播不支持设备名，代码使用 service data 兜底。
 - `bluetooth_low_energy_darwin` 6.2.1 的 podspec 会把 `PrivacyInfo.xcprivacy` 当源码加入 Sources；`macos/Podfile` 的 `post_install` 会把它移到 Resources，避免 Xcode 26 构建失败。
@@ -57,7 +57,7 @@
 ## 扫码同步
 
 - 核心文件：`lib/features/sync/screens/qr_scanner_screen.dart`
-- Android 由 `MainActivity` 统一请求 `CAMERA` 权限，获准后直接启动内置 ZXing `CaptureActivity`，不依赖 Google Play 服务。
+- Android 由 `MainActivity`（`FlutterFragmentActivity`）使用 AndroidX Activity Result API 请求 `CAMERA` 权限并接收结果，获准后直接启动显式声明的 `ApilotQrCaptureActivity`（内置 ZXing），不依赖 Google Play 服务。
 - 二维码格式由 `SyncScreen._showQRCode()` 生成：`ip|deviceId|deviceName`。
 - 普通权限拒绝可重新请求；永久拒绝引导到系统设置；扫码失败或桌面平台不可用时显示手动 IP 输入兜底。真机验收应覆盖首次授权、拒绝后重试、永久拒绝后在设置页恢复权限、取消扫码和有效二维码连接。
 
@@ -110,5 +110,5 @@ PR 和 `main` 推送只运行 `verify`（`dart analyze lib test` 与 `flutter te
 
 ## 后续建议
 
-- 如需“纯蓝牙传配置”，建议单独设计分片协议、ACK/重传、加密和冲突合并，不要直接写大 JSON 到单个 characteristic。
+- 蓝牙传输已具备分片和完整性校验；如需更高安全性与弱信号恢复，应补充应用层加密、断点续传和多设备冲突解决。
 - Release 说明建议只截取当前版本段落，避免整份 `CHANGELOG.md` 造成发布页重复冗长。

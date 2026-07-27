@@ -8,20 +8,19 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
-import androidx.core.app.ActivityCompat
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.client.android.Intents
-import com.journeyapps.barcodescanner.CaptureActivity
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.security.MessageDigest
 import java.io.File
 import java.util.UUID
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
     private var methodChannel: MethodChannel? = null
     private var apiConfigPickChannel: MethodChannel? = null
     private var qrScannerChannel: MethodChannel? = null
@@ -30,6 +29,27 @@ class MainActivity : FlutterActivity() {
     private var pendingPickRequest: Map<String, Any?>? = null
     private var initialIntentConsumed = false
     private var initialPickIntentConsumed = false
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchZxingQrScan()
+        } else {
+            reportQrPermissionDenied()
+        }
+    }
+    private val qrScanLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { activityResult ->
+        val pendingResult = qrScanResult ?: return@registerForActivityResult
+        qrScanResult = null
+        if (activityResult.resultCode == Activity.RESULT_OK) {
+            pendingResult.success(activityResult.data?.getStringExtra(Intents.Scan.RESULT))
+        } else {
+            pendingResult.success(null)
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -108,38 +128,10 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != QR_SCAN_REQUEST_CODE) return
-
+    private fun reportQrPermissionDenied() {
         val pendingResult = qrScanResult ?: return
         qrScanResult = null
-        if (resultCode == Activity.RESULT_OK) {
-            pendingResult.success(data?.getStringExtra(Intents.Scan.RESULT))
-        } else {
-            pendingResult.success(null)
-        }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != QR_CAMERA_PERMISSION_REQUEST_CODE) return
-
-        val pendingResult = qrScanResult ?: return
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            launchZxingQrScan()
-            return
-        }
-
-        qrScanResult = null
-        val permanentlyDenied = !ActivityCompat.shouldShowRequestPermissionRationale(
-            this,
+        val permanentlyDenied = !shouldShowRequestPermissionRationale(
             Manifest.permission.CAMERA,
         )
         pendingResult.error(
@@ -286,22 +278,17 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.CAMERA),
-            QR_CAMERA_PERMISSION_REQUEST_CODE,
-        )
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
     private fun launchZxingQrScan() {
         if (qrScanResult == null) return
         try {
-            startActivityForResult(
-                Intent(this, CaptureActivity::class.java).apply {
+            qrScanLauncher.launch(
+                Intent(this, ApilotQrCaptureActivity::class.java).apply {
                     putExtra(Intents.Scan.FORMATS, BarcodeFormat.QR_CODE.toString())
                     putExtra(Intents.Scan.PROMPT_MESSAGE, "扫描同步二维码")
                 },
-                QR_SCAN_REQUEST_CODE
             )
         } catch (fallbackError: Exception) {
             val pendingResult = qrScanResult ?: return
@@ -420,8 +407,6 @@ class MainActivity : FlutterActivity() {
         private const val CHANNEL_NAME = "com.apilot/third_party_import"
         private const val API_CONFIG_PICK_CHANNEL_NAME = "com.apilot/third_party_api_config_pick"
         private const val QR_SCANNER_CHANNEL_NAME = "com.apilot/qr_scanner"
-        private const val QR_SCAN_REQUEST_CODE = 20842
-        private const val QR_CAMERA_PERMISSION_REQUEST_CODE = 20843
         private const val ACTION_IMPORT_API_CONFIGS = "com.apilot.intent.action.IMPORT_API_CONFIGS"
         private const val ACTION_PICK_API_CONFIG = "com.apilot.intent.action.PICK_API_CONFIG"
         private const val EXTRA_API_CONFIGS_JSON = "com.apilot.extra.API_CONFIGS_JSON"
