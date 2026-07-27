@@ -140,6 +140,18 @@ class ApiProvider with ChangeNotifier {
     }
   }
 
+  Future<ApiConfig> replaceApiModels(
+    ApiConfig api,
+    List<String> models,
+  ) async {
+    final updated = api.copyWith(
+      models: List.unmodifiable(models),
+      updatedAt: DateTime.now(),
+    );
+    await updateApiConfig(updated);
+    return updated;
+  }
+
   Future<void> deleteApiConfig(String id) async {
     try {
       await _databaseService.deleteApiConfig(id);

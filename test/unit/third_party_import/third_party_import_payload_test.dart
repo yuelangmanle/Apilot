@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:api_manager/core/models/api_config.dart';
 import 'package:api_manager/features/third_party_import/models/third_party_import_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -152,6 +153,49 @@ void main() {
       );
 
       expect(payload.containsSecrets, isTrue);
+    });
+  });
+
+  group('ThirdPartyApiConfigPickPayload', () {
+    final api = ApiConfig(
+      id: 'local-only-id',
+      name: 'OpenAI Production',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      models: const ['gpt-4.1', 'gpt-4.1-mini'],
+      environment: 'production',
+      tags: const ['openai', 'prod'],
+    );
+
+    test('all mode returns every model and selects the first model by default',
+        () {
+      final payload = ThirdPartyApiConfigPickPayload.fromApiConfig(
+        api,
+        modelMode: ThirdPartyModelTransferMode.all,
+      ).toJson();
+
+      expect(payload['selectedModel'], 'gpt-4.1');
+      expect(payload['modelMode'], 'all');
+      expect(
+        (payload['apiConfig'] as Map<String, dynamic>)['models'],
+        ['gpt-4.1', 'gpt-4.1-mini'],
+      );
+    });
+
+    test(
+        'default-only mode returns the first model without exposing a model list',
+        () {
+      final payload = ThirdPartyApiConfigPickPayload.fromApiConfig(
+        api,
+        modelMode: ThirdPartyModelTransferMode.defaultOnly,
+      ).toJson();
+
+      expect(payload['selectedModel'], 'gpt-4.1');
+      expect(payload['modelMode'], 'default_only');
+      expect(
+        (payload['apiConfig'] as Map<String, dynamic>).containsKey('models'),
+        isFalse,
+      );
     });
   });
 }

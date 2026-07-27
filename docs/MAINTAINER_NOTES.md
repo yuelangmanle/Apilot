@@ -49,7 +49,7 @@
 ## 扫码同步
 
 - 核心文件：`lib/features/sync/screens/qr_scanner_screen.dart`
-- 使用 `mobile_scanner` 打开摄像头扫码。
+- Android 优先使用 Google Play 服务的 Code Scanner；服务不可用时自动回退到内置 ZXing 扫码页，其余平台保留手动输入 IP。
 - 二维码格式由 `SyncScreen._showQRCode()` 生成：`ip|deviceId|deviceName`。
 - 扫码失败或桌面平台不可用时显示手动 IP 输入兜底。
 

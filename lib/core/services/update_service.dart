@@ -27,11 +27,25 @@ class UpdateInfo {
   });
 }
 
+class ReleaseInfo {
+  final String version;
+  final String releaseNotes;
+  final DateTime publishedAt;
+
+  const ReleaseInfo({
+    required this.version,
+    required this.releaseNotes,
+    required this.publishedAt,
+  });
+}
+
 class UpdateService {
   static const String _repoOwner = 'yuelangmanle';
   static const String _repoName = 'Apilot';
-  static const String _apiUrl =
+  static const String _latestReleaseUrl =
       'https://api.github.com/repos/$_repoOwner/$_repoName/releases/latest';
+  static const String _releaseHistoryUrl =
+      'https://api.github.com/repos/$_repoOwner/$_repoName/releases?per_page=100';
 
   Future<UpdateInfo?> checkForUpdate() async {
     try {
@@ -39,23 +53,21 @@ class UpdateService {
       final currentVersion = packageInfo.version;
 
       final response = await http.get(
-        Uri.parse(_apiUrl),
+        Uri.parse(_latestReleaseUrl),
         headers: {'Accept': 'application/vnd.github.v3+json'},
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode != 200) return null;
 
       final data = jsonDecode(response.body);
-      final tagName = data['tag_name'] as String? ?? '';
-      final latestVersion = tagName.replaceFirst('v', '');
+      if (data is! Map) return null;
+      final latestVersion = _versionFromTag(data['tag_name']);
+      if (latestVersion.isEmpty) return null;
 
       final assets = data['assets'] as List? ?? [];
       final downloadUrl = selectReleaseAssetUrl(assets) ?? '';
 
-      final publishedAt =
-          DateTime.tryParse(data['published_at'] as String? ?? '') ??
-              DateTime.now();
-      final body = data['body'] as String? ?? '';
+      final release = _parseRelease(data);
 
       if (_isNewerVersion(latestVersion, currentVersion)) {
         if (downloadUrl.isEmpty) {
@@ -64,8 +76,8 @@ class UpdateService {
         return UpdateInfo(
           version: latestVersion,
           downloadUrl: downloadUrl,
-          releaseNotes: body,
-          publishedAt: publishedAt,
+          releaseNotes: release.releaseNotes,
+          publishedAt: release.publishedAt,
         );
       }
 
@@ -73,6 +85,46 @@ class UpdateService {
     } catch (e) {
       return null;
     }
+  }
+
+  Future<List<ReleaseInfo>> getReleaseHistory() async {
+    final response = await http.get(
+      Uri.parse(_releaseHistoryUrl),
+      headers: {'Accept': 'application/vnd.github.v3+json'},
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw Exception('无法读取更新日志，GitHub 返回 ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body);
+    if (data is! List) {
+      throw Exception('更新日志格式无效');
+    }
+    return parseReleaseHistory(data);
+  }
+
+  static List<ReleaseInfo> parseReleaseHistory(List<dynamic> releases) {
+    return releases
+        .whereType<Map>()
+        .where((release) => release['draft'] != true)
+        .map(_parseRelease)
+        .where((release) => release.version.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  static ReleaseInfo _parseRelease(Map<dynamic, dynamic> release) {
+    return ReleaseInfo(
+      version: _versionFromTag(release['tag_name']),
+      releaseNotes: release['body'] as String? ?? '',
+      publishedAt:
+          DateTime.tryParse(release['published_at'] as String? ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0),
+    );
+  }
+
+  static String _versionFromTag(Object? tagName) {
+    return (tagName as String? ?? '').replaceFirst(RegExp(r'^v'), '');
   }
 
   static String? selectReleaseAssetUrl(

@@ -14,7 +14,9 @@ import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_screen.dart';
 import 'features/third_party_import/models/third_party_import_models.dart';
 import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
+import 'features/third_party_import/screens/third_party_api_config_pick_screen.dart';
 import 'features/third_party_import/screens/third_party_import_source_screen.dart';
+import 'features/third_party_import/services/third_party_api_config_pick_channel.dart';
 import 'features/third_party_import/services/third_party_import_channel.dart';
 
 class ApiManagerApp extends StatelessWidget {
@@ -61,6 +63,8 @@ class _AppShellState extends State<AppShell> {
   int _selectedIndex = 0;
   final ThirdPartyImportChannel _thirdPartyImportChannel =
       ThirdPartyImportChannel.instance;
+  final ThirdPartyApiConfigPickChannel _thirdPartyApiConfigPickChannel =
+      ThirdPartyApiConfigPickChannel.instance;
 
   static const List<Widget> _screens = [
     ApiListScreen(),
@@ -83,6 +87,9 @@ class _AppShellState extends State<AppShell> {
       if (!mounted || !Platform.isAndroid) return;
       _thirdPartyImportChannel.initialize(
         onRequest: _handleThirdPartyImportRequest,
+      );
+      _thirdPartyApiConfigPickChannel.initialize(
+        onRequest: _handleThirdPartyApiConfigPickRequest,
       );
     });
   }
@@ -168,6 +175,20 @@ class _AppShellState extends State<AppShell> {
     if (imported == true && mounted) {
       await context.read<ApiProvider>().loadApiConfigs();
     }
+  }
+
+  Future<void> _handleThirdPartyApiConfigPickRequest(
+    ThirdPartyApiConfigPickRequest request,
+  ) async {
+    if (!mounted) return;
+    await context.read<ApiProvider>().loadApiConfigs();
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => ThirdPartyApiConfigPickScreen(request: request),
+      ),
+    );
   }
 }
 

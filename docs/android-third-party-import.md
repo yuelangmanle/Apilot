@@ -1,6 +1,6 @@
-# Apilot Android 第三方导入接入文档
+# Apilot Android 第三方 API 方案接入文档
 
-Apilot 支持第三方 Android App 唤起导入流程，将 API 配置交给用户确认后保存到 Apilot。该接口开放给任意第三方 App，但不支持静默导入。
+Apilot 支持两种公开的 Android Intent 能力：第三方 App 向 Apilot 导入 API 配置，以及第三方 App 请求用户授权一条 Apilot 已保存的 API 方案。两种能力都开放给任意第三方 App，但都必须由用户确认，不能静默导入或静默读取密钥。
 
 ## 能力范围
 
@@ -10,6 +10,8 @@ Apilot 支持第三方 Android App 唤起导入流程，将 API 配置交给用�
 - Apilot 始终生成新的内部配置 ID。
 - Apilot 不覆盖用户已有配置。
 - 用户必须先确认来源说明页，再确认配置预览页。
+- 第三方 App 可以请求用户选择一条 Apilot 已保存的方案，并通过 Activity Result 接收结果。
+- 已保存方案支持返回完整模型列表，或只返回第一个默认模型。
 
 ## 接口常量
 
@@ -20,6 +22,9 @@ Apilot 支持第三方 Android App 唤起导入流程，将 API 配置交给用�
 | JSON extra | com.apilot.extra.API_CONFIGS_JSON |
 | Source name extra | com.apilot.extra.SOURCE_NAME |
 | Request ID extra | com.apilot.extra.REQUEST_ID |
+| 选择已保存方案 Action | com.apilot.intent.action.PICK_API_CONFIG |
+| 模型模式 extra | com.apilot.extra.MODEL_MODE |
+| 回传结果 JSON extra | com.apilot.extra.API_CONFIG_JSON |
 | Deep link | apilot://import |
 
 当前 Android 包名：
@@ -70,6 +75,69 @@ startActivity(intent)
 ~~~
 
 Android Intent extra 存在体积限制。配置较多、模型列表较长或包含密钥时，请改用 content:// URI。
+
+## 请求已保存的 API 方案
+
+第三方 App 可以用 `ActivityResultContracts.StartActivityForResult` 唤起 Apilot。Apilot 会展示调用来源、模型回传方式、API Key 安全提示和本地方案选择页；用户选择并确认后，结果通过 `com.apilot.extra.API_CONFIG_JSON` 返回。
+
+~~~kotlin
+private val pickApiConfig = registerForActivityResult(
+    ActivityResultContracts.StartActivityForResult()
+) { result ->
+    if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+
+    val payloadJson = result.data?.getStringExtra(
+        "com.apilot.extra.API_CONFIG_JSON"
+    ) ?: return@registerForActivityResult
+    val payload = JSONObject(payloadJson)
+    val apiConfig = payload.getJSONObject("apiConfig")
+
+    val defaultModel = payload.optString("selectedModel", "")
+    // defaultModel 可直接填入调用方的模型选择控件。
+    // MODEL_MODE=all 时，apiConfig 还包含 models 备选列表。
+}
+
+fun chooseSavedApiConfig() {
+    pickApiConfig.launch(
+        Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
+            setPackage("com.example.api_manager")
+            putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
+            putExtra("com.apilot.extra.REQUEST_ID", requestId)
+            putExtra("com.apilot.extra.MODEL_MODE", "all")
+        }
+    )
+}
+~~~
+
+### 模型回传模式
+
+| `com.apilot.extra.MODEL_MODE` | 结果 | 使用场景 |
+| --- | --- | --- |
+| `all`（默认） | `selectedModel` 为已保存列表的第一个模型；`apiConfig.models` 返回完整备选列表。 | 调用方直接导入整套模型方案。 |
+| `default_only` | 只返回 `selectedModel`，`apiConfig` 不包含 `models`。 | 调用方自行联网获取最新模型列表。 |
+
+如果用户所选方案没有保存模型，两种模式都会回传 `selectedModel: null`；调用方应提示用户输入模型，或自行在线获取。
+
+### 回传结果 schema
+
+~~~json
+{
+  "schemaVersion": 1,
+  "modelMode": "all",
+  "selectedModel": "gpt-4.1",
+  "apiConfig": {
+    "name": "OpenAI Production",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKey": "sk-...",
+    "environment": "production",
+    "group": "AI",
+    "tags": ["openai", "prod"],
+    "models": ["gpt-4.1", "gpt-4.1-mini"]
+  }
+}
+~~~
+
+回传结果不会包含 Apilot 内部 `id`、创建/更新时间或 metadata。`apiKey` 仅在用户明确选择方案并确认授权后才会返回。调用方不得把回传的密钥写入日志、URL、deep link 或未加密的共享存储。
 
 ## 只打开文档入口
 
@@ -137,6 +205,8 @@ startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("apilot://import")))
 
 Apilot 会忽略第三方传入的 id、createdAt、updatedAt，并在导入时生成新的内部值。
 
+导入到 Apilot 的 `models` 必须由调用方提供，且至少包含一个模型。Apilot 不会在导入时自动联网刷新模型；用户可在配置详情页使用“刷新模型列表”。
+
 ## 用户确认流程
 
 1. Apilot 打开来源说明页。
@@ -162,6 +232,7 @@ Apilot 会忽略第三方传入的 id、createdAt、updatedAt，并在导入时�
 - 包含 API Key 时优先使用 content:// URI。
 - options.containsSecrets 只是提示字段，Apilot 会自行检测非空 apiKey。
 - Apilot 页面只显示“含 Key / 无 Key”，不会展示完整 API Key。
+- 请求已保存方案时，只有用户在 Apilot 内选定配置并确认授权，调用方才能收到 API Key。
 
 ## 常见错误
 
@@ -173,6 +244,8 @@ Apilot 会忽略第三方传入的 id、createdAt、updatedAt，并在导入时�
 | 配置被标记为无效 | 检查 name、baseUrl、models 是否存在且格式正确。 |
 | API Key 没有导入 | 确认 payload 中 apiKey 字段非空。 |
 | 出现重复配置提示 | 这是正常提示，Apilot 会作为新配置保存。 |
+| 未收到已保存方案结果 | 检查是否使用 Activity Result API，以及用户是否取消了授权。 |
+| `selectedModel` 为空 | 所选方案没有保存模型；调用方应允许手动输入或在线刷新。 |
 
 ## adb 调试示例
 

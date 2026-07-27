@@ -8,26 +8,39 @@ import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
 import '../providers/api_provider.dart';
 
-class ApiDetailScreen extends StatelessWidget {
+class ApiDetailScreen extends StatefulWidget {
   final ApiConfig apiConfig;
 
   const ApiDetailScreen({super.key, required this.apiConfig});
 
   @override
+  State<ApiDetailScreen> createState() => _ApiDetailScreenState();
+}
+
+class _ApiDetailScreenState extends State<ApiDetailScreen> {
+  late ApiConfig _apiConfig;
+
+  @override
+  void initState() {
+    super.initState();
+    _apiConfig = widget.apiConfig;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(apiConfig.name),
+        title: Text(_apiConfig.name),
         actions: [
           IconButton(
             icon: Icon(
-              apiConfig.isFavorite ? Icons.star : Icons.star_border,
-              color: apiConfig.isFavorite ? AppColors.warning : null,
+              _apiConfig.isFavorite ? Icons.star : Icons.star_border,
+              color: _apiConfig.isFavorite ? AppColors.warning : null,
             ),
             onPressed: () {
               context.read<ApiProvider>().updateApiConfig(
-                apiConfig.copyWith(isFavorite: !apiConfig.isFavorite),
-              );
+                    _apiConfig.copyWith(isFavorite: !_apiConfig.isFavorite),
+                  );
               Navigator.pop(context, true);
             },
           ),
@@ -37,7 +50,8 @@ class ApiDetailScreen extends StatelessWidget {
               final result = await Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => ApiFormScreen(apiConfig: apiConfig, isEditing: true),
+                  builder: (context) =>
+                      ApiFormScreen(apiConfig: _apiConfig, isEditing: true),
                 ),
               );
               if (result == true && context.mounted) {
@@ -78,7 +92,7 @@ class ApiDetailScreen extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    apiConfig.name,
+                    _apiConfig.name,
                     style: const TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
@@ -89,24 +103,31 @@ class ApiDetailScreen extends StatelessWidget {
               ],
             ),
             const Divider(height: 24),
-            _buildInfoRow(context, 'API地址', apiConfig.baseUrl, canCopy: true, copyLabel: 'API地址'),
+            _buildInfoRow(context, 'API地址', _apiConfig.baseUrl,
+                canCopy: true, copyLabel: 'API地址'),
             const SizedBox(height: 12),
-            _buildInfoRow(context, 'API Key', _maskApiKey(apiConfig.apiKey), canCopy: true, copyValue: apiConfig.apiKey, copyLabel: 'API Key'),
-            if (apiConfig.group != null) ...[
+            _buildInfoRow(context, 'API Key', _maskApiKey(_apiConfig.apiKey),
+                canCopy: true,
+                copyValue: _apiConfig.apiKey,
+                copyLabel: 'API Key'),
+            if (_apiConfig.group != null) ...[
               const SizedBox(height: 12),
-              _buildInfoRow(context, '分组', apiConfig.group!, canCopy: false),
+              _buildInfoRow(context, '分组', _apiConfig.group!, canCopy: false),
             ],
             const SizedBox(height: 12),
-            _buildInfoRow(context, '创建时间', _formatDate(apiConfig.createdAt), canCopy: false),
+            _buildInfoRow(context, '创建时间', _formatDate(_apiConfig.createdAt),
+                canCopy: false),
             const SizedBox(height: 12),
-            _buildInfoRow(context, '更新时间', _formatDate(apiConfig.updatedAt), canCopy: false),
+            _buildInfoRow(context, '更新时间', _formatDate(_apiConfig.updatedAt),
+                canCopy: false),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildInfoRow(BuildContext context, String label, String value, {required bool canCopy, String? copyValue, String? copyLabel}) {
+  Widget _buildInfoRow(BuildContext context, String label, String value,
+      {required bool canCopy, String? copyValue, String? copyLabel}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -150,7 +171,7 @@ class ApiDetailScreen extends StatelessWidget {
   Widget _buildEnvironmentTag() {
     Color color;
     String text;
-    switch (apiConfig.environment) {
+    switch (_apiConfig.environment) {
       case 'development':
         color = AppColors.warning;
         text = '开发';
@@ -165,7 +186,7 @@ class ApiDetailScreen extends StatelessWidget {
         break;
       default:
         color = AppColors.textSecondary;
-        text = apiConfig.environment;
+        text = _apiConfig.environment;
     }
 
     return Container(
@@ -183,7 +204,7 @@ class ApiDetailScreen extends StatelessWidget {
   }
 
   Widget _buildModelsSection(BuildContext context) {
-    if (apiConfig.models.isEmpty) return const SizedBox.shrink();
+    if (_apiConfig.models.isEmpty) return const SizedBox.shrink();
 
     return Card(
       child: Padding(
@@ -208,7 +229,7 @@ class ApiDetailScreen extends StatelessWidget {
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: apiConfig.models.map((model) {
+              children: _apiConfig.models.map((model) {
                 return InkWell(
                   onTap: () {
                     Clipboard.setData(ClipboardData(text: model));
@@ -243,7 +264,8 @@ class ApiDetailScreen extends StatelessWidget {
               alignment: Alignment.centerRight,
               child: TextButton.icon(
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: apiConfig.models.join('\n')));
+                  Clipboard.setData(
+                      ClipboardData(text: _apiConfig.models.join('\n')));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('已复制所有模型列表'),
@@ -262,7 +284,7 @@ class ApiDetailScreen extends StatelessWidget {
   }
 
   Widget _buildTagsSection() {
-    if (apiConfig.tags.isEmpty) return const SizedBox.shrink();
+    if (_apiConfig.tags.isEmpty) return const SizedBox.shrink();
 
     return Card(
       child: Padding(
@@ -287,7 +309,7 @@ class ApiDetailScreen extends StatelessWidget {
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: apiConfig.tags.map((tag) {
+              children: _apiConfig.tags.map((tag) {
                 return Chip(
                   label: Text(tag),
                   backgroundColor: AppColors.secondary.withValues(alpha: 0.1),
@@ -312,7 +334,7 @@ class ApiDetailScreen extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => TestScreen(apiConfig: apiConfig),
+                      builder: (context) => TestScreen(apiConfig: _apiConfig),
                     ),
                   );
                 },
@@ -329,7 +351,7 @@ class ApiDetailScreen extends StatelessWidget {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: apiConfig.baseUrl));
+                  Clipboard.setData(ClipboardData(text: _apiConfig.baseUrl));
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('API地址已复制'),
@@ -350,7 +372,7 @@ class ApiDetailScreen extends StatelessWidget {
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
-            onPressed: () => _refreshModels(context),
+            onPressed: _refreshModels,
             icon: const Icon(Icons.refresh),
             label: const Text('刷新模型列表'),
             style: OutlinedButton.styleFrom(
@@ -364,13 +386,13 @@ class ApiDetailScreen extends StatelessWidget {
           child: OutlinedButton.icon(
             onPressed: () {
               final configText = '''
-API名称: ${apiConfig.name}
-API地址: ${apiConfig.baseUrl}
-API Key: ${apiConfig.apiKey}
-模型列表: ${apiConfig.models.join(', ')}
-环境: ${apiConfig.environment}
-分组: ${apiConfig.group ?? '无'}
-标签: ${apiConfig.tags.join(', ')}
+API名称: ${_apiConfig.name}
+API地址: ${_apiConfig.baseUrl}
+API Key: ${_apiConfig.apiKey}
+模型列表: ${_apiConfig.models.join(', ')}
+环境: ${_apiConfig.environment}
+分组: ${_apiConfig.group ?? '无'}
+标签: ${_apiConfig.tags.join(', ')}
 ''';
               Clipboard.setData(ClipboardData(text: configText));
               ScaffoldMessenger.of(context).showSnackBar(
@@ -391,26 +413,36 @@ API Key: ${apiConfig.apiKey}
     );
   }
 
-  Future<void> _refreshModels(BuildContext context) async {
+  Future<void> _refreshModels() async {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('正在获取模型列表...'), duration: Duration(seconds: 1)),
+      const SnackBar(
+          content: Text('正在获取模型列表...'), duration: Duration(seconds: 1)),
     );
     try {
-      final apiService = ApiService();
-      final models = await apiService.getAvailableModels(apiConfig);
-      if (models.isNotEmpty) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('获取到 ${models.length} 个模型'), backgroundColor: AppColors.success),
-          );
-        }
-      } else {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未获取到模型，请检查地址和Key'), backgroundColor: AppColors.warning),
-          );
-        }
+      final result = await ApiService().fetchAvailableModels(_apiConfig);
+      if (!mounted) return;
+      if (!result.isSuccess) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.errorMessage ?? '未获取到模型，请检查地址和 Key'),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+        return;
       }
+
+      final updated = await context.read<ApiProvider>().replaceApiModels(
+            _apiConfig,
+            result.models,
+          );
+      if (!mounted) return;
+      setState(() => _apiConfig = updated);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('模型列表已同步：${result.models.length} 个模型'),
+          backgroundColor: AppColors.success,
+        ),
+      );
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

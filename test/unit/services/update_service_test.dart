@@ -2,6 +2,30 @@ import 'package:api_manager/core/services/update_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('UpdateService release history', () {
+    test('parses every published GitHub release into changelog entries', () {
+      final history = UpdateService.parseReleaseHistory([
+        {
+          'tag_name': 'v1.18.0',
+          'body': '第三方导入',
+          'published_at': '2026-07-27T00:42:36Z',
+          'assets': const [],
+          'draft': false,
+        },
+        {
+          'tag_name': 'v1.17.2',
+          'body': '同步修复',
+          'published_at': '2026-06-08T11:00:16Z',
+          'assets': const [],
+          'draft': false,
+        },
+      ]);
+
+      expect(history.map((release) => release.version), ['1.18.0', '1.17.2']);
+      expect(history.map((release) => release.releaseNotes), ['第三方导入', '同步修复']);
+    });
+  });
+
   group('UpdateService release asset selection', () {
     const assets = [
       {

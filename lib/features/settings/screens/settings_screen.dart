@@ -10,6 +10,7 @@ import '../../api_management/providers/api_provider.dart';
 import '../../sync/screens/sync_screen.dart';
 import '../../api_management/screens/group_manage_screen.dart';
 import '../../third_party_import/screens/third_party_import_docs_screen.dart';
+import 'release_history_screen.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/models/api_config.dart';
 
@@ -162,8 +163,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               ListTile(
                 leading: const Icon(Icons.integration_instructions),
-                title: const Text('第三方导入接入文档'),
-                subtitle: const Text('让其他Android App唤起Apilot导入API配置'),
+                title: const Text('第三方接入文档'),
+                subtitle: const Text('导入配置或授权其他Android App使用本地方案'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () {
                   Navigator.push(
@@ -184,6 +185,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 leading: const Icon(Icons.info),
                 title: const Text('版本'),
                 subtitle: Text('v$_currentVersion'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.article_outlined),
+                title: const Text('更新日志'),
+                subtitle: const Text('查看所有已发布版本的更新内容'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ReleaseHistoryScreen(),
+                    ),
+                  );
+                },
               ),
               ListTile(
                 leading: Icon(

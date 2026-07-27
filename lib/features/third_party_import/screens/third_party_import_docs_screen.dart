@@ -10,10 +10,13 @@ class ThirdPartyImportDocsScreen extends StatelessWidget {
   static const githubDocUrl =
       'https://github.com/yuelangmanle/Apilot/blob/main/docs/android-third-party-import.md';
   static const action = 'com.apilot.intent.action.IMPORT_API_CONFIGS';
+  static const pickAction = 'com.apilot.intent.action.PICK_API_CONFIG';
   static const mimeType = 'application/vnd.apilot.api-configs+json';
   static const jsonExtra = 'com.apilot.extra.API_CONFIGS_JSON';
+  static const apiConfigJsonExtra = 'com.apilot.extra.API_CONFIG_JSON';
   static const sourceNameExtra = 'com.apilot.extra.SOURCE_NAME';
   static const requestIdExtra = 'com.apilot.extra.REQUEST_ID';
+  static const modelModeExtra = 'com.apilot.extra.MODEL_MODE';
 
   static const kotlinExample = '''
 val intent = Intent("com.apilot.intent.action.IMPORT_API_CONFIGS").apply {
@@ -50,17 +53,36 @@ startActivity(intent)
 }
 ''';
 
+  static const pickExample = '''
+val launcher = registerForActivityResult(
+    ActivityResultContracts.StartActivityForResult()
+) { result ->
+    if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+    val payload = result.data?.getStringExtra(
+        "com.apilot.extra.API_CONFIG_JSON"
+    ) ?: return@registerForActivityResult
+    // result JSON: selectedModel is the default model.
+    // all mode also includes apiConfig.models.
+}
+
+launcher.launch(Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
+    setPackage("com.example.api_manager")
+    putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
+    putExtra("com.apilot.extra.MODEL_MODE", "all")
+})
+''';
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('第三方导入接入文档'),
+        title: const Text('第三方接入文档'),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const Text(
-            '第三方 Android App 可以唤起 Apilot，请用户确认后导入 API 配置。',
+            '第三方 Android App 可以向 Apilot 导入配置，或让用户授权一条已保存的 API 方案。',
             style: TextStyle(fontSize: 16),
           ),
           const SizedBox(height: 16),
@@ -68,10 +90,13 @@ startActivity(intent)
           _CopyableBlock(
             text: [
               'Action: $action',
+              '选择已保存方案: $pickAction',
               'MIME: $mimeType',
               'JSON Extra: $jsonExtra',
+              '回传 JSON: $apiConfigJsonExtra',
               'Source Extra: $sourceNameExtra',
               'Request ID Extra: $requestIdExtra',
+              '模型模式 Extra: $modelModeExtra',
               'Deep Link: apilot://import',
             ].join('\n'),
           ),
@@ -79,6 +104,15 @@ startActivity(intent)
           const _CopyableBlock(text: kotlinExample),
           const _SectionTitle('JSON 最小格式'),
           const _CopyableBlock(text: jsonExample),
+          const _SectionTitle('读取已保存方案'),
+          const _CopyableBlock(text: pickExample),
+          const _BulletList(
+            items: [
+              'MODEL_MODE=all：返回 apiConfig.models 完整列表，selectedModel 是列表第一个模型。',
+              'MODEL_MODE=default_only：只返回 selectedModel，不返回模型列表，供调用方自行联网刷新。',
+              'Apilot 会展示来源、密钥回传警告和方案选择页，用户确认后才会回传。',
+            ],
+          ),
           const _SectionTitle('安全规则'),
           const _BulletList(
             items: [
@@ -87,6 +121,7 @@ startActivity(intent)
               'apiKey 可缺省；缺省时导入为待补 Key 配置。',
               'Apilot 会先展示来源说明页，再展示导入确认页。',
               '第三方导入永远不会覆盖现有配置。',
+              '读取已保存方案会回传 API Key，调用方应只在用户确认后保存和使用结果。',
             ],
           ),
           const _SectionTitle('GitHub 完整文档'),

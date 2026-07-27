@@ -2,6 +2,36 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/api_config.dart';
 
+class ModelListFetchResult {
+  final List<String> models;
+  final String? sourceUrl;
+  final String? errorMessage;
+
+  const ModelListFetchResult._({
+    required this.models,
+    required this.sourceUrl,
+    required this.errorMessage,
+  });
+
+  const ModelListFetchResult.success({
+    required List<String> models,
+    required String sourceUrl,
+  }) : this._(
+          models: models,
+          sourceUrl: sourceUrl,
+          errorMessage: null,
+        );
+
+  const ModelListFetchResult.failure(String message)
+      : this._(
+          models: const [],
+          sourceUrl: null,
+          errorMessage: message,
+        );
+
+  bool get isSuccess => errorMessage == null;
+}
+
 class ApiService {
   /// 智能拼接 URL，避免重复路径段
   static String buildUrl(String baseUrl, String endpoint) {
@@ -84,6 +114,10 @@ class ApiService {
   }
 
   Future<List<String>> getAvailableModels(ApiConfig apiConfig) async {
+    return (await fetchAvailableModels(apiConfig)).models;
+  }
+
+  Future<ModelListFetchResult> fetchAvailableModels(ApiConfig apiConfig) async {
     try {
       String baseUrl = apiConfig.baseUrl.trim();
       if (baseUrl.endsWith('/')) {
@@ -95,13 +129,16 @@ class ApiService {
       if (baseUrl.endsWith('/models')) {
         urlsToTry.add(baseUrl);
       } else {
-        if (baseUrl.endsWith('/v1') || baseUrl.endsWith('/v2') || baseUrl.endsWith('/v3')) {
+        if (baseUrl.endsWith('/v1') ||
+            baseUrl.endsWith('/v2') ||
+            baseUrl.endsWith('/v3')) {
           urlsToTry.add('$baseUrl/models');
         }
         urlsToTry.add('$baseUrl/v1/models');
         urlsToTry.add('$baseUrl/models');
       }
 
+      String? lastError;
       for (final modelsUrl in urlsToTry) {
         try {
           final uri = Uri.parse(modelsUrl);
@@ -113,46 +150,54 @@ class ApiService {
             },
           ).timeout(const Duration(seconds: 15));
 
-          if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            List<String> models = [];
-
-            if (data is Map && data.containsKey('data')) {
-              final modelsList = data['data'] as List;
-              models = modelsList.map((m) {
-                if (m is Map && m.containsKey('id')) return m['id'] as String;
-                return m.toString();
-              }).toList();
-            } else if (data is Map && data.containsKey('models')) {
-              final modelsList = data['models'] as List;
-              models = modelsList.map((m) {
-                if (m is Map) {
-                  if (m.containsKey('id')) return m['id'] as String;
-                  if (m.containsKey('name')) return m['name'] as String;
-                }
-                return m.toString();
-              }).toList();
-            } else if (data is List) {
-              models = data.map((m) {
-                if (m is Map) {
-                  if (m.containsKey('id')) return m['id'] as String;
-                  if (m.containsKey('name')) return m['name'] as String;
-                }
-                return m.toString();
-              }).toList();
-            }
-
-            if (models.isNotEmpty) return models;
+          if (response.statusCode != 200) {
+            lastError = '$modelsUrl 返回状态码 ${response.statusCode}';
+            continue;
           }
+
+          final models = _parseModels(jsonDecode(response.body));
+          if (models != null) {
+            return ModelListFetchResult.success(
+              models: models,
+              sourceUrl: modelsUrl,
+            );
+          }
+          lastError = '$modelsUrl 未返回可识别的模型列表';
         } catch (e) {
+          lastError = '$modelsUrl 请求失败: $e';
           continue;
         }
       }
 
-      return [];
+      return ModelListFetchResult.failure(lastError ?? '未获取到模型列表');
     } catch (e) {
-      return [];
+      return ModelListFetchResult.failure('获取模型列表失败: $e');
     }
+  }
+
+  List<String>? _parseModels(Object? data) {
+    final Object? modelsList;
+    if (data is Map && data['data'] is List) {
+      modelsList = data['data'];
+    } else if (data is Map && data['models'] is List) {
+      modelsList = data['models'];
+    } else if (data is List) {
+      modelsList = data;
+    } else {
+      return null;
+    }
+
+    final models = <String>[];
+    for (final item in modelsList as List) {
+      final model = item is Map
+          ? (item['id'] ?? item['name'])?.toString()
+          : item?.toString();
+      final trimmed = model?.trim();
+      if (trimmed != null && trimmed.isNotEmpty && !models.contains(trimmed)) {
+        models.add(trimmed);
+      }
+    }
+    return models;
   }
 
   Future<Map<String, dynamic>> sendRequest({
@@ -166,21 +211,23 @@ class ApiService {
     try {
       final url = buildUrl(apiConfig.baseUrl, endpoint);
       final uri = Uri.parse(url);
-      
+
       // 确保 model 在请求体中
       final body = Map<String, dynamic>.from(requestBody);
       if (!body.containsKey('model')) {
         body['model'] = model;
       }
 
-      final response = await http.post(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${apiConfig.apiKey}',
-        },
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 60));
+      final response = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ${apiConfig.apiKey}',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 60));
 
       stopwatch.stop();
 
@@ -202,7 +249,6 @@ class ApiService {
     }
   }
 
-
   /// 发送请求并返回完整响应（包含headers）
   Future<Map<String, dynamic>> sendRequestWithHeaders({
     required ApiConfig apiConfig,
@@ -215,20 +261,22 @@ class ApiService {
     try {
       final url = buildUrl(apiConfig.baseUrl, endpoint);
       final uri = Uri.parse(url);
-      
+
       final body = Map<String, dynamic>.from(requestBody);
       if (!body.containsKey('model')) {
         body['model'] = model;
       }
 
-      final response = await http.post(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${apiConfig.apiKey}',
-        },
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 60));
+      final response = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ${apiConfig.apiKey}',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 60));
 
       stopwatch.stop();
 
@@ -255,5 +303,4 @@ class ApiService {
       rethrow;
     }
   }
-
 }

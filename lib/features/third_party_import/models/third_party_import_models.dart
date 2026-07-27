@@ -52,6 +52,96 @@ class ThirdPartyImportRequest {
       sourceAppName ?? sourceName ?? sourcePackage ?? '未知第三方 App';
 }
 
+enum ThirdPartyModelTransferMode {
+  all('all'),
+  defaultOnly('default_only');
+
+  final String wireValue;
+
+  const ThirdPartyModelTransferMode(this.wireValue);
+
+  static ThirdPartyModelTransferMode fromWireValue(Object? value) {
+    return value == defaultOnly.wireValue ? defaultOnly : all;
+  }
+}
+
+class ThirdPartyApiConfigPickRequest {
+  final String? sourceName;
+  final String? sourcePackage;
+  final String? sourceAppName;
+  final String? signatureSha256;
+  final String? requestId;
+  final ThirdPartyModelTransferMode modelMode;
+
+  const ThirdPartyApiConfigPickRequest({
+    required this.sourceName,
+    required this.sourcePackage,
+    required this.sourceAppName,
+    required this.signatureSha256,
+    required this.requestId,
+    required this.modelMode,
+  });
+
+  factory ThirdPartyApiConfigPickRequest.fromPlatformMap(
+    Map<dynamic, dynamic> map,
+  ) {
+    return ThirdPartyApiConfigPickRequest(
+      sourceName: _readString(map['sourceName']),
+      sourcePackage: _readString(map['sourcePackage']),
+      sourceAppName: _readString(map['sourceAppName']),
+      signatureSha256: _readString(map['signatureSha256']),
+      requestId: _readString(map['requestId']),
+      modelMode: ThirdPartyModelTransferMode.fromWireValue(map['modelMode']),
+    );
+  }
+
+  String get displaySourceName =>
+      sourceAppName ?? sourceName ?? sourcePackage ?? '未知第三方 App';
+}
+
+class ThirdPartyApiConfigPickPayload {
+  final ApiConfig apiConfig;
+  final ThirdPartyModelTransferMode modelMode;
+
+  const ThirdPartyApiConfigPickPayload._({
+    required this.apiConfig,
+    required this.modelMode,
+  });
+
+  factory ThirdPartyApiConfigPickPayload.fromApiConfig(
+    ApiConfig apiConfig, {
+    required ThirdPartyModelTransferMode modelMode,
+  }) {
+    return ThirdPartyApiConfigPickPayload._(
+      apiConfig: apiConfig,
+      modelMode: modelMode,
+    );
+  }
+
+  String? get selectedModel =>
+      apiConfig.models.isEmpty ? null : apiConfig.models.first;
+
+  Map<String, dynamic> toJson() {
+    final config = <String, dynamic>{
+      'name': apiConfig.name,
+      'baseUrl': apiConfig.baseUrl,
+      'apiKey': apiConfig.apiKey,
+      'environment': apiConfig.environment,
+      if (apiConfig.group != null) 'group': apiConfig.group,
+      if (apiConfig.tags.isNotEmpty) 'tags': apiConfig.tags,
+      if (modelMode == ThirdPartyModelTransferMode.all)
+        'models': apiConfig.models,
+    };
+
+    return <String, dynamic>{
+      'schemaVersion': 1,
+      'modelMode': modelMode.wireValue,
+      'selectedModel': selectedModel,
+      'apiConfig': config,
+    };
+  }
+}
+
 class ThirdPartyImportPayload {
   final ThirdPartyImportRequest request;
   final int? schemaVersion;

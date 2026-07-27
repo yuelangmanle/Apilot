@@ -43,6 +43,10 @@
                 <data android:mimeType="application/vnd.apilot.api-configs+json"/>
             </intent-filter>
             <intent-filter>
+                <action android:name="com.apilot.intent.action.PICK_API_CONFIG"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
