@@ -12,6 +12,8 @@
 
 - `v1.19.0` 对应提交 `67596b1`，已在 GitHub 作为正式 Release 发布。
 - 已核验该 Release 含 `Apilot-v1.19.0.apk`、`Apilot-v1.19.0.dmg`、`Apilot-v1.19.0-windows-setup.exe` 和 `Apilot-v1.19.0-windows-portable.zip` 四类资产。
+- `v1.20.0` 对应提交 `3f047b0`，GitHub Actions 的验证、Android、macOS、Windows 和 Release job 均已通过。
+- 已核验该 Release 含 `Apilot-v1.20.0.apk`、`Apilot-v1.20.0.dmg`、`Apilot-v1.20.0-windows-setup.exe` 和 `Apilot-v1.20.0-windows-portable.zip` 四类资产。
 
 ## Android 签名策略
 
