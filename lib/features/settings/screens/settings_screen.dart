@@ -10,6 +10,7 @@ import '../../api_management/providers/api_provider.dart';
 import '../../sync/screens/sync_screen.dart';
 import '../../api_management/screens/group_manage_screen.dart';
 import '../../third_party_import/screens/third_party_import_docs_screen.dart';
+import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/models/api_config.dart';
@@ -58,6 +59,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: const Text('将所有API配置备份为JSON文件'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _exportConfigs(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.receipt_long_outlined),
+                title: const Text('第三方交互记录'),
+                subtitle: const Text('查看本地导入与对外授权记录，不包含密钥内容'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          const ThirdPartyInteropAuditScreen(),
+                    ),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.download),

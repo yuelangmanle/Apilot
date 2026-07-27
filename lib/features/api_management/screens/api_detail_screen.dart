@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_service.dart';
+import '../../../core/services/api_profile_registry.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
@@ -106,6 +107,28 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
             _buildInfoRow(context, 'API地址', _apiConfig.baseUrl,
                 canCopy: true, copyLabel: 'API地址'),
             const SizedBox(height: 12),
+            _buildInfoRow(
+              context,
+              '提供商',
+              ApiProfileRegistry.resolve(
+                baseUrl: _apiConfig.baseUrl,
+                providerId: _apiConfig.providerId,
+                protocolId: _apiConfig.protocolId,
+              ).providerDisplayName,
+              canCopy: false,
+            ),
+            const SizedBox(height: 12),
+            _buildInfoRow(
+              context,
+              '协议',
+              ApiProfileRegistry.resolve(
+                baseUrl: _apiConfig.baseUrl,
+                providerId: _apiConfig.providerId,
+                protocolId: _apiConfig.protocolId,
+              ).protocolDisplayName,
+              canCopy: false,
+            ),
+            const SizedBox(height: 12),
             _buildInfoRow(context, 'API Key', _maskApiKey(_apiConfig.apiKey),
                 canCopy: true,
                 copyValue: _apiConfig.apiKey,
@@ -113,6 +136,24 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
             if (_apiConfig.group != null) ...[
               const SizedBox(height: 12),
               _buildInfoRow(context, '分组', _apiConfig.group!, canCopy: false),
+            ],
+            if (_apiConfig.importSourceName != null) ...[
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                context,
+                '导入来源',
+                _apiConfig.importSourceName!,
+                canCopy: false,
+              ),
+            ],
+            if (_apiConfig.importTrustLevel != null) ...[
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                context,
+                '来源可信度',
+                _trustLevelLabel(_apiConfig.importTrustLevel!),
+                canCopy: false,
+              ),
             ],
             const SizedBox(height: 12),
             _buildInfoRow(context, '创建时间', _formatDate(_apiConfig.createdAt),
@@ -204,8 +245,6 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
   }
 
   Widget _buildModelsSection(BuildContext context) {
-    if (_apiConfig.models.isEmpty) return const SizedBox.shrink();
-
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -226,27 +265,31 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
               ],
             ),
             const Divider(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _apiConfig.models.map((model) {
-                return InkWell(
-                  onTap: () {
-                    Clipboard.setData(ClipboardData(text: model));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('已复制模型: $model'),
-                        duration: const Duration(seconds: 1),
-                      ),
-                    );
-                  },
-                  borderRadius: BorderRadius.circular(16),
-                  child: Chip(
-                    label: Text(model),
-                    backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                    side: const BorderSide(color: AppColors.primary),
-                    deleteIcon: const Icon(Icons.copy, size: 16),
-                    onDeleted: () {
+            if (_apiConfig.selectedModel != null) ...[
+              _buildInfoRow(
+                context,
+                '默认模型',
+                _apiConfig.selectedModel!,
+                canCopy: true,
+                copyValue: _apiConfig.selectedModel,
+                copyLabel: '默认模型',
+              ),
+              const SizedBox(height: 8),
+            ],
+            _buildInfoRow(
+              context,
+              '目录状态',
+              _modelCatalogSummary(),
+              canCopy: false,
+            ),
+            if (_apiConfig.models.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _apiConfig.models.map((model) {
+                  return InkWell(
+                    onTap: () {
                       Clipboard.setData(ClipboardData(text: model));
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
@@ -255,32 +298,79 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                         ),
                       );
                     },
-                  ),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                onPressed: () {
-                  Clipboard.setData(
-                      ClipboardData(text: _apiConfig.models.join('\n')));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('已复制所有模型列表'),
-                      duration: Duration(seconds: 1),
+                    borderRadius: BorderRadius.circular(16),
+                    child: Chip(
+                      label: Text(model),
+                      backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+                      side: const BorderSide(color: AppColors.primary),
+                      deleteIcon: const Icon(Icons.copy, size: 16),
+                      onDeleted: () {
+                        Clipboard.setData(ClipboardData(text: model));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('已复制模型: $model'),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
+                      },
                     ),
                   );
-                },
-                icon: const Icon(Icons.copy_all, size: 16),
-                label: const Text('复制全部'),
+                }).toList(),
               ),
-            ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(
+                        ClipboardData(text: _apiConfig.models.join('\n')));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('已复制所有模型列表'),
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.copy_all, size: 16),
+                  label: const Text('复制全部'),
+                ),
+              ),
+            ] else
+              const Padding(
+                padding: EdgeInsets.only(top: 12),
+                child: Text(
+                  '未保存模型目录。可设置默认模型，或在支持的服务上刷新模型列表。',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
+              ),
           ],
         ),
       ),
     );
+  }
+
+  String _modelCatalogSummary() {
+    final source = switch (_apiConfig.modelSource) {
+      'refreshed' => '远端刷新',
+      'third_party' => '第三方导入',
+      'manual' => '手动维护',
+      _ => '未知来源',
+    };
+    if (_apiConfig.modelsRefreshedAt == null) return '$source · 未记录刷新时间';
+    return '$source · ${_formatDate(_apiConfig.modelsRefreshedAt!)}';
+  }
+
+  String _trustLevelLabel(String trustLevel) {
+    switch (trustLevel) {
+      case 'signature_verified':
+        return '已验证包签名';
+      case 'system_package':
+        return '系统可见包名';
+      case 'declared':
+        return '调用方声明';
+      default:
+        return '未知';
+    }
   }
 
   Widget _buildTagsSection() {

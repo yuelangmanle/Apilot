@@ -26,6 +26,19 @@ ApiConfig _$ApiConfigFromJson(Map<String, dynamic> json) => ApiConfig(
           ? null
           : DateTime.parse(json['updatedAt'] as String),
       metadata: json['metadata'] as Map<String, dynamic>?,
+      providerId: json['providerId'] as String? ?? ApiProviderIds.custom,
+      protocolId:
+          json['protocolId'] as String? ?? ApiProtocolIds.openAiCompatible,
+      selectedModel: json['selectedModel'] as String?,
+      modelCatalogMode:
+          json['modelCatalogMode'] as String? ?? ApiModelCatalogModes.saved,
+      modelSource: json['modelSource'] as String? ?? ApiModelSources.manual,
+      modelsRefreshedAt: json['modelsRefreshedAt'] == null
+          ? null
+          : DateTime.parse(json['modelsRefreshedAt'] as String),
+      importSourceName: json['importSourceName'] as String?,
+      importSourcePackage: json['importSourcePackage'] as String?,
+      importTrustLevel: json['importTrustLevel'] as String?,
     );
 
 Map<String, dynamic> _$ApiConfigToJson(ApiConfig instance) => <String, dynamic>{
@@ -41,4 +54,13 @@ Map<String, dynamic> _$ApiConfigToJson(ApiConfig instance) => <String, dynamic>{
       'createdAt': instance.createdAt.toIso8601String(),
       'updatedAt': instance.updatedAt.toIso8601String(),
       'metadata': instance.metadata,
+      'providerId': instance.providerId,
+      'protocolId': instance.protocolId,
+      'selectedModel': instance.selectedModel,
+      'modelCatalogMode': instance.modelCatalogMode,
+      'modelSource': instance.modelSource,
+      'modelsRefreshedAt': instance.modelsRefreshedAt?.toIso8601String(),
+      'importSourceName': instance.importSourceName,
+      'importSourcePackage': instance.importSourcePackage,
+      'importTrustLevel': instance.importTrustLevel,
     };

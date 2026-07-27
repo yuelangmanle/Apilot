@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import '../../../core/models/api_config.dart';
+import '../../../core/models/api_profile.dart';
+import '../../../core/services/api_profile_registry.dart';
 
 class ThirdPartyImportRequest {
   final bool openDocs;
@@ -10,6 +12,8 @@ class ThirdPartyImportRequest {
   final String? sourcePackage;
   final String? sourceAppName;
   final String? signatureSha256;
+  final String? sourceIdentity;
+  final String? declaredSignatureSha256;
   final String? requestId;
   final String? mimeType;
   final String? dataUri;
@@ -23,6 +27,8 @@ class ThirdPartyImportRequest {
     required this.sourcePackage,
     required this.sourceAppName,
     required this.signatureSha256,
+    this.sourceIdentity,
+    this.declaredSignatureSha256,
     required this.requestId,
     required this.mimeType,
     required this.dataUri,
@@ -39,6 +45,8 @@ class ThirdPartyImportRequest {
       sourcePackage: _readString(map['sourcePackage']),
       sourceAppName: _readString(map['sourceAppName']),
       signatureSha256: _readString(map['signatureSha256']),
+      sourceIdentity: _readString(map['sourceIdentity']),
+      declaredSignatureSha256: _readString(map['declaredSignatureSha256']),
       requestId: _readString(map['requestId']),
       mimeType: _readString(map['mimeType']),
       dataUri: _readString(map['dataUri']),
@@ -65,63 +73,199 @@ enum ThirdPartyModelTransferMode {
   }
 }
 
+enum ThirdPartyResultTransport {
+  extra('extra'),
+  contentUri('content_uri'),
+  automatic('auto');
+
+  final String wireValue;
+
+  const ThirdPartyResultTransport(this.wireValue);
+
+  static ThirdPartyResultTransport fromWireValue(Object? value) {
+    for (final transport in values) {
+      if (transport.wireValue == value) return transport;
+    }
+    return automatic;
+  }
+}
+
+abstract final class ThirdPartyApiConfigScopes {
+  static const connection = 'connection';
+  static const modelsDefault = 'models.default';
+  static const modelsAll = 'models.all';
+  static const secretApiKey = 'secret.api_key';
+
+  static const supported = <String>{
+    connection,
+    modelsDefault,
+    modelsAll,
+    secretApiKey,
+  };
+
+  static const defaultV2 = <String>{connection, modelsDefault};
+
+  static List<String> sort(Set<String> scopes) {
+    const order = <String>[
+      connection,
+      modelsDefault,
+      modelsAll,
+      secretApiKey,
+    ];
+    return order.where(scopes.contains).toList(growable: false);
+  }
+
+  static Set<String> normalize(Set<String> scopes) {
+    final normalized = scopes.where(supported.contains).toSet();
+    if (normalized.contains(modelsAll)) {
+      normalized.add(modelsDefault);
+    }
+    return normalized;
+  }
+}
+
 class ThirdPartyApiConfigPickRequest {
   final String? sourceName;
   final String? sourcePackage;
   final String? sourceAppName;
   final String? signatureSha256;
+  final String? sourceIdentity;
+  final String? declaredSignatureSha256;
   final String? requestId;
+  final int schemaVersion;
   final ThirdPartyModelTransferMode modelMode;
+  final Set<String> requestedScopes;
+  final ThirdPartyResultTransport returnTransport;
 
   const ThirdPartyApiConfigPickRequest({
     required this.sourceName,
     required this.sourcePackage,
     required this.sourceAppName,
     required this.signatureSha256,
+    this.sourceIdentity,
+    this.declaredSignatureSha256,
     required this.requestId,
     required this.modelMode,
+    this.schemaVersion = 1,
+    this.requestedScopes = const <String>{},
+    this.returnTransport = ThirdPartyResultTransport.extra,
   });
+
+  const ThirdPartyApiConfigPickRequest.v2({
+    required this.sourceName,
+    required this.sourcePackage,
+    required this.sourceAppName,
+    required this.signatureSha256,
+    this.sourceIdentity,
+    this.declaredSignatureSha256,
+    required this.requestId,
+    this.requestedScopes = ThirdPartyApiConfigScopes.defaultV2,
+    this.returnTransport = ThirdPartyResultTransport.automatic,
+  })  : schemaVersion = 2,
+        modelMode = ThirdPartyModelTransferMode.defaultOnly;
 
   factory ThirdPartyApiConfigPickRequest.fromPlatformMap(
     Map<dynamic, dynamic> map,
   ) {
+    final schemaVersion = _readInt(map['schemaVersion']) == 2 ? 2 : 1;
+    final requestedScopes = _readStringSet(map['requestedScopes'])
+        .where(ThirdPartyApiConfigScopes.supported.contains)
+        .toSet();
+    if (schemaVersion == 2) {
+      return ThirdPartyApiConfigPickRequest.v2(
+        sourceName: _readString(map['sourceName']),
+        sourcePackage: _readString(map['sourcePackage']),
+        sourceAppName: _readString(map['sourceAppName']),
+        signatureSha256: _readString(map['signatureSha256']),
+        sourceIdentity: _readString(map['sourceIdentity']),
+        declaredSignatureSha256: _readString(map['declaredSignatureSha256']),
+        requestId: _readString(map['requestId']),
+        requestedScopes: requestedScopes.isEmpty
+            ? ThirdPartyApiConfigScopes.defaultV2
+            : requestedScopes,
+        returnTransport:
+            ThirdPartyResultTransport.fromWireValue(map['returnTransport']),
+      );
+    }
+
     return ThirdPartyApiConfigPickRequest(
       sourceName: _readString(map['sourceName']),
       sourcePackage: _readString(map['sourcePackage']),
       sourceAppName: _readString(map['sourceAppName']),
       signatureSha256: _readString(map['signatureSha256']),
+      sourceIdentity: _readString(map['sourceIdentity']),
+      declaredSignatureSha256: _readString(map['declaredSignatureSha256']),
       requestId: _readString(map['requestId']),
       modelMode: ThirdPartyModelTransferMode.fromWireValue(map['modelMode']),
     );
   }
 
+  bool get isV2 => schemaVersion == 2;
+
   String get displaySourceName =>
       sourceAppName ?? sourceName ?? sourcePackage ?? '未知第三方 App';
+
+  String get trustLevel {
+    if (sourceIdentity == ThirdPartySourceIdentity.callingPackage &&
+        signatureSha256 != null &&
+        declaredSignatureSha256 != null &&
+        signatureSha256!.toUpperCase() ==
+            declaredSignatureSha256!.toUpperCase()) {
+      return ApiImportTrustLevels.signatureVerified;
+    }
+    if (sourceIdentity == ThirdPartySourceIdentity.callingPackage &&
+        sourcePackage != null) {
+      return ApiImportTrustLevels.systemPackage;
+    }
+    if (sourceName != null) return ApiImportTrustLevels.declared;
+    return ApiImportTrustLevels.unknown;
+  }
 }
 
 class ThirdPartyApiConfigPickPayload {
   final ApiConfig apiConfig;
-  final ThirdPartyModelTransferMode modelMode;
+  final ThirdPartyApiConfigPickRequest? request;
+  final ThirdPartyModelTransferMode? modelMode;
+  final Set<String> grantedScopes;
 
   const ThirdPartyApiConfigPickPayload._({
     required this.apiConfig,
+    required this.request,
     required this.modelMode,
+    required this.grantedScopes,
   });
 
   factory ThirdPartyApiConfigPickPayload.fromApiConfig(
     ApiConfig apiConfig, {
-    required ThirdPartyModelTransferMode modelMode,
+    ThirdPartyApiConfigPickRequest? request,
+    ThirdPartyModelTransferMode? modelMode,
+    Set<String>? grantedScopes,
   }) {
+    assert(request != null || modelMode != null);
     return ThirdPartyApiConfigPickPayload._(
       apiConfig: apiConfig,
+      request: request,
       modelMode: modelMode,
+      grantedScopes: grantedScopes ??
+          (request?.isV2 == true
+              ? ThirdPartyApiConfigScopes.defaultV2
+              : const <String>{}),
     );
   }
 
   String? get selectedModel =>
-      apiConfig.models.isEmpty ? null : apiConfig.models.first;
+      apiConfig.selectedModel ??
+      (apiConfig.models.isEmpty ? null : apiConfig.models.first);
+
+  bool get isV2 => request?.isV2 == true;
 
   Map<String, dynamic> toJson() {
+    if (isV2) return _toV2Json();
+    return _toV1Json();
+  }
+
+  Map<String, dynamic> _toV1Json() {
+    final legacyModelMode = modelMode ?? ThirdPartyModelTransferMode.all;
     final config = <String, dynamic>{
       'name': apiConfig.name,
       'baseUrl': apiConfig.baseUrl,
@@ -129,15 +273,70 @@ class ThirdPartyApiConfigPickPayload {
       'environment': apiConfig.environment,
       if (apiConfig.group != null) 'group': apiConfig.group,
       if (apiConfig.tags.isNotEmpty) 'tags': apiConfig.tags,
-      if (modelMode == ThirdPartyModelTransferMode.all)
+      if (legacyModelMode == ThirdPartyModelTransferMode.all)
         'models': apiConfig.models,
     };
 
     return <String, dynamic>{
       'schemaVersion': 1,
-      'modelMode': modelMode.wireValue,
+      'modelMode': legacyModelMode.wireValue,
       'selectedModel': selectedModel,
       'apiConfig': config,
+    };
+  }
+
+  Map<String, dynamic> _toV2Json() {
+    final selectedRequest = request!;
+    final allowedScopes = ThirdPartyApiConfigScopes.normalize(grantedScopes);
+    final profile = ApiProfileRegistry.resolve(
+      baseUrl: apiConfig.baseUrl,
+      providerId: apiConfig.providerId,
+      protocolId: apiConfig.protocolId,
+    );
+    final models = <String, dynamic>{
+      if (allowedScopes.contains(ThirdPartyApiConfigScopes.modelsDefault))
+        'selectedModel': selectedModel,
+      'catalogMode': apiConfig.modelCatalogMode,
+      'source': apiConfig.modelSource,
+      if (apiConfig.modelsRefreshedAt != null)
+        'refreshedAt': apiConfig.modelsRefreshedAt!.toIso8601String(),
+      if (allowedScopes.contains(ThirdPartyApiConfigScopes.modelsAll))
+        'availableModels': apiConfig.models,
+    };
+
+    return <String, dynamic>{
+      'schemaVersion': 2,
+      if (selectedRequest.requestId != null)
+        'requestId': selectedRequest.requestId,
+      'grantedScopes': ThirdPartyApiConfigScopes.sort(allowedScopes),
+      'apiProfile': <String, dynamic>{
+        if (allowedScopes.contains(ThirdPartyApiConfigScopes.connection))
+          'connection': <String, dynamic>{
+            'name': apiConfig.name,
+            'baseUrl': apiConfig.baseUrl,
+            'environment': apiConfig.environment,
+            if (apiConfig.group != null) 'group': apiConfig.group,
+            if (apiConfig.tags.isNotEmpty) 'tags': apiConfig.tags,
+          },
+        'provider': <String, dynamic>{
+          'id': profile.providerId,
+          'displayName': profile.providerDisplayName,
+        },
+        'protocol': <String, dynamic>{
+          'id': profile.protocolId,
+          'displayName': profile.protocolDisplayName,
+        },
+        'models': models,
+        'secrets': <String, dynamic>{
+          if (allowedScopes.contains(ThirdPartyApiConfigScopes.secretApiKey))
+            'apiKey': apiConfig.apiKey,
+        },
+        'origin': <String, dynamic>{
+          'appName': 'Apilot',
+          'packageName': 'com.example.api_manager',
+          'trustLevel': ApiImportTrustLevels.systemPackage,
+        },
+      },
     };
   }
 }
@@ -147,6 +346,7 @@ class ThirdPartyImportPayload {
   final int? schemaVersion;
   final String? sourceAppName;
   final String? sourcePackageName;
+  final String? declaredSignatureSha256;
   final bool declaredContainsSecrets;
   final List<ThirdPartyImportConfigCandidate> configs;
   final String? fatalError;
@@ -156,6 +356,7 @@ class ThirdPartyImportPayload {
     required this.schemaVersion,
     required this.sourceAppName,
     required this.sourcePackageName,
+    required this.declaredSignatureSha256,
     required this.declaredContainsSecrets,
     required this.configs,
     required this.fatalError,
@@ -177,15 +378,19 @@ class ThirdPartyImportPayload {
     }
 
     final schemaVersion = _readInt(decoded['schemaVersion']);
-    if (schemaVersion != 1) {
+    if (schemaVersion != 1 && schemaVersion != 2) {
       return ThirdPartyImportPayload._fatal(request, '导入格式版本不支持');
     }
+    final supportedSchemaVersion = schemaVersion!;
 
     final source = _readMap(decoded['source']);
     final options = _readMap(decoded['options']);
-    final rawConfigs = decoded['apiConfigs'];
+    final rawConfigs =
+        decoded[supportedSchemaVersion == 2 ? 'apiProfiles' : 'apiConfigs'];
     if (rawConfigs is! List) {
-      return ThirdPartyImportPayload._fatal(request, '导入格式缺少 apiConfigs 列表');
+      final listName =
+          supportedSchemaVersion == 2 ? 'apiProfiles' : 'apiConfigs';
+      return ThirdPartyImportPayload._fatal(request, '导入格式缺少 $listName 列表');
     }
     if (rawConfigs.isEmpty) {
       return ThirdPartyImportPayload._fatal(request, '没有可导入的 API 配置');
@@ -193,16 +398,25 @@ class ThirdPartyImportPayload {
 
     final configs = <ThirdPartyImportConfigCandidate>[];
     for (var i = 0; i < rawConfigs.length; i++) {
-      configs.add(ThirdPartyImportConfigCandidate.fromJson(rawConfigs[i], i));
+      configs.add(
+        ThirdPartyImportConfigCandidate.fromJson(
+          rawConfigs[i],
+          i,
+          schemaVersion: supportedSchemaVersion,
+        ),
+      );
     }
 
-    final declaredContainsSecrets = options['containsSecrets'] == true;
+    final containsSecrets = options['containsSecrets'] == true ||
+        configs.any((config) => config.containsApiKey);
     return ThirdPartyImportPayload(
       request: request,
-      schemaVersion: schemaVersion,
+      schemaVersion: supportedSchemaVersion,
       sourceAppName: _readString(source['appName']),
       sourcePackageName: _readString(source['packageName']),
-      declaredContainsSecrets: declaredContainsSecrets,
+      declaredSignatureSha256: _readString(source['signatureSha256']) ??
+          request.declaredSignatureSha256,
+      declaredContainsSecrets: containsSecrets,
       configs: configs,
       fatalError: null,
     );
@@ -217,6 +431,7 @@ class ThirdPartyImportPayload {
       schemaVersion: null,
       sourceAppName: null,
       sourcePackageName: null,
+      declaredSignatureSha256: null,
       declaredContainsSecrets: false,
       configs: const [],
       fatalError: message,
@@ -245,6 +460,25 @@ class ThirdPartyImportPayload {
   String get displaySourcePackage =>
       request.sourcePackage ?? sourcePackageName ?? '未提供';
 
+  String get trustLevel {
+    final nativeSignature = request.signatureSha256?.toUpperCase();
+    final declaredSignature = declaredSignatureSha256?.toUpperCase();
+    if (request.sourceIdentity == ThirdPartySourceIdentity.callingPackage &&
+        nativeSignature != null &&
+        declaredSignature != null &&
+        nativeSignature == declaredSignature) {
+      return ApiImportTrustLevels.signatureVerified;
+    }
+    if (request.sourceIdentity == ThirdPartySourceIdentity.callingPackage &&
+        request.sourcePackage != null) {
+      return ApiImportTrustLevels.systemPackage;
+    }
+    if (sourcePackageName != null || request.sourceName != null) {
+      return ApiImportTrustLevels.declared;
+    }
+    return ApiImportTrustLevels.unknown;
+  }
+
   static Object? _decodeJson(String rawPayload) {
     try {
       return jsonDecode(rawPayload);
@@ -252,6 +486,11 @@ class ThirdPartyImportPayload {
       return null;
     }
   }
+}
+
+abstract final class ThirdPartySourceIdentity {
+  static const callingPackage = 'calling_package';
+  static const referrer = 'referrer';
 }
 
 class ThirdPartyImportConfigCandidate {
@@ -264,6 +503,12 @@ class ThirdPartyImportConfigCandidate {
   final String? group;
   final List<String> tags;
   final Map<String, dynamic>? metadata;
+  final String providerId;
+  final String protocolId;
+  final String? selectedModel;
+  final String modelCatalogMode;
+  final String modelSource;
+  final DateTime? modelsRefreshedAt;
   final List<String> errors;
 
   const ThirdPartyImportConfigCandidate({
@@ -276,28 +521,37 @@ class ThirdPartyImportConfigCandidate {
     required this.group,
     required this.tags,
     required this.metadata,
+    required this.providerId,
+    required this.protocolId,
+    required this.selectedModel,
+    required this.modelCatalogMode,
+    required this.modelSource,
+    required this.modelsRefreshedAt,
     required this.errors,
   });
 
-  factory ThirdPartyImportConfigCandidate.fromJson(Object? raw, int index) {
-    final errors = <String>[];
-    final displayIndex = index + 1;
+  factory ThirdPartyImportConfigCandidate.fromJson(
+    Object? raw,
+    int index, {
+    required int schemaVersion,
+  }) {
     if (raw is! Map) {
-      return ThirdPartyImportConfigCandidate(
-        index: index,
-        name: '第 $displayIndex 条配置',
-        baseUrl: '',
-        apiKey: '',
-        models: const [],
-        environment: 'development',
-        group: null,
-        tags: const [],
-        metadata: null,
-        errors: const ['配置必须是 JSON 对象'],
+      return ThirdPartyImportConfigCandidate._invalid(
+        index,
+        '配置必须是 JSON 对象',
       );
     }
+    if (schemaVersion == 2) {
+      return ThirdPartyImportConfigCandidate._fromV2(_readMap(raw), index);
+    }
+    return ThirdPartyImportConfigCandidate._fromV1(_readMap(raw), index);
+  }
 
-    final data = _readMap(raw);
+  factory ThirdPartyImportConfigCandidate._fromV1(
+    Map<String, dynamic> data,
+    int index,
+  ) {
+    final errors = <String>[];
     final name = _readString(data['name']) ?? '';
     final baseUrl = _readString(data['baseUrl']) ?? '';
     final apiKey = _readString(data['apiKey']) ?? '';
@@ -305,20 +559,10 @@ class ThirdPartyImportConfigCandidate {
     final environment = _readString(data['environment']) ?? 'development';
     final tags = _readStringList(data['tags'], errors, 'tags', required: false);
     final group = _readString(data['group']);
-    final metadata = _readMapOrNull(data['metadata']);
+    final profile = ApiProfileRegistry.resolve(baseUrl: baseUrl);
 
-    if (name.trim().isEmpty) {
-      errors.add('缺少 name');
-    }
-    if (baseUrl.trim().isEmpty) {
-      errors.add('缺少 baseUrl');
-    } else if (!baseUrl.startsWith('http://') &&
-        !baseUrl.startsWith('https://')) {
-      errors.add('baseUrl 必须以 http:// 或 https:// 开头');
-    }
-    if (models.isEmpty) {
-      errors.add('models 至少需要 1 个模型');
-    }
+    _validateConnection(name, baseUrl, errors);
+    if (models.isEmpty) errors.add('models 至少需要 1 个模型');
 
     return ThirdPartyImportConfigCandidate(
       index: index,
@@ -326,12 +570,100 @@ class ThirdPartyImportConfigCandidate {
       baseUrl: baseUrl.trim(),
       apiKey: apiKey.trim(),
       models: models,
-      environment:
-          environment.trim().isEmpty ? 'development' : environment.trim(),
-      group: group == null || group.trim().isEmpty ? null : group.trim(),
+      environment: _normalizedEnvironment(environment),
+      group: _normalizedOptional(group),
       tags: tags,
-      metadata: metadata,
+      metadata: _readMapOrNull(data['metadata']),
+      providerId: profile.providerId,
+      protocolId: profile.protocolId,
+      selectedModel: models.isEmpty ? null : models.first,
+      modelCatalogMode: ApiModelCatalogModes.saved,
+      modelSource: ApiModelSources.manual,
+      modelsRefreshedAt: null,
       errors: errors,
+    );
+  }
+
+  factory ThirdPartyImportConfigCandidate._fromV2(
+    Map<String, dynamic> data,
+    int index,
+  ) {
+    final errors = <String>[];
+    final connection = _readMap(data['connection']);
+    final modelsData = _readMap(data['models']);
+    final provider = _readMap(data['provider']);
+    final protocol = _readMap(data['protocol']);
+    final secrets = _readMap(data['secrets']);
+    final name = _readString(connection['name']) ?? '';
+    final baseUrl = _readString(connection['baseUrl']) ?? '';
+    final models = _readStringList(
+      modelsData['availableModels'],
+      errors,
+      'models.availableModels',
+      required: false,
+    );
+    final selectedModel = _readString(modelsData['selectedModel']);
+    final profile = ApiProfileRegistry.resolve(
+      baseUrl: baseUrl,
+      providerId: _readString(provider['id']),
+      protocolId: _readString(protocol['id']),
+    );
+
+    _validateConnection(name, baseUrl, errors);
+    final modelCatalogMode = _readString(modelsData['catalogMode']) ??
+        (models.isEmpty
+            ? ApiModelCatalogModes.none
+            : ApiModelCatalogModes.saved);
+    final modelSource = _readString(modelsData['source']) ??
+        (models.isEmpty ? ApiModelSources.unknown : ApiModelSources.thirdParty);
+
+    return ThirdPartyImportConfigCandidate(
+      index: index,
+      name: name.trim(),
+      baseUrl: baseUrl.trim(),
+      apiKey: _readString(secrets['apiKey']) ?? '',
+      models: models,
+      environment: _normalizedEnvironment(
+        _readString(connection['environment']) ?? 'development',
+      ),
+      group: _normalizedOptional(_readString(connection['group'])),
+      tags: _readStringList(connection['tags'], errors, 'connection.tags',
+          required: false),
+      metadata: <String, dynamic>{
+        ...?_readMapOrNull(data['metadata']),
+        if (_readMapOrNull(data['origin']) != null)
+          'declaredOrigin': _readMapOrNull(data['origin']),
+      },
+      providerId: profile.providerId,
+      protocolId: profile.protocolId,
+      selectedModel: selectedModel ?? (models.isEmpty ? null : models.first),
+      modelCatalogMode: modelCatalogMode,
+      modelSource: modelSource,
+      modelsRefreshedAt: DateTime.tryParse(
+        _readString(modelsData['refreshedAt']) ?? '',
+      ),
+      errors: errors,
+    );
+  }
+
+  factory ThirdPartyImportConfigCandidate._invalid(int index, String error) {
+    return ThirdPartyImportConfigCandidate(
+      index: index,
+      name: '第 ${index + 1} 条配置',
+      baseUrl: '',
+      apiKey: '',
+      models: const [],
+      environment: 'development',
+      group: null,
+      tags: const [],
+      metadata: null,
+      providerId: ApiProviderIds.custom,
+      protocolId: ApiProtocolIds.openAiCompatible,
+      selectedModel: null,
+      modelCatalogMode: ApiModelCatalogModes.none,
+      modelSource: ApiModelSources.unknown,
+      modelsRefreshedAt: null,
+      errors: <String>[error],
     );
   }
 
@@ -366,6 +698,15 @@ class ThirdPartyImportConfigCandidate {
       createdAt: importedAt,
       updatedAt: importedAt,
       metadata: mergedMetadata,
+      providerId: providerId,
+      protocolId: protocolId,
+      selectedModel: selectedModel,
+      modelCatalogMode: modelCatalogMode,
+      modelSource: modelSource,
+      modelsRefreshedAt: modelsRefreshedAt,
+      importSourceName: _readString(importMetadata['sourceName']),
+      importSourcePackage: _readString(importMetadata['sourcePackage']),
+      importTrustLevel: _readString(importMetadata['trustLevel']),
     );
   }
 
@@ -373,6 +714,28 @@ class ThirdPartyImportConfigCandidate {
     return _normalize(existing.name) == _normalize(name) ||
         _normalizeUrl(existing.baseUrl) == _normalizeUrl(baseUrl);
   }
+
+  static void _validateConnection(
+    String name,
+    String baseUrl,
+    List<String> errors,
+  ) {
+    if (name.trim().isEmpty) {
+      errors.add('缺少 name');
+    }
+    if (baseUrl.trim().isEmpty) {
+      errors.add('缺少 baseUrl');
+    } else if (!baseUrl.startsWith('http://') &&
+        !baseUrl.startsWith('https://')) {
+      errors.add('baseUrl 必须以 http:// 或 https:// 开头');
+    }
+  }
+
+  static String _normalizedEnvironment(String value) =>
+      value.trim().isEmpty ? 'development' : value.trim();
+
+  static String? _normalizedOptional(String? value) =>
+      value == null || value.trim().isEmpty ? null : value.trim();
 
   static String _normalize(String value) => value.trim().toLowerCase();
 
@@ -404,11 +767,23 @@ Map<String, dynamic> _readMap(Object? value) {
 }
 
 Map<String, dynamic>? _readMapOrNull(Object? value) {
-  if (value == null) return null;
-  if (value is Map) {
-    return value.map((key, mapValue) => MapEntry(key.toString(), mapValue));
+  if (value == null || value is! Map) return null;
+  return value.map((key, mapValue) => MapEntry(key.toString(), mapValue));
+}
+
+Set<String> _readStringSet(Object? value) {
+  if (value is String) {
+    return value
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toSet();
   }
-  return null;
+  if (value is! Iterable) return <String>{};
+  return value
+      .map((item) => item?.toString().trim() ?? '')
+      .where((item) => item.isNotEmpty)
+      .toSet();
 }
 
 List<String> _readStringList(

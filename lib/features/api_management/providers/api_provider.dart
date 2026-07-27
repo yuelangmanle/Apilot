@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../../../core/models/api_config.dart';
+import '../../../core/models/api_interop_audit.dart';
 import '../../../core/services/database_service.dart';
 
 class ApiProvider with ChangeNotifier {
@@ -144,8 +145,18 @@ class ApiProvider with ChangeNotifier {
     ApiConfig api,
     List<String> models,
   ) async {
+    final normalizedModels = List<String>.unmodifiable(models);
+    final selectedModel = normalizedModels.isEmpty
+        ? null
+        : normalizedModels.contains(api.selectedModel)
+            ? api.selectedModel
+            : normalizedModels.first;
     final updated = api.copyWith(
-      models: List.unmodifiable(models),
+      models: normalizedModels,
+      selectedModel: selectedModel,
+      modelCatalogMode: 'remote',
+      modelSource: 'refreshed',
+      modelsRefreshedAt: DateTime.now(),
       updatedAt: DateTime.now(),
     );
     await updateApiConfig(updated);
@@ -164,6 +175,10 @@ class ApiProvider with ChangeNotifier {
       notifyListeners();
       rethrow;
     }
+  }
+
+  Future<void> recordInteropAudit(ApiInteropAudit audit) {
+    return _databaseService.insertInteropAudit(audit);
   }
 
   void setSelectedGroup(String? group) {

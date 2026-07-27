@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/models/api_profile.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../models/third_party_import_models.dart';
 import 'third_party_import_confirm_screen.dart';
@@ -91,6 +92,11 @@ class _SourceReview extends StatelessWidget {
               children: [
                 _InfoRow(label: '来源', value: payload.displaySourceName),
                 _InfoRow(label: '包名', value: payload.displaySourcePackage),
+                _InfoRow(
+                  label: '可信度',
+                  value: _trustLevelLabel(payload.trustLevel),
+                  valueColor: _trustLevelColor(payload.trustLevel),
+                ),
                 if (payload.request.requestId != null)
                   _InfoRow(label: '请求 ID', value: payload.request.requestId!),
                 if (payload.request.signatureSha256 != null)
@@ -174,6 +180,32 @@ class _SourceReview extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  String _trustLevelLabel(String trustLevel) {
+    switch (trustLevel) {
+      case ApiImportTrustLevels.signatureVerified:
+        return '已验证包签名';
+      case ApiImportTrustLevels.systemPackage:
+        return '系统可见包名';
+      case ApiImportTrustLevels.declared:
+        return '调用方声明';
+      default:
+        return '未知';
+    }
+  }
+
+  Color _trustLevelColor(String trustLevel) {
+    switch (trustLevel) {
+      case ApiImportTrustLevels.signatureVerified:
+        return AppColors.success;
+      case ApiImportTrustLevels.systemPackage:
+        return AppColors.primary;
+      case ApiImportTrustLevels.declared:
+        return AppColors.warning;
+      default:
+        return AppColors.error;
+    }
   }
 }
 

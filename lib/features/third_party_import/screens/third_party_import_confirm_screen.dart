@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/models/api_interop_audit.dart';
+import '../../../core/services/api_profile_registry.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../models/third_party_import_models.dart';
@@ -110,6 +112,8 @@ class _ThirdPartyImportConfirmScreenState
       'sourcePackage': widget.payload.displaySourcePackage,
       'requestId': widget.payload.request.requestId,
       'receivedAt': widget.payload.request.receivedAt.toIso8601String(),
+      'schemaVersion': widget.payload.schemaVersion,
+      'trustLevel': widget.payload.trustLevel,
     };
 
     var successCount = 0;
@@ -132,6 +136,43 @@ class _ThirdPartyImportConfirmScreenState
           importMetadata: importMetadata,
         );
         await provider.addApiConfig(apiConfig);
+        final importedScopes = <String>{ThirdPartyApiConfigScopes.connection};
+        if (apiConfig.selectedModel != null) {
+          importedScopes.add(ThirdPartyApiConfigScopes.modelsDefault);
+        }
+        if (apiConfig.models.isNotEmpty) {
+          importedScopes.add(ThirdPartyApiConfigScopes.modelsAll);
+        }
+        if (apiConfig.apiKey.isNotEmpty) {
+          importedScopes.add(ThirdPartyApiConfigScopes.secretApiKey);
+        }
+        try {
+          await provider.recordInteropAudit(
+            ApiInteropAudit(
+              id: const Uuid().v4(),
+              direction: ApiInteropAuditDirection.inbound,
+              createdAt: importedAt,
+              sourceName: widget.payload.displaySourceName,
+              sourcePackage: widget.payload.displaySourcePackage == '未提供'
+                  ? null
+                  : widget.payload.displaySourcePackage,
+              trustLevel: widget.payload.trustLevel,
+              apiConfigId: apiConfig.id,
+              apiConfigName: apiConfig.name,
+              providerId: apiConfig.providerId,
+              protocolId: apiConfig.protocolId,
+              grantedScopes: ThirdPartyApiConfigScopes.sort(
+                ThirdPartyApiConfigScopes.normalize(importedScopes),
+              ),
+              selectedModel: apiConfig.selectedModel,
+              modelCount: apiConfig.models.length,
+              apiKeyShared: apiConfig.apiKey.isNotEmpty,
+              schemaVersion: widget.payload.schemaVersion ?? 1,
+            ),
+          );
+        } catch (error) {
+          debugPrint('无法写入第三方导入审计记录: $error');
+        }
         successCount++;
       } catch (e) {
         final displayName = candidate.displayName;
@@ -216,6 +257,11 @@ class _ConfigPreviewCard extends StatelessWidget {
     final isValid = candidate.isValid;
     final modelCount = candidate.models.length;
     final errorSummary = candidate.errors.join('、');
+    final profile = ApiProfileRegistry.resolve(
+      baseUrl: candidate.baseUrl,
+      providerId: candidate.providerId,
+      protocolId: candidate.protocolId,
+    );
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: Padding(
@@ -250,9 +296,15 @@ class _ConfigPreviewCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             _PreviewLine(label: 'Base URL', value: candidate.baseUrl),
+            _PreviewLine(label: '提供商', value: profile.providerDisplayName),
+            _PreviewLine(label: '协议', value: profile.protocolDisplayName),
             _PreviewLine(
               label: '模型',
-              value: candidate.models.isEmpty ? '未提供' : '$modelCount 个',
+              value: candidate.models.isEmpty
+                  ? (candidate.selectedModel == null
+                      ? '未提供'
+                      : '默认：${candidate.selectedModel}')
+                  : '$modelCount 个，默认：${candidate.selectedModel ?? candidate.models.first}',
             ),
             _PreviewLine(label: '环境', value: candidate.environment),
             if (candidate.group != null)

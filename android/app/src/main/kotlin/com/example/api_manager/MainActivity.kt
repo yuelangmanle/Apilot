@@ -5,6 +5,9 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.FileProvider
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.CaptureActivity
@@ -15,6 +18,8 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import java.security.MessageDigest
+import java.io.File
+import java.util.UUID
 
 class MainActivity : FlutterActivity() {
     private var methodChannel: MethodChannel? = null
@@ -57,8 +62,11 @@ class MainActivity : FlutterActivity() {
                 }
                 "completePick" -> completePick(
                     call.argument<String>("payload"),
+                    call.argument<Int>("schemaVersion") ?: 1,
+                    call.argument<String>("returnTransport"),
                     result
                 )
+                "finishPick" -> finishPick(result)
                 "cancelPick" -> cancelPick(result)
                 else -> result.notImplemented()
             }
@@ -153,11 +161,20 @@ class MainActivity : FlutterActivity() {
         if (intent?.action != ACTION_PICK_API_CONFIG) return null
 
         return baseRequest(intent) + mapOf(
-            "modelMode" to intent.getStringExtra(EXTRA_MODEL_MODE)
+            "modelMode" to intent.getStringExtra(EXTRA_MODEL_MODE),
+            "schemaVersion" to intent.getIntExtra(EXTRA_SCHEMA_VERSION, 1),
+            "requestedScopes" to intent.getStringArrayListExtra(EXTRA_REQUESTED_SCOPES),
+            "returnTransport" to intent.getStringExtra(EXTRA_RETURN_TRANSPORT),
+            "declaredSignatureSha256" to intent.getStringExtra(EXTRA_SOURCE_SIGNATURE_SHA256)
         )
     }
 
-    private fun completePick(payload: String?, result: MethodChannel.Result) {
+    private fun completePick(
+        payload: String?,
+        schemaVersion: Int,
+        returnTransport: String?,
+        result: MethodChannel.Result,
+    ) {
         if (intent?.action != ACTION_PICK_API_CONFIG) {
             result.error("no_pick_request", "当前没有待回传的 API 方案请求", null)
             return
@@ -167,13 +184,50 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        val response = Intent().apply {
-            putExtra(EXTRA_API_CONFIG_JSON, payload)
+        val useContentUri = schemaVersion >= 2 &&
+            (returnTransport == RETURN_TRANSPORT_CONTENT_URI ||
+                (returnTransport != RETURN_TRANSPORT_EXTRA && payload.toByteArray(Charsets.UTF_8).size > EXTRA_PAYLOAD_THRESHOLD_BYTES))
+        val response = if (useContentUri) {
+            createContentUriResponse(payload)
+        } else {
+            Intent().apply {
+                putExtra(EXTRA_API_CONFIG_JSON, payload)
+            }
+        }
+        response.apply {
             putExtra(EXTRA_MODEL_MODE, intent.getStringExtra(EXTRA_MODEL_MODE))
+            putExtra(EXTRA_SCHEMA_VERSION, schemaVersion)
         }
         setResult(Activity.RESULT_OK, response)
         result.success(null)
+    }
+
+    private fun finishPick(result: MethodChannel.Result) {
+        if (intent?.action != ACTION_PICK_API_CONFIG) {
+            result.error("no_pick_request", "当前没有待回传的 API 方案请求", null)
+            return
+        }
+        result.success(null)
         finish()
+    }
+
+    private fun createContentUriResponse(payload: String): Intent {
+        val resultDirectory = File(cacheDir, "third_party_results").apply { mkdirs() }
+        resultDirectory.listFiles()?.forEach { file ->
+            if (file.lastModified() < System.currentTimeMillis() - RESULT_FILE_MAX_AGE_MS) file.delete()
+        }
+        val resultFile = File(resultDirectory, "api-profile-${UUID.randomUUID()}.json")
+        resultFile.writeText(payload, Charsets.UTF_8)
+        Handler(Looper.getMainLooper()).postDelayed(
+            { resultFile.delete() },
+            RESULT_FILE_LIFETIME_MS
+        )
+        val uri = FileProvider.getUriForFile(this, "$packageName.third_party_results", resultFile)
+        return Intent().apply {
+            setDataAndType(uri, API_PROFILE_MIME_TYPE)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = android.content.ClipData.newRawUri("Apilot API profile", uri)
+        }
     }
 
     private fun cancelPick(result: MethodChannel.Result) {
@@ -237,8 +291,19 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun baseRequest(intent: Intent): Map<String, Any?> {
-        val sourcePackage = extractReferrerPackage(intent)
+        val callingSourcePackage = if (intent.action == ACTION_PICK_API_CONFIG) {
+            callingPackage
+        } else {
+            null
+        }
+        val referrerSourcePackage = extractReferrerPackage(intent)
+        val sourcePackage = callingSourcePackage ?: referrerSourcePackage
         val sourceInfo = sourcePackage?.let { getSourceInfo(it) }
+        val sourceIdentity = when {
+            callingSourcePackage != null -> SOURCE_IDENTITY_CALLING_PACKAGE
+            referrerSourcePackage != null -> SOURCE_IDENTITY_REFERRER
+            else -> null
+        }
 
         return mapOf(
             "sourceName" to intent.getStringExtra(EXTRA_SOURCE_NAME),
@@ -246,6 +311,8 @@ class MainActivity : FlutterActivity() {
             "sourcePackage" to sourcePackage,
             "sourceAppName" to sourceInfo?.first,
             "signatureSha256" to sourceInfo?.second,
+            "sourceIdentity" to sourceIdentity,
+            "declaredSignatureSha256" to intent.getStringExtra(EXTRA_SOURCE_SIGNATURE_SHA256),
             "receivedAtMillis" to System.currentTimeMillis()
         )
     }
@@ -337,5 +404,17 @@ class MainActivity : FlutterActivity() {
         private const val EXTRA_SOURCE_NAME = "com.apilot.extra.SOURCE_NAME"
         private const val EXTRA_REQUEST_ID = "com.apilot.extra.REQUEST_ID"
         private const val EXTRA_MODEL_MODE = "com.apilot.extra.MODEL_MODE"
+        private const val EXTRA_SCHEMA_VERSION = "com.apilot.extra.SCHEMA_VERSION"
+        private const val EXTRA_REQUESTED_SCOPES = "com.apilot.extra.REQUESTED_SCOPES"
+        private const val EXTRA_RETURN_TRANSPORT = "com.apilot.extra.RETURN_TRANSPORT"
+        private const val EXTRA_SOURCE_SIGNATURE_SHA256 = "com.apilot.extra.SOURCE_SIGNATURE_SHA256"
+        private const val RETURN_TRANSPORT_EXTRA = "extra"
+        private const val RETURN_TRANSPORT_CONTENT_URI = "content_uri"
+        private const val API_PROFILE_MIME_TYPE = "application/vnd.apilot.api-profile+json"
+        private const val EXTRA_PAYLOAD_THRESHOLD_BYTES = 64 * 1024
+        private const val RESULT_FILE_MAX_AGE_MS = 10 * 60 * 1000L
+        private const val RESULT_FILE_LIFETIME_MS = 60 * 1000L
+        private const val SOURCE_IDENTITY_CALLING_PACKAGE = "calling_package"
+        private const val SOURCE_IDENTITY_REFERRER = "referrer"
     }
 }

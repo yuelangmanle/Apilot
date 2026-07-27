@@ -17,6 +17,9 @@ class ThirdPartyImportDocsScreen extends StatelessWidget {
   static const sourceNameExtra = 'com.apilot.extra.SOURCE_NAME';
   static const requestIdExtra = 'com.apilot.extra.REQUEST_ID';
   static const modelModeExtra = 'com.apilot.extra.MODEL_MODE';
+  static const schemaVersionExtra = 'com.apilot.extra.SCHEMA_VERSION';
+  static const requestedScopesExtra = 'com.apilot.extra.REQUESTED_SCOPES';
+  static const returnTransportExtra = 'com.apilot.extra.RETURN_TRANSPORT';
 
   static const kotlinExample = '''
 val intent = Intent("com.apilot.intent.action.IMPORT_API_CONFIGS").apply {
@@ -31,23 +34,22 @@ startActivity(intent)
 
   static const jsonExample = '''
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "source": {
     "appName": "Example Client",
-    "packageName": "com.example.client"
+    "packageName": "com.example.client",
+    "signatureSha256": "AA:BB:CC"
   },
-  "options": {
-    "containsSecrets": true
-  },
-  "apiConfigs": [
+  "apiProfiles": [
     {
-      "name": "OpenAI Production",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "sk-...",
-      "models": ["gpt-4.1", "gpt-4.1-mini"],
-      "environment": "production",
-      "group": "AI",
-      "tags": ["openai", "prod"]
+      "connection": {
+        "name": "DeepSeek Production",
+        "baseUrl": "https://api.deepseek.com/v1"
+      },
+      "provider": {"id": "deepseek"},
+      "protocol": {"id": "openai_compatible"},
+      "models": {"selectedModel": "deepseek-chat"},
+      "secrets": {"apiKey": "sk-..."}
     }
   ]
 }
@@ -58,17 +60,23 @@ val launcher = registerForActivityResult(
     ActivityResultContracts.StartActivityForResult()
 ) { result ->
     if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
-    val payload = result.data?.getStringExtra(
-        "com.apilot.extra.API_CONFIG_JSON"
-    ) ?: return@registerForActivityResult
-    // result JSON: selectedModel is the default model.
-    // all mode also includes apiConfig.models.
+    val data = result.data ?: return@registerForActivityResult
+    val payload = data.getStringExtra("com.apilot.extra.API_CONFIG_JSON")
+        ?: data.data?.let { uri ->
+            contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        } ?: return@registerForActivityResult
+    // V2: provider/protocol 保留服务商语义；密钥仅在用户授权后出现。
 }
 
 launcher.launch(Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
     setPackage("com.example.api_manager")
     putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
-    putExtra("com.apilot.extra.MODEL_MODE", "all")
+    putExtra("com.apilot.extra.SCHEMA_VERSION", 2)
+    putStringArrayListExtra(
+        "com.apilot.extra.REQUESTED_SCOPES",
+        arrayListOf("connection", "models.default", "models.all", "secret.api_key")
+    )
+    putExtra("com.apilot.extra.RETURN_TRANSPORT", "auto")
 })
 ''';
 
@@ -96,13 +104,16 @@ launcher.launch(Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
               '回传 JSON: $apiConfigJsonExtra',
               'Source Extra: $sourceNameExtra',
               'Request ID Extra: $requestIdExtra',
-              '模型模式 Extra: $modelModeExtra',
+              'V1 模型模式 Extra: $modelModeExtra',
+              'V2 Schema Extra: $schemaVersionExtra',
+              'V2 Scopes Extra: $requestedScopesExtra',
+              'V2 回传方式 Extra: $returnTransportExtra',
               'Deep Link: apilot://import',
             ].join('\n'),
           ),
           const _SectionTitle('推荐 Kotlin 调用'),
           const _CopyableBlock(text: kotlinExample),
-          const _SectionTitle('JSON 最小格式'),
+          const _SectionTitle('V2 JSON 最小格式'),
           const _CopyableBlock(text: jsonExample),
           const _SectionTitle('读取已保存方案'),
           const _CopyableBlock(text: pickExample),
@@ -110,7 +121,9 @@ launcher.launch(Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
             items: [
               'MODEL_MODE=all：返回 apiConfig.models 完整列表，selectedModel 是列表第一个模型。',
               'MODEL_MODE=default_only：只返回 selectedModel，不返回模型列表，供调用方自行联网刷新。',
-              'Apilot 会展示来源、密钥回传警告和方案选择页，用户确认后才会回传。',
+              'V2 默认只授权 connection 和 models.default；models.all 与 secret.api_key 必须由用户勾选。',
+              'V2 结果可能通过 JSON extra 或临时 content:// URI 返回，调用方必须同时支持两者。',
+              'provider.id 会保留 DeepSeek 等服务商身份；无法识别的服务才使用 custom。',
             ],
           ),
           const _SectionTitle('安全规则'),
@@ -121,7 +134,8 @@ launcher.launch(Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
               'apiKey 可缺省；缺省时导入为待补 Key 配置。',
               'Apilot 会先展示来源说明页，再展示导入确认页。',
               '第三方导入永远不会覆盖现有配置。',
-              '读取已保存方案会回传 API Key，调用方应只在用户确认后保存和使用结果。',
+              'V1 保留旧 Key 回传行为；V2 默认绝不回传 API Key。',
+              'V2 只有用户明确勾选 secret.api_key 后才会回传密钥。',
             ],
           ),
           const _SectionTitle('GitHub 完整文档'),

@@ -1,263 +1,210 @@
-# Apilot Android 第三方 API 方案接入文档
+# Apilot Android API Profile 互操作文档
 
-Apilot 支持两种公开的 Android Intent 能力：第三方 App 向 Apilot 导入 API 配置，以及第三方 App 请求用户授权一条 Apilot 已保存的 API 方案。两种能力都开放给任意第三方 App，但都必须由用户确认，不能静默导入或静默读取密钥。
+Apilot 面向任意第三方 Android App 开放 API 方案互操作。所有导入和授权都必须经过用户确认，不能静默写入配置或读取密钥。
 
-## 能力范围
+当前 Android 包名：`com.example.api_manager`
 
-- 支持导入单个或多个 API 配置。
-- 支持带 apiKey 的完整配置。
-- 支持不带 apiKey 的配置，用户可在 Apilot 内补全。
-- Apilot 始终生成新的内部配置 ID。
-- Apilot 不覆盖用户已有配置。
-- 用户必须先确认来源说明页，再确认配置预览页。
-- 第三方 App 可以请求用户选择一条 Apilot 已保存的方案，并通过 Activity Result 接收结果。
-- 已保存方案支持返回完整模型列表，或只返回第一个默认模型。
+## 协议版本
+
+| 版本 | 状态 | 用途 |
+| --- | --- | --- |
+| V1 (`schemaVersion: 1`) | 兼容保留 | 原始 `apiConfigs` 导入和 `MODEL_MODE` 回传。V1 选择方案后会回传 API Key。 |
+| V2 (`schemaVersion: 2`) | 推荐 | 语义化 API Profile、提供商/协议分离、最小授权、无模型目录导入和 URI 回传。 |
+
+不要用 V2 替换 V1 action；两版共用下列 Intent action，按 schemaVersion 分流。
 
 ## 接口常量
 
 | 项 | 值 |
 | --- | --- |
-| Action | com.apilot.intent.action.IMPORT_API_CONFIGS |
-| MIME type | application/vnd.apilot.api-configs+json |
-| JSON extra | com.apilot.extra.API_CONFIGS_JSON |
-| Source name extra | com.apilot.extra.SOURCE_NAME |
-| Request ID extra | com.apilot.extra.REQUEST_ID |
-| 选择已保存方案 Action | com.apilot.intent.action.PICK_API_CONFIG |
-| 模型模式 extra | com.apilot.extra.MODEL_MODE |
-| 回传结果 JSON extra | com.apilot.extra.API_CONFIG_JSON |
-| Deep link | apilot://import |
+| 导入 Action | `com.apilot.intent.action.IMPORT_API_CONFIGS` |
+| 选择 Action | `com.apilot.intent.action.PICK_API_CONFIG` |
+| 导入 MIME | `application/vnd.apilot.api-configs+json` |
+| V2 结果 MIME | `application/vnd.apilot.api-profile+json` |
+| 导入 JSON extra | `com.apilot.extra.API_CONFIGS_JSON` |
+| 回传 JSON extra | `com.apilot.extra.API_CONFIG_JSON` |
+| 来源名 extra | `com.apilot.extra.SOURCE_NAME` |
+| 请求 ID extra | `com.apilot.extra.REQUEST_ID` |
+| V1 模型模式 | `com.apilot.extra.MODEL_MODE` |
+| V2 schema | `com.apilot.extra.SCHEMA_VERSION` |
+| V2 scopes | `com.apilot.extra.REQUESTED_SCOPES` (`ArrayList<String>`) |
+| V2 回传方式 | `com.apilot.extra.RETURN_TRANSPORT` |
+| 声明签名 SHA-256 | `com.apilot.extra.SOURCE_SIGNATURE_SHA256` |
+| 文档 deep link | `apilot://import` |
 
-当前 Android 包名：
+调用方应使用 `setPackage("com.example.api_manager")`。深链接仅用于打开说明，绝不能传递 API Key。
 
-~~~text
-com.example.api_manager
-~~~
+## V2 概念与规范
 
-第三方 App 应显式设置 Apilot 包名，避免系统选择器打开错误目标。后续如果 Apilot 发布包名变更，本文件和 App 内文档会同步更新。
+V2 将连接与服务商语义分开：
 
-## 推荐方式：Intent + content URI
+| 字段 | 值 |
+| --- | --- |
+| `provider.id` | `deepseek`、`openai`、`anthropic`、`google`、`custom` |
+| `protocol.id` | `openai_compatible`、`anthropic_messages`、`google_genai` |
+| 默认模型 | `models.selectedModel`，可为 null |
+| 完整目录 | `models.availableModels`，可省略 |
+| 目录状态 | `models.catalogMode`: `saved`、`remote`、`none` |
+| 目录来源 | `models.source`: `manual`、`refreshed`、`third_party`、`unknown` |
 
-包含 API Key 或多条配置时，请优先使用 content:// URI。调用方通过自己的 FileProvider 或 ContentProvider 提供一次性可读 JSON 文件，并授予 Apilot 读取权限。
+`provider.id` 优先于 URL 推测。未指定时，Apilot 可从官方域名推测 DeepSeek/OpenAI/Anthropic/Google；无法识别统一保存为 `custom + openai_compatible`。因此，DeepSeek 方案在 V2 中会保持为 `provider.id: deepseek`，不会被降级成普通通用配置。
 
-~~~kotlin
+## V2 导入到 Apilot
+
+调用方提交小 payload 时可用 JSON extra；含密钥、多配置或大模型目录时推荐一次性 `content://` URI，并添加 `FLAG_GRANT_READ_URI_PERMISSION`。
+
+```kotlin
 val intent = Intent("com.apilot.intent.action.IMPORT_API_CONFIGS").apply {
     setPackage("com.example.api_manager")
     setDataAndType(uri, "application/vnd.apilot.api-configs+json")
     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
     putExtra("com.apilot.extra.REQUEST_ID", requestId)
+    putExtra("com.apilot.extra.SOURCE_SIGNATURE_SHA256", signingCertSha256)
 }
-
 startActivity(intent)
-~~~
+```
 
-调用方需要保证：
+V2 payload：`apiProfiles` 中不要求模型列表；只使用默认模型，或让 Apilot 后续刷新，都可以。
 
-- uri 可通过 ContentResolver.openInputStream(uri) 读取。
-- 授权包含 Intent.FLAG_GRANT_READ_URI_PERMISSION。
-- JSON 内容使用 UTF-8。
-- 不在 URI、query string、日志或剪贴板里暴露 API Key。
-
-## 备用方式：Intent + JSON extra
-
-小体积、不含大量配置时，可以直接把 JSON 字符串放进 extra：
-
-~~~kotlin
-val intent = Intent("com.apilot.intent.action.IMPORT_API_CONFIGS").apply {
-    setPackage("com.example.api_manager")
-    type = "application/vnd.apilot.api-configs+json"
-    putExtra("com.apilot.extra.API_CONFIGS_JSON", payloadJson)
-    putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
-    putExtra("com.apilot.extra.REQUEST_ID", requestId)
-}
-
-startActivity(intent)
-~~~
-
-Android Intent extra 存在体积限制。配置较多、模型列表较长或包含密钥时，请改用 content:// URI。
-
-## 请求已保存的 API 方案
-
-第三方 App 可以用 `ActivityResultContracts.StartActivityForResult` 唤起 Apilot。Apilot 会展示调用来源、模型回传方式、API Key 安全提示和本地方案选择页；用户选择并确认后，结果通过 `com.apilot.extra.API_CONFIG_JSON` 返回。
-
-~~~kotlin
-private val pickApiConfig = registerForActivityResult(
-    ActivityResultContracts.StartActivityForResult()
-) { result ->
-    if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
-
-    val payloadJson = result.data?.getStringExtra(
-        "com.apilot.extra.API_CONFIG_JSON"
-    ) ?: return@registerForActivityResult
-    val payload = JSONObject(payloadJson)
-    val apiConfig = payload.getJSONObject("apiConfig")
-
-    val defaultModel = payload.optString("selectedModel", "")
-    // defaultModel 可直接填入调用方的模型选择控件。
-    // MODEL_MODE=all 时，apiConfig 还包含 models 备选列表。
-}
-
-fun chooseSavedApiConfig() {
-    pickApiConfig.launch(
-        Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
-            setPackage("com.example.api_manager")
-            putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
-            putExtra("com.apilot.extra.REQUEST_ID", requestId)
-            putExtra("com.apilot.extra.MODEL_MODE", "all")
-        }
-    )
-}
-~~~
-
-### 模型回传模式
-
-| `com.apilot.extra.MODEL_MODE` | 结果 | 使用场景 |
-| --- | --- | --- |
-| `all`（默认） | `selectedModel` 为已保存列表的第一个模型；`apiConfig.models` 返回完整备选列表。 | 调用方直接导入整套模型方案。 |
-| `default_only` | 只返回 `selectedModel`，`apiConfig` 不包含 `models`。 | 调用方自行联网获取最新模型列表。 |
-
-如果用户所选方案没有保存模型，两种模式都会回传 `selectedModel: null`；调用方应提示用户输入模型，或自行在线获取。
-
-### 回传结果 schema
-
-~~~json
+```json
 {
-  "schemaVersion": 1,
-  "modelMode": "all",
-  "selectedModel": "gpt-4.1",
-  "apiConfig": {
-    "name": "OpenAI Production",
-    "baseUrl": "https://api.openai.com/v1",
-    "apiKey": "sk-...",
-    "environment": "production",
-    "group": "AI",
-    "tags": ["openai", "prod"],
-    "models": ["gpt-4.1", "gpt-4.1-mini"]
-  }
-}
-~~~
-
-回传结果不会包含 Apilot 内部 `id`、创建/更新时间或 metadata。`apiKey` 仅在用户明确选择方案并确认授权后才会返回。调用方不得把回传的密钥写入日志、URL、deep link 或未加密的共享存储。
-
-## 只打开文档入口
-
-如果只想打开 Apilot 的第三方导入接入说明，可以使用：
-
-~~~kotlin
-startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("apilot://import")))
-~~~
-
-不要通过 deep link URL 传输 API Key。
-
-## Payload schema
-
-首版 schemaVersion 固定为 1。
-
-~~~json
-{
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "source": {
     "appName": "Example Client",
-    "packageName": "com.example.client"
+    "packageName": "com.example.client",
+    "signatureSha256": "AA:BB:CC"
   },
-  "options": {
-    "containsSecrets": true
-  },
-  "apiConfigs": [
+  "apiProfiles": [
     {
-      "name": "OpenAI Production",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "sk-...",
-      "models": ["gpt-4.1", "gpt-4.1-mini"],
-      "environment": "production",
-      "group": "AI",
-      "tags": ["openai", "prod"],
-      "metadata": {
-        "source": "example-client"
-      }
+      "connection": {
+        "name": "DeepSeek Production",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "environment": "production",
+        "tags": ["deepseek", "prod"]
+      },
+      "provider": { "id": "deepseek" },
+      "protocol": { "id": "openai_compatible" },
+      "models": {
+        "selectedModel": "deepseek-chat",
+        "catalogMode": "remote",
+        "source": "third_party"
+      },
+      "secrets": { "apiKey": "sk-..." },
+      "origin": { "appName": "Example Client" }
     }
   ]
 }
-~~~
+```
 
-### 顶层字段
+Apilot 总是生成新的内部 ID、保留已有方案、名称追加导入时间。普通导入 Intent 没有可靠的系统调用方身份，来源包名和签名只作为调用方声明展示；只有 Activity Result 的“选择已保存方案”场景中，系统提供调用包且其签名与声明 SHA-256 一致时，Apilot 才显示“已验证包签名”。
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| schemaVersion | number | 是 | 首版固定为 1。 |
-| source.appName | string | 否 | 调用方展示名，仅用于说明页。 |
-| source.packageName | string | 否 | 调用方声明包名，不作为信任依据。 |
-| options.containsSecrets | boolean | 否 | 调用方声明是否包含密钥；Apilot 仍会扫描 apiKey。 |
-| apiConfigs | array | 是 | 待导入配置列表，至少一项。 |
+## V2 从 Apilot 读取已保存方案
 
-### 配置字段
+V2 默认只请求和返回连接与默认模型，绝不默认返回 API Key。完整模型目录和 Key 是独立 scope，Apilot 会在授权页展示复选框，由用户逐项确认。
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| name | string | 是 | API 配置名称。 |
-| baseUrl | string | 是 | 必须以 http:// 或 https:// 开头。 |
-| models | string[] | 是 | 至少包含一个模型。 |
-| apiKey | string | 否 | 可为空或缺省。 |
-| environment | string | 否 | 缺省为 development。 |
-| group | string | 否 | 配置分组。 |
-| tags | string[] | 否 | 标签列表。 |
-| metadata | object | 否 | 第三方扩展信息。 |
-
-Apilot 会忽略第三方传入的 id、createdAt、updatedAt，并在导入时生成新的内部值。
-
-导入到 Apilot 的 `models` 必须由调用方提供，且至少包含一个模型。Apilot 不会在导入时自动联网刷新模型；用户可在配置详情页使用“刷新模型列表”。
-
-## 用户确认流程
-
-1. Apilot 打开来源说明页。
-2. 用户查看来源 App、包名、配置数量、是否包含 API Key。
-3. 用户点击“继续查看”。
-4. Apilot 打开导入确认页。
-5. 用户查看配置名称、Base URL、模型数量、是否含 Key、无效项和重复提示。
-6. 用户点击“确认导入”。
-7. Apilot 保存有效配置，并展示导入结果。
-
-## 冲突策略
-
-第三方导入永远保留两份：
-
-- 不覆盖旧配置。
-- 不使用第三方传入的 ID。
-- 导入名称追加“（导入 yyyy-MM-dd HH:mm）”后缀。
-- 检测到相似配置时只提示，不阻止导入。
-
-## 密钥安全建议
-
-- 不要把 API Key 放进 URL、deep link、query string 或日志。
-- 包含 API Key 时优先使用 content:// URI。
-- options.containsSecrets 只是提示字段，Apilot 会自行检测非空 apiKey。
-- Apilot 页面只显示“含 Key / 无 Key”，不会展示完整 API Key。
-- 请求已保存方案时，只有用户在 Apilot 内选定配置并确认授权，调用方才能收到 API Key。
-
-## 常见错误
-
-| 错误 | 处理方式 |
+| Scope | 含义 |
 | --- | --- |
-| Apilot 没有响应 Intent | 确认 action、MIME type 和 package name 是否正确。 |
-| 无法读取配置文件 | 确认 content:// 可读，并设置了 FLAG_GRANT_READ_URI_PERMISSION。 |
-| 导入格式版本不支持 | 确认 schemaVersion 为 1。 |
-| 配置被标记为无效 | 检查 name、baseUrl、models 是否存在且格式正确。 |
-| API Key 没有导入 | 确认 payload 中 apiKey 字段非空。 |
-| 出现重复配置提示 | 这是正常提示，Apilot 会作为新配置保存。 |
-| 未收到已保存方案结果 | 检查是否使用 Activity Result API，以及用户是否取消了授权。 |
-| `selectedModel` 为空 | 所选方案没有保存模型；调用方应允许手动输入或在线刷新。 |
+| `connection` | 名称、Base URL、环境、分组、标签 |
+| `models.default` | `selectedModel` |
+| `models.all` | `availableModels`；隐含 `models.default` |
+| `secret.api_key` | API Key；必须用户明确勾选 |
 
-## adb 调试示例
+`RETURN_TRANSPORT` 可为 `extra`、`content_uri` 或 `auto`。`auto` 是默认值：payload 大于 64 KiB 时改用临时只读 URI；`content_uri` 强制使用 URI。V1 始终使用 JSON extra。
 
-JSON extra 可以用 adb 快速验证：
+```kotlin
+private val pickApiProfile = registerForActivityResult(
+    ActivityResultContracts.StartActivityForResult()
+) { result ->
+    if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+    val data = result.data ?: return@registerForActivityResult
+    val json = data.getStringExtra("com.apilot.extra.API_CONFIG_JSON")
+        ?: data.data?.let { uri ->
+            contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        }
+        ?: return@registerForActivityResult
 
-~~~bash
-adb shell am start \
-  -a com.apilot.intent.action.IMPORT_API_CONFIGS \
-  -t application/vnd.apilot.api-configs+json \
-  -n com.example.api_manager/.MainActivity \
-  --es com.apilot.extra.SOURCE_NAME "ADB Test" \
-  --es com.apilot.extra.API_CONFIGS_JSON '{"schemaVersion":1,"apiConfigs":[{"name":"ADB Demo","baseUrl":"https://api.example.com/v1","models":["demo-model"],"environment":"development"}]}'
-~~~
+    val resultJson = JSONObject(json)
+    val profile = resultJson.getJSONObject("apiProfile")
+    val connection = profile.optJSONObject("connection")
+    val defaultModel = profile.getJSONObject("models").optString("selectedModel")
+    // 仅当 grantedScopes 包含 secret.api_key 时，secrets 中才有 apiKey。
+}
 
-复杂 payload 请使用测试 App 或 content:// URI 验证。
+fun chooseSavedProfile() {
+    pickApiProfile.launch(Intent("com.apilot.intent.action.PICK_API_CONFIG").apply {
+        setPackage("com.example.api_manager")
+        putExtra("com.apilot.extra.SOURCE_NAME", "Example Client")
+        putExtra("com.apilot.extra.REQUEST_ID", requestId)
+        putExtra("com.apilot.extra.SCHEMA_VERSION", 2)
+        putStringArrayListExtra(
+            "com.apilot.extra.REQUESTED_SCOPES",
+            arrayListOf("connection", "models.default", "models.all", "secret.api_key")
+        )
+        putExtra("com.apilot.extra.RETURN_TRANSPORT", "auto")
+    })
+}
+```
+
+V2 回传示例：
+
+```json
+{
+  "schemaVersion": 2,
+  "requestId": "request-42",
+  "grantedScopes": ["connection", "models.default"],
+  "apiProfile": {
+    "connection": {
+      "name": "DeepSeek Production",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "environment": "production"
+    },
+    "provider": { "id": "deepseek", "displayName": "DeepSeek" },
+    "protocol": { "id": "openai_compatible" },
+    "models": {
+      "selectedModel": "deepseek-chat",
+      "catalogMode": "remote",
+      "source": "refreshed"
+    },
+    "secrets": {},
+    "origin": { "appName": "Apilot", "trustLevel": "system_package" }
+  }
+}
+```
+
+第三方 App 收到 V2 后应使用 `provider.id` 保存提供商身份；例如 `deepseek` 必须作为 DeepSeek 配置保存。`custom` 才表示调用方无法识别的通用服务。不要根据显示名重新猜测提供商。
+
+## V1 兼容
+
+V1 输入仍为 `apiConfigs`，每条必须有 `name`、`baseUrl` 和至少一个 `models`。选择请求继续使用：
+
+```kotlin
+putExtra("com.apilot.extra.MODEL_MODE", "all")
+```
+
+`all` 返回 `apiConfig.models` 与第一个 `selectedModel`；`default_only` 只返回 `selectedModel`。V1 的回传格式及其 Key 行为保持旧版本兼容，新增调用方应改用 V2。
+
+```json
+{
+  "schemaVersion": 1,
+  "apiConfigs": [
+    {
+      "name": "Legacy OpenAI",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-...",
+      "models": ["gpt-4.1", "gpt-4.1-mini"],
+      "environment": "production"
+    }
+  ]
+}
+```
+
+## 取消、错误和安全
+
+- 用户取消授权或导入时，Activity Result 返回 `RESULT_CANCELED`，调用方不得把它当作失败重试或静默回退。
+- `RESULT_OK` 但缺少 extra 和 data URI 时，应视为无效结果并提示用户重新操作。
+- `content://` URI 仅在当前交互内临时可读；Apilot 会在 60 秒后删除缓存文件。调用方应立刻读取，不能持久保存 URI。
+- 不要把 API Key 写入 URL、deep link、日志、剪贴板或不加密共享存储。
+- Apilot 客户端会记录不含密钥/payload 的导入和授权审计记录；用户可在设置中清除。
+- 常见入站错误：`schemaVersion` 非 1/2、缺少 `apiConfigs`/`apiProfiles`、连接缺少 name/baseUrl、URI 没有读权限。
+- 原生回传错误：`no_pick_request` 表示当前 Activity 不是选择请求；`invalid_pick_payload` 表示 Apilot 未能生成结果。调用方取消时是 `RESULT_CANCELED`，不是错误码。

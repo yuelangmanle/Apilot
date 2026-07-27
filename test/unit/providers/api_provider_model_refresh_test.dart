@@ -38,6 +38,10 @@ void main() {
     );
 
     expect(refreshed.models, ['kept-model', 'new-model']);
+    expect(refreshed.selectedModel, 'kept-model');
+    expect(refreshed.modelCatalogMode, 'remote');
+    expect(refreshed.modelSource, 'refreshed');
+    expect(refreshed.modelsRefreshedAt, isNotNull);
     expect(await database.getApiConfig(original.id), isNotNull);
     expect(
       (await database.getApiConfig(original.id))!.models,

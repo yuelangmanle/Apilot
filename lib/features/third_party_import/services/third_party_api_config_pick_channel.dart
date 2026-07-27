@@ -49,14 +49,25 @@ class ThirdPartyApiConfigPickChannel {
     await _onRequest?.call(request);
   }
 
-  Future<void> complete(ThirdPartyApiConfigPickPayload payload) {
+  Future<void> complete(
+    ThirdPartyApiConfigPickPayload payload, {
+    required ThirdPartyResultTransport returnTransport,
+  }) {
     return _channel.invokeMethod<void>(
       'completePick',
-      <String, dynamic>{'payload': jsonEncode(payload.toJson())},
+      <String, dynamic>{
+        'payload': jsonEncode(payload.toJson()),
+        'schemaVersion': payload.isV2 ? 2 : 1,
+        'returnTransport': returnTransport.wireValue,
+      },
     );
   }
 
   Future<void> cancel() {
     return _channel.invokeMethod<void>('cancelPick');
+  }
+
+  Future<void> finish() {
+    return _channel.invokeMethod<void>('finishPick');
   }
 }

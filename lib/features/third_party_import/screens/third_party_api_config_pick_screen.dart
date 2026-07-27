@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../core/models/api_config.dart';
+import '../../../core/models/api_interop_audit.dart';
+import '../../../core/models/api_profile.dart';
+import '../../../core/services/api_profile_registry.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../models/third_party_import_models.dart';
@@ -31,6 +35,7 @@ class _ThirdPartyApiConfigPickScreenState
     final configs = context.watch<ApiProvider>().allApiConfigs;
     final isAllMode =
         widget.request.modelMode == ThirdPartyModelTransferMode.all;
+    final isV2 = widget.request.isV2;
 
     return Scaffold(
       appBar: AppBar(
@@ -67,11 +72,20 @@ class _ThirdPartyApiConfigPickScreenState
                     Text('包名：${widget.request.sourcePackage}'),
                   const SizedBox(height: 8),
                   Text(
-                    isAllMode
-                        ? '将返回完整模型列表，并把第一个模型设为默认模型。'
-                        : '只返回第一个默认模型，模型列表由对方 App 自行在线获取。',
+                    isV2
+                        ? '默认只授权连接和默认模型；完整模型列表与 API Key 必须由你额外确认。'
+                        : isAllMode
+                            ? '将返回完整模型列表，并把第一个模型设为默认模型。'
+                            : '只返回第一个默认模型，模型列表由对方 App 自行在线获取。',
                     style: const TextStyle(color: AppColors.textSecondary),
                   ),
+                  if (isV2) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '来源可信度：${_trustLevelLabel(widget.request.trustLevel)}',
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -82,9 +96,9 @@ class _ThirdPartyApiConfigPickScreenState
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
-          const Text(
-            '确认后会将 API 地址、密钥和所需模型信息回传给该 App。',
-            style: TextStyle(color: AppColors.textSecondary),
+          Text(
+            isV2 ? '选择方案后决定本次要交付的附加权限。' : '确认后会将 API 地址、密钥和所需模型信息回传给该 App。',
+            style: const TextStyle(color: AppColors.textSecondary),
           ),
           const SizedBox(height: 16),
           if (configs.isEmpty)
@@ -98,9 +112,7 @@ class _ThirdPartyApiConfigPickScreenState
                     leading: const Icon(Icons.api, color: AppColors.primary),
                     title: Text(config.name),
                     subtitle: Text(
-                      config.models.isEmpty
-                          ? '未保存模型'
-                          : '默认：${config.models.first}  ·  ${config.models.length} 个模型',
+                      _configSummary(config),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -116,6 +128,13 @@ class _ThirdPartyApiConfigPickScreenState
   }
 
   Future<void> _confirm(ApiConfig config) async {
+    if (widget.request.isV2) {
+      final grantedScopes = await _showV2AuthorizationDialog(config);
+      if (grantedScopes == null || !mounted) return;
+      await _complete(config, grantedScopes: grantedScopes);
+      return;
+    }
+
     final isAllMode =
         widget.request.modelMode == ThirdPartyModelTransferMode.all;
     final confirmed = await showDialog<bool>(
@@ -155,14 +174,186 @@ class _ThirdPartyApiConfigPickScreenState
     );
     if (confirmed != true || !mounted) return;
 
+    await _complete(config);
+  }
+
+  Future<Set<String>?> _showV2AuthorizationDialog(ApiConfig config) async {
+    final requestedScopes = widget.request.requestedScopes;
+    final optionalGrantedScopes = <String>{};
+    final profile = ApiProfileRegistry.resolve(
+      baseUrl: config.baseUrl,
+      providerId: config.providerId,
+      protocolId: config.protocolId,
+    );
+    return showDialog<Set<String>>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final canShareModels = requestedScopes.contains(
+              ThirdPartyApiConfigScopes.modelsAll,
+            );
+            final canShareKey = requestedScopes.contains(
+              ThirdPartyApiConfigScopes.secretApiKey,
+            );
+            final selectedModel = config.selectedModel ??
+                (config.models.isEmpty ? null : config.models.first);
+            return AlertDialog(
+              title: const Text('确认 V2 授权'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                        '将把“${config.name}”提供给 ${widget.request.displaySourceName}。'),
+                    const SizedBox(height: 12),
+                    Text('提供商：${profile.providerDisplayName}'),
+                    Text('协议：${profile.protocolDisplayName}'),
+                    Text('默认模型：${selectedModel ?? '未设置'}'),
+                    if (canShareModels)
+                      CheckboxListTile(
+                        value: optionalGrantedScopes.contains(
+                          ThirdPartyApiConfigScopes.modelsAll,
+                        ),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('同时授权完整模型列表'),
+                        subtitle: Text('会交付 ${config.models.length} 个已保存模型。'),
+                        onChanged: (checked) => setDialogState(() {
+                          _toggleOptionalScope(
+                            optionalGrantedScopes,
+                            ThirdPartyApiConfigScopes.modelsAll,
+                            checked == true,
+                          );
+                        }),
+                      ),
+                    if (canShareKey)
+                      CheckboxListTile(
+                        value: optionalGrantedScopes.contains(
+                          ThirdPartyApiConfigScopes.secretApiKey,
+                        ),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('授权 API Key'),
+                        subtitle: const Text('密钥会交付给该第三方 App，请只向可信来源授权。'),
+                        onChanged: (checked) => setDialogState(() {
+                          _toggleOptionalScope(
+                            optionalGrantedScopes,
+                            ThirdPartyApiConfigScopes.secretApiKey,
+                            checked == true,
+                          );
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final grantedScopes = requestedScopes
+                        .where((scope) =>
+                            scope != ThirdPartyApiConfigScopes.modelsAll &&
+                            scope != ThirdPartyApiConfigScopes.secretApiKey)
+                        .toSet()
+                      ..addAll(optionalGrantedScopes);
+                    Navigator.pop(
+                      dialogContext,
+                      ThirdPartyApiConfigScopes.normalize(grantedScopes),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('确认授权'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _toggleOptionalScope(
+    Set<String> scopes,
+    String scope,
+    bool shouldGrant,
+  ) {
+    if (shouldGrant) {
+      scopes.add(scope);
+    } else {
+      scopes.remove(scope);
+    }
+  }
+
+  Future<void> _complete(
+    ApiConfig config, {
+    Set<String>? grantedScopes,
+  }) async {
+    final apiProvider = context.read<ApiProvider>();
+    final effectiveScopes = widget.request.isV2
+        ? ThirdPartyApiConfigScopes.normalize(
+            grantedScopes ?? const <String>{},
+          )
+        : <String>{
+            ThirdPartyApiConfigScopes.connection,
+            ThirdPartyApiConfigScopes.modelsDefault,
+            if (widget.request.modelMode == ThirdPartyModelTransferMode.all)
+              ThirdPartyApiConfigScopes.modelsAll,
+            if (config.apiKey.isNotEmpty)
+              ThirdPartyApiConfigScopes.secretApiKey,
+          };
     setState(() => _isCompleting = true);
     try {
       await _channel.complete(
         ThirdPartyApiConfigPickPayload.fromApiConfig(
           config,
-          modelMode: widget.request.modelMode,
+          request: widget.request.isV2 ? widget.request : null,
+          modelMode: widget.request.isV2 ? null : widget.request.modelMode,
+          grantedScopes: grantedScopes,
         ),
+        returnTransport: widget.request.returnTransport,
       );
+      try {
+        final profile = ApiProfileRegistry.resolve(
+          baseUrl: config.baseUrl,
+          providerId: config.providerId,
+          protocolId: config.protocolId,
+        );
+        await apiProvider.recordInteropAudit(
+          ApiInteropAudit(
+            id: const Uuid().v4(),
+            direction: ApiInteropAuditDirection.outbound,
+            createdAt: DateTime.now(),
+            sourceName: widget.request.displaySourceName,
+            sourcePackage: widget.request.sourcePackage,
+            trustLevel: widget.request.trustLevel,
+            apiConfigId: config.id,
+            apiConfigName: config.name,
+            providerId: profile.providerId,
+            protocolId: profile.protocolId,
+            grantedScopes: ThirdPartyApiConfigScopes.sort(effectiveScopes),
+            selectedModel: config.selectedModel ??
+                (config.models.isEmpty ? null : config.models.first),
+            modelCount: effectiveScopes.contains(
+              ThirdPartyApiConfigScopes.modelsAll,
+            )
+                ? config.models.length
+                : 0,
+            apiKeyShared: effectiveScopes.contains(
+              ThirdPartyApiConfigScopes.secretApiKey,
+            ),
+            schemaVersion: widget.request.schemaVersion,
+          ),
+        );
+      } catch (error) {
+        debugPrint('无法写入第三方交互审计记录: $error');
+      }
+      await _channel.finish();
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (!mounted) return;
@@ -181,6 +372,31 @@ class _ThirdPartyApiConfigPickScreenState
       await _channel.cancel();
     } finally {
       if (mounted) Navigator.pop(context);
+    }
+  }
+
+  String _configSummary(ApiConfig config) {
+    final profile = ApiProfileRegistry.resolve(
+      baseUrl: config.baseUrl,
+      providerId: config.providerId,
+      protocolId: config.protocolId,
+    );
+    final selectedModel = config.selectedModel ??
+        (config.models.isEmpty ? null : config.models.first);
+    final modelText = selectedModel == null ? '未设置默认模型' : '默认：$selectedModel';
+    return '${profile.providerDisplayName}  ·  $modelText  ·  ${config.models.length} 个模型';
+  }
+
+  String _trustLevelLabel(String trustLevel) {
+    switch (trustLevel) {
+      case ApiImportTrustLevels.signatureVerified:
+        return '已验证包签名';
+      case ApiImportTrustLevels.systemPackage:
+        return '系统可见包名';
+      case ApiImportTrustLevels.declared:
+        return '调用方声明';
+      default:
+        return '未知';
     }
   }
 }

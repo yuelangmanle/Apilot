@@ -1,6 +1,10 @@
 import 'package:json_annotation/json_annotation.dart';
 
+import 'api_profile.dart';
+
 part 'api_config.g.dart';
+
+const Object _unsetSelectedModel = Object();
 
 @JsonSerializable()
 class ApiConfig {
@@ -16,6 +20,15 @@ class ApiConfig {
   final DateTime createdAt;
   final DateTime updatedAt;
   final Map<String, dynamic>? metadata;
+  final String providerId;
+  final String protocolId;
+  final String? selectedModel;
+  final String modelCatalogMode;
+  final String modelSource;
+  final DateTime? modelsRefreshedAt;
+  final String? importSourceName;
+  final String? importSourcePackage;
+  final String? importTrustLevel;
 
   ApiConfig({
     required this.id,
@@ -30,6 +43,15 @@ class ApiConfig {
     DateTime? createdAt,
     DateTime? updatedAt,
     this.metadata,
+    this.providerId = ApiProviderIds.custom,
+    this.protocolId = ApiProtocolIds.openAiCompatible,
+    this.selectedModel,
+    this.modelCatalogMode = ApiModelCatalogModes.saved,
+    this.modelSource = ApiModelSources.manual,
+    this.modelsRefreshedAt,
+    this.importSourceName,
+    this.importSourcePackage,
+    this.importTrustLevel,
   })  : createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
 
@@ -51,6 +73,15 @@ class ApiConfig {
     DateTime? createdAt,
     DateTime? updatedAt,
     Map<String, dynamic>? metadata,
+    String? providerId,
+    String? protocolId,
+    Object? selectedModel = _unsetSelectedModel,
+    String? modelCatalogMode,
+    String? modelSource,
+    DateTime? modelsRefreshedAt,
+    String? importSourceName,
+    String? importSourcePackage,
+    String? importTrustLevel,
   }) {
     return ApiConfig(
       id: id ?? this.id,
@@ -65,6 +96,17 @@ class ApiConfig {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       metadata: metadata ?? this.metadata,
+      providerId: providerId ?? this.providerId,
+      protocolId: protocolId ?? this.protocolId,
+      selectedModel: identical(selectedModel, _unsetSelectedModel)
+          ? this.selectedModel
+          : selectedModel as String?,
+      modelCatalogMode: modelCatalogMode ?? this.modelCatalogMode,
+      modelSource: modelSource ?? this.modelSource,
+      modelsRefreshedAt: modelsRefreshedAt ?? this.modelsRefreshedAt,
+      importSourceName: importSourceName ?? this.importSourceName,
+      importSourcePackage: importSourcePackage ?? this.importSourcePackage,
+      importTrustLevel: importTrustLevel ?? this.importTrustLevel,
     );
   }
 }

@@ -53,6 +53,15 @@
                 <data android:scheme="apilot" android:host="import"/>
             </intent-filter>
         </activity>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.third_party_results"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/third_party_result_paths" />
+        </provider>
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

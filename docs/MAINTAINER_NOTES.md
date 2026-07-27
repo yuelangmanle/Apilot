@@ -1,11 +1,11 @@
 # Apilot 维护交接说明
 
-更新时间：2026-06-07
+更新时间：2026-07-27
 
 ## 当前版本
 
-- 应用版本：`1.17.1+20`
-- GitHub Release 标签建议：`v1.17.1`
+- 应用版本：`1.19.0+24`
+- GitHub Release 标签建议：`v1.19.0`
 - 项目/软件名称统一为：`Apilot`
 
 ## Android 签名策略
@@ -52,6 +52,16 @@
 - Android 优先使用 Google Play 服务的 Code Scanner；服务不可用时自动回退到内置 ZXing 扫码页，其余平台保留手动输入 IP。
 - 二维码格式由 `SyncScreen._showQRCode()` 生成：`ip|deviceId|deviceName`。
 - 扫码失败或桌面平台不可用时显示手动 IP 输入兜底。
+
+## 第三方 API Profile 互操作
+
+- 对外规范：`docs/android-third-party-import.md`；App 内入口位于设置 - 开发者 - 第三方接入文档。
+- V1 Intent 和 schema 永久兼容；新增调用方使用 V2 `apiProfiles` 协议。
+- V2 的 provider/protocol 是独立字段，标准 provider 为 `deepseek`、`openai`、`anthropic`、`google`、`custom`；不能用显示名替代 ID。
+- V2 默认 scope 是 `connection` + `models.default`。`models.all`、`secret.api_key` 必须在授权页由用户单独勾选，Key 不允许默认外发。只有 Activity Result 调用包身份可被系统识别且签名匹配时才标记为“已验证包签名”；普通导入来源仅作声明展示。
+- Android V2 回传支持 JSON extra 与一次性 FileProvider `content://` URI；URI 在 cache `third_party_results/` 中，10 分钟后清理，禁止记录 payload/Key 日志。
+- 数据库 v2 增加 provider、protocol、模型目录和导入来源字段；v3 新增 `api_interop_audits`，只记录授权事实，不保存 Key 或 payload。
+- 设置 - 数据管理中可查看和清除第三方交互记录。导入和授权完成动作必须写审计记录。
 
 ## 发布流程
 
