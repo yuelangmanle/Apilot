@@ -17,6 +17,7 @@ class SyncService {
 
   final List<DeviceInfo> _devices = [];
   final String? _localDeviceIdOverride;
+  final DatabaseService? _databaseServiceOverride;
   HttpServer? _syncServer;
   RawDatagramSocket? _discoverySocket;
   Timer? _broadcastTimer;
@@ -28,8 +29,11 @@ class SyncService {
   bool get isRunning => _isRunning;
   bool get isDiscoveryRunning => _isDiscoveryRunning;
 
-  SyncService({String? localDeviceIdOverride})
-      : _localDeviceIdOverride = localDeviceIdOverride;
+  SyncService({
+    String? localDeviceIdOverride,
+    DatabaseService? databaseService,
+  })  : _localDeviceIdOverride = localDeviceIdOverride,
+        _databaseServiceOverride = databaseService;
 
   Future<DeviceInfo> getLocalDeviceInfo() async {
     final hostname = Platform.localHostname;
@@ -316,17 +320,13 @@ class SyncService {
       final data = jsonDecode(body) as Map<String, dynamic>;
       final configs = parseSyncPayload(data);
 
-      final dbService = DatabaseService();
-      await dbService.initialize();
-      for (final config in configs) {
-        await dbService.insertApiConfig(config);
-      }
-      debugPrint('[Sync] 已接收 ${configs.length} 个配置');
+      final inserted = await storeSyncedConfigs(configs);
+      debugPrint('[Sync] 已接收 ${configs.length} 个配置，新增 $inserted 个');
 
       request.response
         ..statusCode = HttpStatus.ok
         ..headers.contentType = ContentType.json
-        ..write(jsonEncode({'status': 'ok', 'received': configs.length}))
+        ..write(jsonEncode({'status': 'ok', 'received': configs.length, 'inserted': inserted}))
         ..close();
     } catch (e) {
       debugPrint('[Sync] 处理同步请求失败: $e');
@@ -335,6 +335,24 @@ class SyncService {
         ..write(jsonEncode({'error': e.toString()}))
         ..close();
     }
+  }
+
+  Future<int> storeSyncedConfigs(List<ApiConfig> configs) async {
+    final databaseService = _databaseServiceOverride ?? DatabaseService();
+    await databaseService.initialize();
+    var inserted = 0;
+    for (final config in configs) {
+      final sameId = await databaseService.getApiConfig(config.id);
+      if (sameId != null) {
+        await databaseService.updateApiConfig(config);
+        continue;
+      }
+      final equivalent = await databaseService.findBusinessEquivalentApiConfig(config);
+      if (equivalent != null) continue;
+      await databaseService.insertApiConfig(config);
+      inserted++;
+    }
+    return inserted;
   }
 
   Future<void> _handleGetConfigs(HttpRequest request) async {

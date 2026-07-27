@@ -2,8 +2,10 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../shared/theme/color_scheme.dart';
+import '../services/qr_scanner_error.dart';
 import '../utils/qr_sync_payload.dart';
 
 class QrScannerScreen extends StatefulWidget {
@@ -21,7 +23,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
   final _ipController = TextEditingController();
   bool _useManualInput = false;
   bool _isScanning = false;
-  String? _scannerError;
+  QrScannerError? _scannerError;
 
   bool get _scannerSupported => Platform.isAndroid;
 
@@ -101,19 +103,27 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                   if (_scannerError != null) ...[
                     const SizedBox(height: 8),
                     Text(
-                      _scannerError!,
+                      _scannerError!.message,
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: AppColors.textSecondary),
                     ),
                   ],
                   const SizedBox(height: 20),
+                  if (_scannerError?.canOpenSettings == true)
+                    TextButton.icon(
+                      onPressed: openAppSettings,
+                      icon: const Icon(Icons.settings),
+                      label: const Text('打开系统设置'),
+                    ),
                   if (_isScanning)
                     const CircularProgressIndicator()
                   else
                     ElevatedButton.icon(
                       onPressed: _startQrScan,
                       icon: const Icon(Icons.qr_code_scanner),
-                      label: const Text('打开扫码器'),
+                      label: Text(
+                        _scannerError?.canRetry == true ? '再次请求权限' : '打开扫码器',
+                      ),
                     ),
                 ],
               ),
@@ -235,16 +245,14 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       final rawValue = await _scannerChannel.invokeMethod<String>('scanQrCode');
       if (!mounted) return;
       if (rawValue == null || rawValue.trim().isEmpty) {
-        setState(() => _scannerError = '已取消扫码');
+        setState(() => _scannerError = QrScannerError.cancelled());
         return;
       }
       _connectByText(rawValue);
     } on PlatformException catch (e) {
       if (!mounted) return;
       setState(() {
-        _scannerError = e.message?.trim().isNotEmpty == true
-            ? e.message!
-            : '无法打开扫码器，请改用手动输入';
+        _scannerError = QrScannerError.fromPlatformCode(e.code);
       });
     } finally {
       if (mounted) setState(() => _isScanning = false);
@@ -255,7 +263,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
     final ip = extractSyncIp(text.trim());
     if (ip == null) {
       if (mounted) {
-        setState(() => _scannerError = '二维码或 IP 地址格式不正确');
+        setState(() => _scannerError = QrScannerError.invalidPayload());
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('二维码或IP地址格式不正确'),

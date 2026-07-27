@@ -1,11 +1,13 @@
 import 'package:flutter/foundation.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/api_interop_audit.dart';
+import '../../../core/models/group.dart';
 import '../../../core/services/database_service.dart';
 
 class ApiProvider with ChangeNotifier {
   final DatabaseService _databaseService;
   List<ApiConfig> _apiConfigs = [];
+  List<Group> _managedGroups = [];
   String? _selectedGroup;
   String? _selectedEnvironment;
   String? _selectedTag;
@@ -73,11 +75,18 @@ class ApiProvider with ChangeNotifier {
   }
 
   List<String> get availableGroups {
-    final groups = _apiConfigs
-        .where((c) => c.group != null && c.group!.isNotEmpty)
-        .map((c) => c.group!)
-        .toSet()
-        .toList();
+    final groups = <String>{
+      ..._managedGroups.map((group) => group.name),
+      ..._apiConfigs
+          .where((c) => c.group != null && c.group!.isNotEmpty)
+          .map((c) => c.group!),
+    }.toList();
+    groups.sort();
+    return groups;
+  }
+
+  List<String> get managedGroupNames {
+    final groups = _managedGroups.map((group) => group.name).toList();
     groups.sort();
     return groups;
   }
@@ -97,10 +106,27 @@ class ApiProvider with ChangeNotifier {
   Future<void> loadApiConfigs() async {
     try {
       _apiConfigs = await _databaseService.getAllApiConfigs();
+      _managedGroups = await _databaseService.getAllGroups();
       _error = null;
     } catch (e) {
       debugPrint('loadApiConfigs 错误: $e');
       _error = '加载失败: $e';
+    }
+    notifyListeners();
+  }
+
+  Future<void> loadGroups() async {
+    try {
+      _managedGroups = await _databaseService.getAllGroups();
+      if (_selectedGroup != null &&
+          !_managedGroups.any((group) => group.name == _selectedGroup) &&
+          !_apiConfigs.any((api) => api.group == _selectedGroup)) {
+        _selectedGroup = null;
+      }
+      _error = null;
+    } catch (e) {
+      debugPrint('loadGroups 错误: $e');
+      _error = '加载分组失败: $e';
     }
     notifyListeners();
   }

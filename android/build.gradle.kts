@@ -1,3 +1,5 @@
+import com.android.build.api.dsl.LibraryExtension
+
 allprojects {
     repositories {
         google()
@@ -15,6 +17,17 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
+subprojects {
+    afterEvaluate {
+        // file_picker 9 uses Java (required by AGP 9 here), but hard-codes SDK 34.
+        if (name == "file_picker" && plugins.hasPlugin("com.android.library")) {
+            extensions.configure<LibraryExtension>("android") {
+                compileSdk = 36
+            }
+        }
+    }
+}
+
 subprojects {
     project.evaluationDependsOn(":app")
 }

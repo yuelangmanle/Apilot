@@ -2,21 +2,21 @@ package com.example.api_manager
 
 import android.content.Intent
 import android.app.Activity
+import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.FileProvider
+import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.CaptureActivity
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import java.security.MessageDigest
 import java.io.File
 import java.util.UUID
@@ -120,6 +120,37 @@ class MainActivity : FlutterActivity() {
         } else {
             pendingResult.success(null)
         }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != QR_CAMERA_PERMISSION_REQUEST_CODE) return
+
+        val pendingResult = qrScanResult ?: return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            launchZxingQrScan()
+            return
+        }
+
+        qrScanResult = null
+        val permanentlyDenied = !ActivityCompat.shouldShowRequestPermissionRationale(
+            this,
+            Manifest.permission.CAMERA,
+        )
+        pendingResult.error(
+            if (permanentlyDenied) {
+                "camera_permission_permanently_denied"
+            } else {
+                "camera_permission_denied"
+            },
+            "相机权限未授予",
+            null,
+        )
     }
 
     private fun readInitialImportRequest(): Map<String, Any?>? {
@@ -248,28 +279,21 @@ class MainActivity : FlutterActivity() {
         }
 
         qrScanResult = result
-        val options = GmsBarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-            .build()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            launchZxingQrScan()
+            return
+        }
 
-        GmsBarcodeScanning.getClient(this, options)
-            .startScan()
-            .addOnSuccessListener { barcode ->
-                val pendingResult = qrScanResult ?: return@addOnSuccessListener
-                qrScanResult = null
-                pendingResult.success(barcode.rawValue)
-            }
-            .addOnCanceledListener {
-                val pendingResult = qrScanResult ?: return@addOnCanceledListener
-                qrScanResult = null
-                pendingResult.success(null)
-            }
-            .addOnFailureListener { exception ->
-                startZxingQrScan(exception)
-            }
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.CAMERA),
+            QR_CAMERA_PERMISSION_REQUEST_CODE,
+        )
     }
 
-    private fun startZxingQrScan(originalError: Exception) {
+    private fun launchZxingQrScan() {
         if (qrScanResult == null) return
         try {
             startActivityForResult(
@@ -284,7 +308,7 @@ class MainActivity : FlutterActivity() {
             qrScanResult = null
             pendingResult.error(
                 "qr_scan_failed",
-                fallbackError.message ?: originalError.message,
+                fallbackError.message ?: "无法启动扫码器",
                 null
             )
         }
@@ -397,6 +421,7 @@ class MainActivity : FlutterActivity() {
         private const val API_CONFIG_PICK_CHANNEL_NAME = "com.apilot/third_party_api_config_pick"
         private const val QR_SCANNER_CHANNEL_NAME = "com.apilot/qr_scanner"
         private const val QR_SCAN_REQUEST_CODE = 20842
+        private const val QR_CAMERA_PERMISSION_REQUEST_CODE = 20843
         private const val ACTION_IMPORT_API_CONFIGS = "com.apilot.intent.action.IMPORT_API_CONFIGS"
         private const val ACTION_PICK_API_CONFIG = "com.apilot.intent.action.PICK_API_CONFIG"
         private const val EXTRA_API_CONFIGS_JSON = "com.apilot.extra.API_CONFIGS_JSON"

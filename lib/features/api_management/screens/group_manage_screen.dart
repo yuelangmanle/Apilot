@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../../core/models/group.dart';
 import '../../../core/services/database_service.dart';
+import '../providers/api_provider.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 
@@ -24,7 +26,14 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
   Future<void> _loadGroups() async {
     await _db.initialize();
     final groups = await _db.getAllGroups();
+    if (!mounted) return;
     setState(() => _groups = groups);
+  }
+
+  Future<void> _refreshAfterGroupMutation() async {
+    await _loadGroups();
+    if (!mounted) return;
+    await context.read<ApiProvider>().loadApiConfigs();
   }
 
   @override
@@ -36,11 +45,16 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.folder_open, size: 64, color: AppColors.textSecondary),
+                Icon(Icons.folder_open,
+                    size: 64, color: AppColors.textSecondary),
                 SizedBox(height: 16),
-                Text('还没有分组', style: TextStyle(fontSize: 18, color: AppColors.textSecondary)),
+                Text('还没有分组',
+                    style: TextStyle(
+                        fontSize: 18, color: AppColors.textSecondary)),
                 SizedBox(height: 8),
-                Text('点击右下角按钮创建', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+                Text('点击右下角按钮创建',
+                    style: TextStyle(
+                        fontSize: 14, color: AppColors.textSecondary)),
               ],
             ),
           )
@@ -60,7 +74,8 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
                     ),
                     child: const Icon(Icons.folder, color: AppColors.primary),
                   ),
-                  title: Text(group.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  title: Text(group.name,
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Text(group.description ?? '无描述'),
                   trailing: PopupMenuButton<String>(
                     onSelected: (value) {
@@ -69,7 +84,10 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
                     },
                     itemBuilder: (context) => [
                       const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                      const PopupMenuItem(value: 'delete', child: Text('删除', style: TextStyle(color: Colors.red))),
+                      const PopupMenuItem(
+                          value: 'delete',
+                          child:
+                              Text('删除', style: TextStyle(color: Colors.red))),
                     ],
                   ),
                 ),
@@ -89,71 +107,97 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
 
   void _showEditDialog(Group? group) {
     final nameController = TextEditingController(text: group?.name ?? '');
-    final descController = TextEditingController(text: group?.description ?? '');
+    final descController =
+        TextEditingController(text: group?.description ?? '');
     final isEditing = group != null;
+    String? nameError;
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(isEditing ? '编辑分组' : '创建分组'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '分组名称 *',
-                hintText: '例如：LLM、TTS、多模态',
-                border: OutlineInputBorder(),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(isEditing ? '编辑分组' : '创建分组'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                onChanged: (_) {
+                  if (nameError != null) {
+                    setDialogState(() => nameError = null);
+                  }
+                },
+                decoration: InputDecoration(
+                  labelText: '分组名称 *',
+                  hintText: '例如：LLM、TTS、多模态',
+                  errorText: nameError,
+                  border: const OutlineInputBorder(),
+                ),
               ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: descController,
+                decoration: const InputDecoration(
+                  labelText: '描述',
+                  hintText: '可选描述',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: descController,
-              decoration: const InputDecoration(
-                labelText: '描述',
-                hintText: '可选描述',
-                border: OutlineInputBorder(),
-              ),
+            ElevatedButton(
+              onPressed: () async {
+                final name = nameController.text.trim();
+                if (name.isEmpty) {
+                  setDialogState(() => nameError = '请输入分组名称');
+                  return;
+                }
+                final isAvailable = await _db.isGroupNameAvailable(
+                  name,
+                  excludingId: group?.id,
+                );
+                if (!context.mounted) return;
+                if (!isAvailable) {
+                  setDialogState(() => nameError = '分组名称已存在');
+                  return;
+                }
+
+                final navigator = Navigator.of(context);
+                if (isEditing) {
+                  final updated = Group(
+                    id: group.id,
+                    name: name,
+                    description: descController.text.trim().isNotEmpty
+                        ? descController.text.trim()
+                        : null,
+                    sortOrder: group.sortOrder,
+                    createdAt: group.createdAt,
+                  );
+                  await _db.updateGroup(updated);
+                } else {
+                  final newGroup = Group(
+                    id: 'group_${DateTime.now().millisecondsSinceEpoch}',
+                    name: name,
+                    description: descController.text.trim().isNotEmpty
+                        ? descController.text.trim()
+                        : null,
+                    sortOrder: _groups.length,
+                  );
+                  await _db.insertGroup(newGroup);
+                }
+
+                navigator.pop();
+                await _refreshAfterGroupMutation();
+              },
+              child: Text(isEditing ? '保存' : '创建'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final name = nameController.text.trim();
-              if (name.isEmpty) return;
-
-              final navigator = Navigator.of(context);
-              if (isEditing) {
-                final updated = Group(
-                  id: group.id,
-                  name: name,
-                  description: descController.text.trim().isNotEmpty ? descController.text.trim() : null,
-                  sortOrder: group.sortOrder,
-                  createdAt: group.createdAt,
-                );
-                await _db.updateGroup(updated);
-              } else {
-                final newGroup = Group(
-                  id: 'group_${DateTime.now().millisecondsSinceEpoch}',
-                  name: name,
-                  description: descController.text.trim().isNotEmpty ? descController.text.trim() : null,
-                  sortOrder: _groups.length,
-                );
-                await _db.insertGroup(newGroup);
-              }
-
-              navigator.pop();
-              _loadGroups();
-            },
-            child: Text(isEditing ? '保存' : '创建'),
-          ),
-        ],
       ),
     );
   }
@@ -163,7 +207,7 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('确认删除'),
-        content: Text('确定要删除分组 "${group.name}" 吗？'),
+        content: Text('确定要删除分组 "${group.name}" 吗？关联的 API 方案会保留，但会变为未分组。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -174,7 +218,7 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
               await _db.deleteGroup(group.id);
               if (!context.mounted) return;
               Navigator.of(context).pop();
-              _loadGroups();
+              await _refreshAfterGroupMutation();
             },
             child: const Text('删除', style: TextStyle(color: Colors.red)),
           ),

@@ -6,6 +6,17 @@ import '../models/api_config.dart';
 import '../models/api_interop_audit.dart';
 import '../models/group.dart';
 import '../models/request_history.dart';
+import 'api_config_identity.dart';
+
+class BackupRestoreSummary {
+  final int configsRestored;
+  final int groupsRestored;
+
+  const BackupRestoreSummary({
+    required this.configsRestored,
+    required this.groupsRestored,
+  });
+}
 
 class DatabaseService {
   static Database? _database;
@@ -188,31 +199,35 @@ class DatabaseService {
     final db = await database;
     await db.insert(
       'api_configs',
-      {
-        'id': api.id,
-        'name': api.name,
-        'base_url': api.baseUrl,
-        'api_key': api.apiKey,
-        'models': api.models.join(','),
-        'environment': api.environment,
-        'api_group': api.group,
-        'tags': api.tags.join(','),
-        'is_favorite': api.isFavorite ? 1 : 0,
-        'created_at': api.createdAt.toIso8601String(),
-        'updated_at': api.updatedAt.toIso8601String(),
-        'metadata': _encodeMetadata(api.metadata),
-        'provider_id': api.providerId,
-        'protocol_id': api.protocolId,
-        'selected_model': api.selectedModel,
-        'model_catalog_mode': api.modelCatalogMode,
-        'model_source': api.modelSource,
-        'models_refreshed_at': api.modelsRefreshedAt?.toIso8601String(),
-        'import_source_name': api.importSourceName,
-        'import_source_package': api.importSourcePackage,
-        'import_trust_level': api.importTrustLevel,
-      },
+      _apiConfigToMap(api),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  Map<String, Object?> _apiConfigToMap(ApiConfig api) {
+    return {
+      'id': api.id,
+      'name': api.name,
+      'base_url': api.baseUrl,
+      'api_key': api.apiKey,
+      'models': api.models.join(','),
+      'environment': api.environment,
+      'api_group': api.group,
+      'tags': api.tags.join(','),
+      'is_favorite': api.isFavorite ? 1 : 0,
+      'created_at': api.createdAt.toIso8601String(),
+      'updated_at': api.updatedAt.toIso8601String(),
+      'metadata': _encodeMetadata(api.metadata),
+      'provider_id': api.providerId,
+      'protocol_id': api.protocolId,
+      'selected_model': api.selectedModel,
+      'model_catalog_mode': api.modelCatalogMode,
+      'model_source': api.modelSource,
+      'models_refreshed_at': api.modelsRefreshedAt?.toIso8601String(),
+      'import_source_name': api.importSourceName,
+      'import_source_package': api.importSourcePackage,
+      'import_trust_level': api.importTrustLevel,
+    };
   }
 
   Future<ApiConfig?> getApiConfig(String id) async {
@@ -246,6 +261,15 @@ class DatabaseService {
       debugPrint('getAllApiConfigs 错误: $e');
       return [];
     }
+  }
+
+  Future<ApiConfig?> findBusinessEquivalentApiConfig(
+      ApiConfig candidate) async {
+    final configs = await getAllApiConfigs();
+    for (final config in configs) {
+      if (ApiConfigIdentity.matches(config, candidate)) return config;
+    }
+    return null;
   }
 
   Future<void> updateApiConfig(ApiConfig api) async {
@@ -283,6 +307,46 @@ class DatabaseService {
     await db.delete('api_configs', where: 'id = ?', whereArgs: [id]);
     await db
         .delete('request_history', where: 'api_config_id = ?', whereArgs: [id]);
+  }
+
+  Future<BackupRestoreSummary> restoreBackup({
+    required List<ApiConfig> configs,
+    required List<Group> groups,
+    required bool replaceExisting,
+  }) async {
+    final db = await database;
+    await db.transaction((transaction) async {
+      if (replaceExisting) {
+        await transaction.delete('request_history');
+        await transaction.delete('api_configs');
+        await transaction.delete('groups');
+      }
+      for (final group in groups) {
+        await transaction.insert(
+          'groups',
+          {
+            'id': group.id,
+            'name': group.name,
+            'description': group.description,
+            'color': group.color,
+            'sort_order': group.sortOrder,
+            'created_at': group.createdAt.toIso8601String(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      for (final config in configs) {
+        await transaction.insert(
+          'api_configs',
+          _apiConfigToMap(config),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+    return BackupRestoreSummary(
+      configsRestored: configs.length,
+      groupsRestored: groups.length,
+    );
   }
 
   ApiConfig _mapToApiConfig(Map<String, dynamic> map) {
@@ -353,19 +417,71 @@ class DatabaseService {
   }
 
   // ==================== Group operations ====================
+  Future<bool> isGroupNameAvailable(
+    String name, {
+    String? excludingId,
+  }) async {
+    final db = await database;
+    return _isGroupNameAvailable(db, name, excludingId: excludingId);
+  }
+
+  Future<bool> _isGroupNameAvailable(
+    DatabaseExecutor executor,
+    String name, {
+    String? excludingId,
+  }) async {
+    final normalizedName = name.trim();
+    if (normalizedName.isEmpty) return false;
+    final matches = await executor.query(
+      'groups',
+      columns: const ['id'],
+      where: excludingId == null
+          ? 'LOWER(name) = LOWER(?)'
+          : 'LOWER(name) = LOWER(?) AND id != ?',
+      whereArgs: excludingId == null
+          ? [normalizedName]
+          : [normalizedName, excludingId],
+      limit: 1,
+    );
+    return matches.isEmpty;
+  }
+
+  Future<void> _ensureGroupNameAvailable(
+    DatabaseExecutor executor,
+    String name, {
+    String? excludingId,
+  }) async {
+    final isAvailable = await _isGroupNameAvailable(
+      executor,
+      name,
+      excludingId: excludingId,
+    );
+    if (!isAvailable) {
+      throw StateError('分组名称不能为空或已存在');
+    }
+  }
+
   Future<void> insertGroup(Group group) async {
     final db = await database;
-    await db.insert(
+    await db.transaction((transaction) async {
+      await _ensureGroupNameAvailable(
+        transaction,
+        group.name,
+        excludingId: group.id,
+      );
+      await transaction.insert(
         'groups',
         {
           'id': group.id,
-          'name': group.name,
+          'name': group.name.trim(),
           'description': group.description,
           'color': group.color,
           'sort_order': group.sortOrder,
           'created_at': group.createdAt.toIso8601String(),
         },
-        conflictAlgorithm: ConflictAlgorithm.replace);
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
   }
 
   Future<Group?> getGroup(String id) async {
@@ -383,21 +499,73 @@ class DatabaseService {
 
   Future<void> updateGroup(Group group) async {
     final db = await database;
-    await db.update(
+    await db.transaction((transaction) async {
+      final existing = await transaction.query(
+        'groups',
+        columns: ['name'],
+        where: 'id = ?',
+        whereArgs: [group.id],
+        limit: 1,
+      );
+      final previousName =
+          existing.isEmpty ? null : existing.first['name'] as String?;
+      if (previousName == null) {
+        throw StateError('分组不存在');
+      }
+      await _ensureGroupNameAvailable(
+        transaction,
+        group.name,
+        excludingId: group.id,
+      );
+      await transaction.update(
         'groups',
         {
-          'name': group.name,
+          'name': group.name.trim(),
           'description': group.description,
           'color': group.color,
           'sort_order': group.sortOrder,
         },
         where: 'id = ?',
-        whereArgs: [group.id]);
+        whereArgs: [group.id],
+      );
+      if (previousName != group.name.trim()) {
+        await transaction.update(
+          'api_configs',
+          {
+            'api_group': group.name.trim(),
+            'updated_at': DateTime.now().toIso8601String(),
+          },
+          where: 'api_group = ?',
+          whereArgs: [previousName],
+        );
+      }
+    });
   }
 
   Future<void> deleteGroup(String id) async {
     final db = await database;
-    await db.delete('groups', where: 'id = ?', whereArgs: [id]);
+    await db.transaction((transaction) async {
+      final existing = await transaction.query(
+        'groups',
+        columns: ['name'],
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      final name = existing.isEmpty ? null : existing.first['name'] as String?;
+      if (name != null) {
+        await transaction.update(
+          'api_configs',
+          {
+            'api_group': null,
+            'updated_at': DateTime.now().toIso8601String(),
+          },
+          where: 'api_group = ?',
+          whereArgs: [name],
+        );
+      }
+      await transaction.delete('groups', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   Group _mapToGroup(Map<String, dynamic> map) {

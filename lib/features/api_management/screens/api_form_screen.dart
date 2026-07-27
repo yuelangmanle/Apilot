@@ -24,8 +24,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   final _baseUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
   final _modelsController = TextEditingController();
-  final _groupController = TextEditingController();
   final _tagsController = TextEditingController();
+  String? _selectedGroup;
   String _environment = 'development';
   bool _isFavorite = false;
   bool _isLoading = false;
@@ -43,7 +43,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       _baseUrlController.text = api.baseUrl;
       _apiKeyController.text = api.apiKey;
       _modelsController.text = api.models.join(', ');
-      _groupController.text = api.group ?? '';
+      _selectedGroup = api.group;
       _tagsController.text = api.tags.join(', ');
       _environment = api.environment;
       _isFavorite = api.isFavorite;
@@ -56,7 +56,6 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     _baseUrlController.dispose();
     _apiKeyController.dispose();
     _modelsController.dispose();
-    _groupController.dispose();
     _tagsController.dispose();
     super.dispose();
   }
@@ -77,278 +76,300 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : CenteredContent(
-        maxWidth: 600,
-        child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextFormField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'API名称 *',
-                        hintText: '例如：DeepSeek',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.label),
+              maxWidth: 600,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextFormField(
+                        controller: _nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'API名称 *',
+                          hintText: '例如：DeepSeek',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.label),
+                        ),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return '请输入API名称';
+                          }
+                          return null;
+                        },
                       ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return '请输入API名称';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _baseUrlController,
-                      decoration: InputDecoration(
-                        labelText: 'API地址 *',
-                        hintText: '例如：https://api.deepseek.com/v1',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.link),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.content_paste, size: 20),
-                          onPressed: () async {
-                            final messenger = ScaffoldMessenger.of(context);
-                            final data = await Clipboard.getData(Clipboard.kTextPlain);
-                            if (!mounted) return;
-                            if (data?.text != null && data!.text!.isNotEmpty) {
-                              _baseUrlController.text = data.text!.trim();
-                              messenger.showSnackBar(
-                                const SnackBar(
-                                  content: Text('已粘贴'),
-                                  duration: Duration(seconds: 1),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _baseUrlController,
+                        decoration: InputDecoration(
+                          labelText: 'API地址 *',
+                          hintText: '例如：https://api.deepseek.com/v1',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.link),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.content_paste, size: 20),
+                            onPressed: () async {
+                              final messenger = ScaffoldMessenger.of(context);
+                              final data =
+                                  await Clipboard.getData(Clipboard.kTextPlain);
+                              if (!mounted) return;
+                              if (data?.text != null &&
+                                  data!.text!.isNotEmpty) {
+                                _baseUrlController.text = data.text!.trim();
+                                messenger.showSnackBar(
+                                  const SnackBar(
+                                    content: Text('已粘贴'),
+                                    duration: Duration(seconds: 1),
+                                  ),
+                                );
+                              }
+                            },
+                            tooltip: '粘贴',
+                          ),
+                        ),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return '请输入API地址';
+                          }
+                          final trimmed = value.trim();
+                          if (!trimmed.startsWith('http://') &&
+                              !trimmed.startsWith('https://')) {
+                            return '请输入有效的URL';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _apiKeyController,
+                        obscureText: _obscureApiKey,
+                        decoration: InputDecoration(
+                          labelText: 'API Key *',
+                          hintText: '输入你的API密钥',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.key),
+                          suffixIcon: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  _obscureApiKey
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                  size: 20,
                                 ),
-                              );
-                            }
-                          },
-                          tooltip: '粘贴',
-                        ),
-                      ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return '请输入API地址';
-                        }
-                        final trimmed = value.trim();
-                        if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-                          return '请输入有效的URL';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _apiKeyController,
-                      obscureText: _obscureApiKey,
-                      decoration: InputDecoration(
-                        labelText: 'API Key *',
-                        hintText: '输入你的API密钥',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.key),
-                        suffixIcon: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: Icon(
-                                _obscureApiKey ? Icons.visibility_off : Icons.visibility,
-                                size: 20,
+                                onPressed: () {
+                                  setState(() {
+                                    _obscureApiKey = !_obscureApiKey;
+                                  });
+                                },
+                                tooltip: _obscureApiKey ? '显示' : '隐藏',
                               ),
-                              onPressed: () {
-                                setState(() {
-                                  _obscureApiKey = !_obscureApiKey;
-                                });
-                              },
-                              tooltip: _obscureApiKey ? '显示' : '隐藏',
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.content_paste, size: 20),
-                              onPressed: () async {
-                                final messenger = ScaffoldMessenger.of(context);
-                                final data = await Clipboard.getData(Clipboard.kTextPlain);
-                                if (!mounted) return;
-                                if (data?.text != null && data!.text!.isNotEmpty) {
-                                  _apiKeyController.text = data.text!.trim();
-                                  messenger.showSnackBar(
-                                    const SnackBar(
-                                      content: Text('已粘贴'),
-                                      duration: Duration(seconds: 1),
-                                    ),
-                                  );
-                                }
-                              },
-                              tooltip: '粘贴',
-                            ),
-                          ],
+                              IconButton(
+                                icon: const Icon(Icons.content_paste, size: 20),
+                                onPressed: () async {
+                                  final messenger =
+                                      ScaffoldMessenger.of(context);
+                                  final data = await Clipboard.getData(
+                                      Clipboard.kTextPlain);
+                                  if (!mounted) return;
+                                  if (data?.text != null &&
+                                      data!.text!.isNotEmpty) {
+                                    _apiKeyController.text = data.text!.trim();
+                                    messenger.showSnackBar(
+                                      const SnackBar(
+                                        content: Text('已粘贴'),
+                                        duration: Duration(seconds: 1),
+                                      ),
+                                    );
+                                  }
+                                },
+                                tooltip: '粘贴',
+                              ),
+                            ],
+                          ),
                         ),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return '请输入API Key';
+                          }
+                          return null;
+                        },
                       ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return '请输入API Key';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _modelsController,
-                      decoration: InputDecoration(
-                        labelText: '模型列表',
-                        hintText: '用逗号分隔，或点击获取',
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.smart_toy),
-                        suffixIcon: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: _isFetchingModels
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _modelsController,
+                        decoration: InputDecoration(
+                          labelText: '模型列表',
+                          hintText: '用逗号分隔，或点击获取',
+                          border: const OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.smart_toy),
+                          suffixIcon: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: _isFetchingModels
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2),
+                                      )
+                                    : const Icon(Icons.download, size: 20),
+                                onPressed:
+                                    _isFetchingModels ? null : _fetchModels,
+                                tooltip: '获取可用模型',
+                              ),
+                            ],
+                          ),
+                        ),
+                        maxLines: 3,
+                      ),
+                      const SizedBox(height: 8),
+                      if (_validationStatus.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            _validationStatus,
+                            style: TextStyle(
+                              color: _validationStatus.contains('成功') ||
+                                      _validationStatus.contains('有效')
+                                  ? AppColors.success
+                                  : AppColors.error,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _isValidating ? null : _validateApi,
+                              icon: _isValidating
                                   ? const SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
                                     )
-                                  : const Icon(Icons.download, size: 20),
-                              onPressed: _isFetchingModels ? null : _fetchModels,
-                              tooltip: '获取可用模型',
+                                  : const Icon(Icons.check_circle_outline),
+                              label: const Text('验证API'),
                             ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed:
+                                  _isFetchingModels ? null : _fetchModels,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('获取模型'),
+                            ),
+                          ),
+                        ],
                       ),
-                      maxLines: 3,
-                    ),
-                    const SizedBox(height: 8),
-                    if (_validationStatus.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(
-                          _validationStatus,
-                          style: TextStyle(
-                            color: _validationStatus.contains('成功') || _validationStatus.contains('有效')
-                                ? AppColors.success
-                                : AppColors.error,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _isValidating ? null : _validateApi,
-                            icon: _isValidating
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.check_circle_outline),
-                            label: const Text('验证API'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _isFetchingModels ? null : _fetchModels,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('获取模型'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    // 分组：支持输入和选择已有分组
-                    Consumer<ApiProvider>(
-                      builder: (context, provider, _) {
-                        final groups = provider.availableGroups;
-                        return DropdownButtonFormField<String>(
-                          initialValue: groups.contains(_groupController.text) ? _groupController.text : null,
-                          decoration: InputDecoration(
-                            labelText: '分组',
-                            hintText: '选择或输入新分组',
-                            border: const OutlineInputBorder(),
-                            prefixIcon: const Icon(Icons.folder),
-                            suffixIcon: groups.isNotEmpty
-                                ? null
+                      const SizedBox(height: 16),
+                      // 分组由设置页统一管理，避免出现无法筛选的自由文本分组。
+                      Consumer<ApiProvider>(
+                        builder: (context, provider, _) {
+                          final groups = provider.managedGroupNames;
+                          return DropdownButtonFormField<String?>(
+                            initialValue: groups.contains(_selectedGroup)
+                                ? _selectedGroup
                                 : null,
-                          ),
-                          items: [
-                            ...groups.map((g) => DropdownMenuItem(value: g, child: Text(g))),
-                          ],
-                          onChanged: (value) {
-                            if (value != null) {
-                              _groupController.text = value;
-                            }
-                          },
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _tagsController,
-                      decoration: const InputDecoration(
-                        labelText: '标签',
-                        hintText: '用逗号分隔',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.tag),
+                            decoration: InputDecoration(
+                              labelText: '分组',
+                              hintText: groups.isEmpty ? '请先在设置中创建分组' : '选择分组',
+                              border: const OutlineInputBorder(),
+                              prefixIcon: const Icon(Icons.folder),
+                            ),
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                value: null,
+                                child: Text('未分组'),
+                              ),
+                              ...groups.map(
+                                (group) => DropdownMenuItem<String?>(
+                                  value: group,
+                                  child: Text(group),
+                                ),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              setState(() => _selectedGroup = value);
+                            },
+                          );
+                        },
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    DropdownButtonFormField<String>(
-                      initialValue: _environment,
-                      decoration: const InputDecoration(
-                        labelText: '环境',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.cloud),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _tagsController,
+                        decoration: const InputDecoration(
+                          labelText: '标签',
+                          hintText: '用逗号分隔',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.tag),
+                        ),
                       ),
-                      items: const [
-                        DropdownMenuItem(value: 'development', child: Text('开发')),
-                        DropdownMenuItem(value: 'staging', child: Text('测试')),
-                        DropdownMenuItem(value: 'production', child: Text('生产')),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
+                      const SizedBox(height: 16),
+                      DropdownButtonFormField<String>(
+                        initialValue: _environment,
+                        decoration: const InputDecoration(
+                          labelText: '环境',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.cloud),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                              value: 'development', child: Text('开发')),
+                          DropdownMenuItem(value: 'staging', child: Text('测试')),
+                          DropdownMenuItem(
+                              value: 'production', child: Text('生产')),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _environment = value;
+                            });
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      SwitchListTile(
+                        title: const Text('收藏'),
+                        subtitle: const Text('添加到收藏列表'),
+                        value: _isFavorite,
+                        onChanged: (value) {
                           setState(() {
-                            _environment = value;
+                            _isFavorite = value;
                           });
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    SwitchListTile(
-                      title: const Text('收藏'),
-                      subtitle: const Text('添加到收藏列表'),
-                      value: _isFavorite,
-                      onChanged: (value) {
-                        setState(() {
-                          _isFavorite = value;
-                        });
-                      },
-                      secondary: Icon(
-                        _isFavorite ? Icons.star : Icons.star_border,
-                        color: _isFavorite ? AppColors.warning : null,
+                        },
+                        secondary: Icon(
+                          _isFavorite ? Icons.star : Icons.star_border,
+                          color: _isFavorite ? AppColors.warning : null,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    ElevatedButton(
-                      onPressed: _saveApi,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      const SizedBox(height: 24),
+                      ElevatedButton(
+                        onPressed: _saveApi,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: Text(widget.isEditing ? '保存修改' : '添加API'),
                       ),
-                      child: Text(widget.isEditing ? '保存修改' : '添加API'),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
     );
   }
 
   Future<void> _validateApi() async {
-    if (_baseUrlController.text.trim().isEmpty || _apiKeyController.text.trim().isEmpty) {
+    if (_baseUrlController.text.trim().isEmpty ||
+        _apiKeyController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请先填写 API 地址和 API Key'),
@@ -400,7 +421,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   }
 
   Future<void> _fetchModels() async {
-    if (_baseUrlController.text.trim().isEmpty || _apiKeyController.text.trim().isEmpty) {
+    if (_baseUrlController.text.trim().isEmpty ||
+        _apiKeyController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('请先填写 API 地址和 API Key'),
@@ -494,7 +516,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         apiKey: _apiKeyController.text.trim(),
         models: models,
         environment: _environment,
-        group: _groupController.text.trim().isNotEmpty ? _groupController.text.trim() : null,
+        group: _selectedGroup,
         tags: tags,
         isFavorite: _isFavorite,
         createdAt: widget.isEditing ? widget.apiConfig!.createdAt : null,
@@ -502,9 +524,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
 
       // 重复检测
       if (!widget.isEditing) {
-        final duplicate = provider.apiConfigs.where((c) =>
-          c.baseUrl.trim() == api.baseUrl.trim() && c.apiKey.trim() == api.apiKey.trim()
-        ).toList();
+        final duplicate = provider.apiConfigs
+            .where((c) =>
+                c.baseUrl.trim() == api.baseUrl.trim() &&
+                c.apiKey.trim() == api.apiKey.trim())
+            .toList();
         if (duplicate.isNotEmpty) {
           final proceed = await showDialog<bool>(
             context: context,
@@ -512,13 +536,19 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
               title: const Text('检测到重复'),
               content: Text('已存在相同地址和Key的配置：${duplicate.first.name}'),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('仍然添加')),
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('取消')),
+                TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('仍然添加')),
               ],
             ),
           );
           if (proceed != true) {
-            setState(() { _isLoading = false; });
+            setState(() {
+              _isLoading = false;
+            });
             return;
           }
         }

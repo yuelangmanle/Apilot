@@ -4,9 +4,14 @@
 
 ## 当前版本
 
-- 应用版本：`1.19.0+24`
-- GitHub Release 标签建议：`v1.19.0`
+- 应用版本：`1.20.0+25`
+- GitHub Release 标签建议：`v1.20.0`
 - 项目/软件名称统一为：`Apilot`
+
+## 发布验证记录
+
+- `v1.19.0` 对应提交 `67596b1`，已在 GitHub 作为正式 Release 发布。
+- 已核验该 Release 含 `Apilot-v1.19.0.apk`、`Apilot-v1.19.0.dmg`、`Apilot-v1.19.0-windows-setup.exe` 和 `Apilot-v1.19.0-windows-portable.zip` 四类资产。
 
 ## Android 签名策略
 
@@ -32,6 +37,7 @@
 - 设备 ID 存在 `SharedPreferences` 的 `apilot_sync_device_id`，保持稳定。
 - 发现列表按 `device.id` 或 `ipAddress` 去重。
 - 自身过滤同时检查本机设备ID、本机IP、UDP来源IP。
+- 接收配置按 ID 更新；不同 ID 时再以规范化 Base URL、API Key、默认模型做业务级去重，只统计实际新增配置。第三方 Intent 导入不使用此规则，仍始终追加。
 
 ## 蓝牙同步设计
 
@@ -49,9 +55,17 @@
 ## 扫码同步
 
 - 核心文件：`lib/features/sync/screens/qr_scanner_screen.dart`
-- Android 优先使用 Google Play 服务的 Code Scanner；服务不可用时自动回退到内置 ZXing 扫码页，其余平台保留手动输入 IP。
+- Android 由 `MainActivity` 统一请求 `CAMERA` 权限，获准后直接启动内置 ZXing `CaptureActivity`，不依赖 Google Play 服务。
 - 二维码格式由 `SyncScreen._showQRCode()` 生成：`ip|deviceId|deviceName`。
-- 扫码失败或桌面平台不可用时显示手动 IP 输入兜底。
+- 普通权限拒绝可重新请求；永久拒绝引导到系统设置；扫码失败或桌面平台不可用时显示手动 IP 输入兜底。真机验收应覆盖首次授权、拒绝后重试、永久拒绝后在设置页恢复权限、取消扫码和有效二维码连接。
+
+## 分组与备份恢复
+
+- `groups` 表是分组管理的唯一来源；API 仍用 `api_configs.api_group` 保存名称以兼容历史数据。
+- 创建、编辑分组均禁止重名（英文不区分大小写）。重命名在事务中同步更新关联 API；删除分组只把关联 API 改为未分组。
+- 备份包含 API、分组和 `exportedAt`；使用系统文件选择器选择保存和恢复路径。
+- 恢复提供“合并恢复”和“清空后恢复”：后者会删除历史记录、API 和分组后再写入整个快照，所有写入在同一事务中完成。
+- `file_picker` 固定为 `9.2.3`：`11.0.2` 在 AGP 9 下不会编译 Kotlin 插件类。`android/build.gradle.kts` 会将该库硬编码的 `compileSdk 34` 覆写为 36，以满足 `flutter_plugin_android_lifecycle` 的 AAR 元数据要求；升级此依赖前必须重新验证 Android release 构建。
 
 ## 第三方 API Profile 互操作
 
@@ -83,6 +97,8 @@
    - `Apilot-vX.Y.Z-windows-setup.exe`
    - `Apilot-vX.Y.Z-windows-portable.zip`
 
+PR 和 `main` 推送只运行 `verify`（`dart analyze lib test` 与 `flutter test`）；只有 `v*` 标签会在验证通过后构建三端资产并创建 Release。
+
 ## Windows 安装器
 
 - Inno Setup 脚本：`windows/installer/Apilot.iss`
@@ -93,5 +109,4 @@
 ## 后续建议
 
 - 如需“纯蓝牙传配置”，建议单独设计分片协议、ACK/重传、加密和冲突合并，不要直接写大 JSON 到单个 characteristic。
-- 同步合并策略目前以 ID 去重，后续可加入“同 URL+Key+模型”的业务级合并。
 - Release 说明建议只截取当前版本段落，避免整份 `CHANGELOG.md` 造成发布页重复冗长。

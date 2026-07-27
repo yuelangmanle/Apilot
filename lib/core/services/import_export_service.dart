@@ -1,11 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 import '../models/api_config.dart';
 import '../models/group.dart';
 
 class ImportExportService {
-  Future<String> exportConfigs(List<ApiConfig> configs, List<Group> groups) async {
+  Future<String> exportConfigs(
+      List<ApiConfig> configs, List<Group> groups) async {
     final exportData = {
       'version': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
@@ -25,40 +24,20 @@ class ImportExportService {
           .toList();
 
       final groups = (data['groups'] as List?)
-          ?.map((g) => Group.fromJson(g as Map<String, dynamic>))
-          .toList() ?? [];
+              ?.map((g) => Group.fromJson(g as Map<String, dynamic>))
+              .toList() ??
+          [];
+      final exportedAt = data['exportedAt'] is String
+          ? DateTime.tryParse(data['exportedAt'] as String)
+          : null;
 
       return {
         'apiConfigs': configs,
         'groups': groups,
+        'exportedAt': exportedAt,
       };
     } catch (e) {
       throw Exception('导入失败: 无效的JSON格式');
     }
-  }
-
-  Future<void> saveToFile(String content, String filename) async {
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/$filename');
-    await file.writeAsString(content);
-  }
-
-  Future<String> loadFromFile(String filepath) async {
-    final file = File(filepath);
-    if (!await file.exists()) {
-      throw Exception('文件不存在: $filepath');
-    }
-    return await file.readAsString();
-  }
-
-  Future<String> getDefaultExportDirectory() async {
-    final directory = await getApplicationDocumentsDirectory();
-    return directory.path;
-  }
-
-  Future<List<ApiConfig>> importFromFile(String filepath) async {
-    final jsonString = await loadFromFile(filepath);
-    final result = await importConfigs(jsonString);
-    return result['apiConfigs'] as List<ApiConfig>;
   }
 }

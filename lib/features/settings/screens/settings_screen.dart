@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -14,6 +16,7 @@ import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/models/api_config.dart';
+import '../../../core/models/group.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -418,22 +421,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final databaseService = DatabaseService();
       await databaseService.initialize();
       final configs = await databaseService.getAllApiConfigs();
+      final groups = await databaseService.getAllGroups();
       await databaseService.close();
 
       final importExportService = ImportExportService();
-      final json = await importExportService.exportConfigs(configs, []);
+      final json = await importExportService.exportConfigs(configs, groups);
       final timestamp = DateTime.now()
           .toString()
           .substring(0, 19)
           .replaceAll(':', '-')
           .replaceAll(' ', '_');
-      await importExportService.saveToFile(
-          json, 'apilot_export_$timestamp.json');
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: '选择备份保存位置',
+        fileName: 'apilot_backup_$timestamp.json',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        bytes: Uint8List.fromList(utf8.encode(json)),
+      );
+      if (savedPath == null) return;
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('配置已导出到 Documents 目录'),
+          SnackBar(
+            content: Text('已备份 ${configs.length} 个 API 和 ${groups.length} 个分组'),
             backgroundColor: AppColors.success,
           ),
         );
@@ -452,89 +462,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _importConfigs(BuildContext context) async {
     try {
-      // Show dialog with two options: paste JSON or load from file
-      final choice = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('恢复数据'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading:
-                    const Icon(Icons.content_paste, color: AppColors.primary),
-                title: const Text('粘贴JSON'),
-                subtitle: const Text('从剪贴板粘贴配置数据'),
-                onTap: () => Navigator.pop(context, 'paste'),
-                contentPadding: EdgeInsets.zero,
-              ),
-              ListTile(
-                leading:
-                    const Icon(Icons.folder_open, color: AppColors.secondary),
-                title: const Text('从备份文件加载'),
-                subtitle: const Text('从默认备份目录读取'),
-                onTap: () => Navigator.pop(context, 'file'),
-                contentPadding: EdgeInsets.zero,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消')),
-          ],
-        ),
+      final selection = await FilePicker.platform.pickFiles(
+        dialogTitle: '选择 Apilot 备份文件',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        allowMultiple: false,
+        withData: true,
       );
-
-      if (choice == null) return;
-
-      String jsonString;
-
-      if (choice == 'paste') {
-        final data = await Clipboard.getData(Clipboard.kTextPlain);
-        jsonString = data?.text?.trim() ?? '';
-        if (jsonString.isEmpty) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('剪贴板为空'), backgroundColor: AppColors.warning),
-            );
-          }
-          return;
-        }
-      } else {
-        final importExportService = ImportExportService();
-        final directory = await importExportService.getDefaultExportDirectory();
-        final filePath = '$directory/api_configs_export.json';
-        jsonString = await importExportService.loadFromFile(filePath);
-      }
+      final bytes = selection?.files.single.bytes;
+      if (bytes == null) return;
+      final jsonString = utf8.decode(bytes).trim();
+      if (jsonString.isEmpty) throw const FormatException('备份文件为空');
 
       final importExportService = ImportExportService();
+      final result = await importExportService.importConfigs(jsonString);
+      final configs = result['apiConfigs'] as List<ApiConfig>;
+      final groups = result['groups'] as List<Group>;
+      final exportedAt = result['exportedAt'] as DateTime?;
+      if (!context.mounted) return;
+      final replaceExisting = await _chooseRestoreMode(
+        context,
+        configCount: configs.length,
+        groupCount: groups.length,
+        exportedAt: exportedAt,
+      );
+      if (replaceExisting == null) return;
+
       final databaseService = DatabaseService();
       await databaseService.initialize();
-
-      final result = await importExportService.importConfigs(jsonString);
-      final configs = result['apiConfigs'] as List<dynamic>;
-
-      int importCount = 0;
-      for (final config in configs) {
-        if (config is ApiConfig) {
-          await databaseService.insertApiConfig(config);
-          importCount++;
-        }
-      }
-
+      final summary = await databaseService.restoreBackup(
+        configs: configs,
+        groups: groups,
+        replaceExisting: replaceExisting,
+      );
       await databaseService.close();
 
-      if (context.mounted) {
-        context.read<ApiProvider>().loadApiConfigs();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('成功导入 $importCount 个API配置'),
-            backgroundColor: AppColors.success,
-          ),
-        );
-      }
+      if (!context.mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      final apiProvider = context.read<ApiProvider>();
+      await apiProvider.loadApiConfigs();
+      if (!context.mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+              '已恢复 ${summary.configsRestored} 个 API 和 ${summary.groupsRestored} 个分组'),
+          backgroundColor: AppColors.success,
+        ),
+      );
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -545,5 +519,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
     }
+  }
+
+  Future<bool?> _chooseRestoreMode(
+    BuildContext context, {
+    required int configCount,
+    required int groupCount,
+    required DateTime? exportedAt,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认恢复数据'),
+        content: Text(
+          '备份时间：${exportedAt == null ? '未记录' : exportedAt.toLocal().toString().substring(0, 19)}\n'
+          '备份包含 $configCount 个 API 和 $groupCount 个分组。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('合并恢复'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('清空后恢复'),
+          ),
+        ],
+      ),
+    );
   }
 }

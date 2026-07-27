@@ -34,6 +34,8 @@ Apilot 面向任意第三方 Android App 开放 API 方案互操作。所有导�
 
 调用方应使用 `setPackage("com.example.api_manager")`。深链接仅用于打开说明，绝不能传递 API Key。
 
+仓库提供了可直接构建的 [Android V2 调用示例](../examples/android-api-profile-client)，覆盖导入、Activity Result、JSON extra、`content://` URI 和不记录 Key 的处理方式。
+
 ## V2 概念与规范
 
 V2 将连接与服务商语义分开：
