@@ -339,7 +339,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                     ListTile(
                       leading: const Icon(Icons.auto_awesome, color: AppColors.primary),
                       title: const Text('从模板开始'),
-                      subtitle: const Text('内置 18 个常用 AI API 模板，一键配置'),
+                      subtitle: const Text('内置 23 个常用 AI API 模板，一键配置'),
                       onTap: () => _navigateToTemplate(context),
                       contentPadding: EdgeInsets.zero,
                     ),

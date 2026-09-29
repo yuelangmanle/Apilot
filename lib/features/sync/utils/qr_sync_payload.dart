@@ -13,6 +13,20 @@ String? extractSyncIp(String value) {
   return _isValidIPv4(candidate) ? candidate : null;
 }
 
+/// 从二维码内容中提取可选的同步加密密钥（`k=<base64url>` 段）。
+/// 旧版二维码没有该段，返回 null，走明文+确认流程。
+String? extractSyncKey(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty || trimmed.startsWith('{')) return null;
+  for (final segment in trimmed.split('|')) {
+    final part = segment.trim();
+    if (part.startsWith('k=') && part.length > 2) {
+      return part.substring(2);
+    }
+  }
+  return null;
+}
+
 String? _extractFromJson(String value) {
   if (!value.startsWith('{')) return null;
   try {

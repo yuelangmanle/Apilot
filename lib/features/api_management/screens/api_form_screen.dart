@@ -660,11 +660,12 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
           .where((e) => e.isNotEmpty)
           .toList();
 
-      // 编辑模式必须保留表单之外的字段（selectedModel/providerId/metadata/
-      // 导入溯源等），否则一次"编辑→保存"会把模板和刷新模型的数据全部抹掉。
-      final original = widget.isEditing ? widget.apiConfig! : null;
+      // 编辑与模板创建都要保留表单之外的字段（selectedModel/providerId/
+      // metadata/导入溯源等）：否则编辑一次就抹掉模型目录，从模板添加
+      // 则会把 anthropic_messages 等协议标识丢回 custom。
+      final original = widget.apiConfig;
       final api = ApiConfig(
-        id: original?.id ?? const Uuid().v4(),
+        id: widget.isEditing ? original!.id : const Uuid().v4(),
         name: _nameController.text.trim(),
         baseUrl: _baseUrlController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
@@ -673,7 +674,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         group: _selectedGroup,
         tags: tags,
         isFavorite: _isFavorite,
-        createdAt: original?.createdAt,
+        createdAt: widget.isEditing ? original!.createdAt : null,
         metadata: original?.metadata,
         providerId: original?.providerId ?? ApiProviderIds.custom,
         protocolId: original?.protocolId ?? ApiProtocolIds.openAiCompatible,

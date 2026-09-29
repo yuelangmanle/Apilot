@@ -1,4 +1,4 @@
-platform :osx, '10.15'
+platform :osx, '12.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -38,6 +38,14 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+
+    # 新版 Xcode 最低只接受 12.0；引擎/插件 podspec 里的 10.15 需要抬高。
+    target.build_configurations.each do |config|
+      setting = config.build_settings['MACOSX_DEPLOYMENT_TARGET']
+      if setting.nil? || setting.to_f < 12.0
+        config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '12.0'
+      end
+    end
 
     if target.name == 'bluetooth_low_energy_darwin'
       privacy_refs = target.source_build_phase.files_references.select do |file_ref|

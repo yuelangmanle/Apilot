@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/api_config_identity.dart';
+import '../../../core/services/api_key_cipher.dart';
 import '../../../core/services/database_service.dart';
 
 /// 局域网内其他设备通过本机同步端口发起的读取/写入请求，
@@ -39,6 +40,12 @@ class SyncService {
   static const Duration _clientIoTimeout = Duration(seconds: 15);
   static const Duration _deviceStaleAfter = Duration(seconds: 12);
   static const Duration _localIpCacheTtl = Duration(seconds: 10);
+  static const String _encryptedHeader = 'X-Apilot-Enc';
+  static const String _encryptedHeaderValue = 'fernet-v1';
+
+  /// 通过二维码配对得到的对端加密器，按对端 IP 索引。
+  /// 仅覆盖配置读写通道；手动 IP 连接无共享密钥时走明文+确认。
+  final Map<String, ApiKeyCipher> _peerCiphers = {};
 
   final List<DeviceInfo> _devices = [];
   final Set<String> _broadcastSeenDeviceIds = {};
@@ -56,6 +63,18 @@ class SyncService {
   DateTime? _localIpCacheAt;
 
   List<DeviceInfo> get discoveredDevices => List.unmodifiable(_devices);
+
+  /// 注册与某个对端 IP 通信时使用的对称密钥（来源：二维码扫描）。
+  void registerPeerKey(String ip, String keyBase64) {
+    try {
+      _peerCiphers[ip] = ApiKeyCipher.fromKeyBase64(keyBase64);
+    } catch (e) {
+      debugPrint('[Sync] 对端密钥注册失败（将使用明文+确认）: $e');
+    }
+  }
+
+  void clearPeerKeys() => _peerCiphers.clear();
+
   Stream<IncomingSyncRequest> get incomingRequests =>
       _incomingRequests.stream;
   bool get isRunning => _isRunning;
@@ -415,8 +434,10 @@ class SyncService {
 
   Future<void> _handleSyncRequest(HttpRequest request) async {
     try {
+      final cipher = _requestCipher(request);
       final body = await utf8.decoder.bind(request).join();
-      final data = jsonDecode(body) as Map<String, dynamic>;
+      final data =
+          jsonDecode(_maybeDecrypt(cipher, body)) as Map<String, dynamic>;
       final configs = parseSyncPayload(data);
 
       final allowed = await _confirmIncoming(
@@ -436,11 +457,9 @@ class SyncService {
       final inserted = await storeSyncedConfigs(configs);
       debugPrint('[Sync] 已接收 ${configs.length} 个配置，新增 $inserted 个');
 
-      request.response
-        ..statusCode = HttpStatus.ok
-        ..headers.contentType = ContentType.json
-        ..write(jsonEncode({'status': 'ok', 'received': configs.length, 'inserted': inserted}))
-        ..close();
+      _writeJsonResponse(request, cipher,
+          {'status': 'ok', 'received': configs.length, 'inserted': inserted},
+          statusCode: HttpStatus.ok);
     } catch (e) {
       debugPrint('[Sync] 处理同步请求失败: $e');
       request.response
@@ -448,6 +467,50 @@ class SyncService {
         ..write(jsonEncode({'error': e.toString()}))
         ..close();
     }
+  }
+
+  /// 请求带加密头时返回对应的对端加密器，否则 null。
+  ApiKeyCipher? _requestCipher(HttpRequest request) {
+    if (request.headers.value(_encryptedHeader) != _encryptedHeaderValue) {
+      return null;
+    }
+    final remote = request.connectionInfo?.remoteAddress.address;
+    if (remote == null) return null;
+    final cipher = _peerCiphers[remote];
+    if (cipher == null) {
+      debugPrint('[Sync] 收到加密请求但没有对应的配对密钥: $remote');
+    }
+    return cipher;
+  }
+
+  String _maybeDecrypt(ApiKeyCipher? cipher, String body) {
+    if (cipher == null) return body;
+    try {
+      final wrapper = jsonDecode(body) as Map<String, dynamic>;
+      return cipher.decrypt(wrapper['enc'] as String? ?? '');
+    } catch (e) {
+      throw FormatException('同步请求解密失败: $e');
+    }
+  }
+
+  String? _maybeEncrypt(ApiKeyCipher? cipher, String payload) {
+    if (cipher == null) return null;
+    return jsonEncode({'enc': cipher.encrypt(payload)});
+  }
+
+  void _writeJsonResponse(
+    HttpRequest request,
+    ApiKeyCipher? cipher,
+    Map<String, dynamic> payload, {
+    int statusCode = HttpStatus.ok,
+  }) {
+    final plain = jsonEncode(payload);
+    final body = _maybeEncrypt(cipher, plain) ?? plain;
+    request.response
+      ..statusCode = statusCode
+      ..headers.contentType = ContentType.json
+      ..write(body)
+      ..close();
   }
 
   Future<void> _handleGetConfigs(HttpRequest request) async {
@@ -471,11 +534,7 @@ class SyncService {
 
       final payload = createSyncPayload(configs);
       debugPrint('[Sync] 发送 ${configs.length} 个配置');
-      request.response
-        ..statusCode = HttpStatus.ok
-        ..headers.contentType = ContentType.json
-        ..write(jsonEncode(payload))
-        ..close();
+      _writeJsonResponse(request, _requestCipher(request), payload);
     } catch (e) {
       debugPrint('[Sync] 获取配置失败: $e');
       request.response
@@ -518,14 +577,20 @@ class SyncService {
   Future<bool> sendConfigs(DeviceInfo device, List<ApiConfig> configs) async {
     HttpClient? client;
     try {
+      final cipher = _peerCiphers[device.ipAddress];
       final payload = createSyncPayload(configs);
+      final bodyText = _maybeEncrypt(cipher, jsonEncode(payload)) ??
+          jsonEncode(payload);
       client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 10);
       final request = await client
           .postUrl(Uri.parse('http://${device.ipAddress}:$_syncPort/sync'))
           .timeout(_clientIoTimeout);
       request.headers.contentType = ContentType.json;
-      request.write(jsonEncode(payload));
+      if (cipher != null) {
+        request.headers.add(_encryptedHeader, _encryptedHeaderValue);
+      }
+      request.write(bodyText);
 
       final response = await request.close().timeout(_clientIoTimeout);
       final body =
@@ -546,11 +611,15 @@ class SyncService {
   Future<List<ApiConfig>> receiveConfigs(DeviceInfo device) async {
     HttpClient? client;
     try {
+      final cipher = _peerCiphers[device.ipAddress];
       client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 10);
       final request = await client
           .getUrl(Uri.parse('http://${device.ipAddress}:$_syncPort/configs'))
           .timeout(_clientIoTimeout);
+      if (cipher != null) {
+        request.headers.add(_encryptedHeader, _encryptedHeaderValue);
+      }
       final response = await request.close().timeout(_clientIoTimeout);
       final body =
           await utf8.decoder.bind(response).join().timeout(_clientIoTimeout);
@@ -559,7 +628,7 @@ class SyncService {
         debugPrint('[Sync] 接收配置失败: 对方返回 ${response.statusCode}');
         return [];
       }
-      final data = jsonDecode(body) as Map<String, dynamic>;
+      final data = jsonDecode(_maybeDecrypt(cipher, body)) as Map<String, dynamic>;
       return parseSyncPayload(data);
     } catch (e) {
       debugPrint('[Sync] 接收配置失败: $e');

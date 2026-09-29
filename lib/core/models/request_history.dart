@@ -12,6 +12,9 @@ class RequestHistory {
   final Map<String, dynamic>? responseBody;
   final int? statusCode;
   final int? duration;
+  final int? promptTokens;
+  final int? completionTokens;
+  final int? totalTokens;
   final DateTime createdAt;
 
   RequestHistory({
@@ -23,6 +26,9 @@ class RequestHistory {
     this.responseBody,
     this.statusCode,
     this.duration,
+    this.promptTokens,
+    this.completionTokens,
+    this.totalTokens,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 

@@ -1,7 +1,7 @@
 name: api_manager
 description: A multi-platform API manager for AI model APIs
 publish_to: 'none'
-version: 1.22.0+27
+version: 1.23.0+28
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -26,6 +26,7 @@ dependencies:
   file_picker: ^9.2.3
   bluetooth_low_energy: ^6.2.1
   crypto: ^3.0.7
+  flutter_secure_storage: ^9.2.2
 
 dev_dependencies:
   flutter_test:

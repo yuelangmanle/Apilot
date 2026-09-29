@@ -8,12 +8,16 @@ class RequestForm extends StatefulWidget {
   final ApiConfig apiConfig;
   final Function(String model, String endpoint, Map<String, dynamic> body) onSubmit;
   final bool isLoading;
+  final bool streamEnabled;
+  final ValueChanged<bool>? onStreamChanged;
 
   const RequestForm({
     super.key,
     required this.apiConfig,
     required this.onSubmit,
     this.isLoading = false,
+    this.streamEnabled = true,
+    this.onStreamChanged,
   });
 
   @override
@@ -145,7 +149,18 @@ class _RequestFormState extends State<RequestForm> {
             maxLines: 10,
             style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('流式输出', style: TextStyle(fontSize: 14)),
+            subtitle:
+                const Text('边生成边显示；服务不支持时可关闭', style: TextStyle(fontSize: 12)),
+            value: widget.streamEnabled,
+            onChanged: widget.onStreamChanged,
+            secondary: const Icon(Icons.stream, size: 20),
+            visualDensity: VisualDensity.compact,
+          ),
+          const SizedBox(height: 8),
           ElevatedButton.icon(
             onPressed: widget.isLoading ? null : _submit,
             icon: widget.isLoading

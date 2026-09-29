@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'shared/theme/app_theme.dart';
 import 'shared/widgets/responsive_layout.dart';
+import 'core/services/api_key_cipher.dart';
 import 'core/services/database_service.dart';
+import 'core/services/secret_store.dart';
 import 'features/api_management/providers/api_provider.dart';
 import 'features/api_testing/providers/history_provider.dart';
 import 'features/settings/providers/settings_provider.dart';
@@ -21,6 +23,21 @@ import 'features/third_party_import/services/third_party_import_channel.dart';
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
+
+  static Future<void> bootstrap() async {
+    // 在首次打开数据库前配置加密器：存量明文 Key 会在迁移到 v4 时
+    // 一次性加密；此后所有写入均为密文。
+    if (DatabaseService.configuredCipher == null) {
+      try {
+        DatabaseService.configureCipher(await ApiKeyCipher.create(
+          SecureSecretStore(),
+        ));
+      } catch (e) {
+        // 密钥子系统故障不阻止应用启动：数据库回退明文行为。
+        debugPrint('[Apilot] API Key 加密初始化失败，回退明文存储: $e');
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

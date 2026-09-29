@@ -7,6 +7,7 @@ import '../models/api_interop_audit.dart';
 import '../models/group.dart';
 import '../models/request_history.dart';
 import 'api_config_identity.dart';
+import 'api_key_cipher.dart';
 
 class BackupRestoreSummary {
   final int configsRestored;
@@ -25,6 +26,17 @@ class DatabaseService {
   Database? _ownedDatabase;
   final String? _customDbPath;
 
+  /// 全局静态加密器：应用启动时配置一次，所有实例（含 sync/settings
+  /// 临时实例）共用。未配置时（单元测试）保持明文行为。
+  static ApiKeyCipher? _cipher;
+
+  static void configureCipher(ApiKeyCipher? cipher) {
+    _cipher = cipher;
+    _sharedDatabase = null; // 迫使下次访问以新配置重新打开并执行迁移。
+  }
+
+  static ApiKeyCipher? get configuredCipher => _cipher;
+
   DatabaseService({String? dbPath}) : _customDbPath = dbPath;
 
   Future<Database> get database async {
@@ -32,7 +44,7 @@ class DatabaseService {
     if (customPath != null) {
       return _ownedDatabase ??= await openDatabase(
         customPath,
-        version: 3,
+        version: _databaseVersion,
         onCreate: _createDatabase,
         onUpgrade: _upgradeDatabase,
       );
@@ -40,11 +52,13 @@ class DatabaseService {
     return _sharedDatabase ??= await _initializeDatabase();
   }
 
+  static const int _databaseVersion = 4;
+
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
     return await openDatabase(
       path.join(dbPath, 'api_manager.db'),
-      version: 3,
+      version: _databaseVersion,
       onCreate: _createDatabase,
       onUpgrade: _upgradeDatabase,
     );
@@ -87,6 +101,9 @@ class DatabaseService {
         response_body TEXT,
         status_code INTEGER,
         duration INTEGER,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
         created_at TEXT NOT NULL,
         FOREIGN KEY (api_config_id) REFERENCES api_configs (id)
       )
@@ -151,6 +168,55 @@ class DatabaseService {
     if (oldVersion < 3) {
       await _createInteropAuditTable(db);
     }
+    if (oldVersion < 4) {
+      final historyTable = await db.query('sqlite_master',
+          where: "type = 'table' AND name = 'request_history'");
+      if (historyTable.isEmpty) {
+        // 极老版本（v1 前）可能没有历史表：直接按新结构建表。
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS request_history (
+            id TEXT PRIMARY KEY,
+            api_config_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            request_body TEXT NOT NULL DEFAULT '{}',
+            response_body TEXT,
+            status_code INTEGER,
+            duration INTEGER,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            total_tokens INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (api_config_id) REFERENCES api_configs (id)
+          )
+        ''');
+      } else {
+        await db.execute(
+            'ALTER TABLE request_history ADD COLUMN prompt_tokens INTEGER');
+        await db.execute(
+            'ALTER TABLE request_history ADD COLUMN completion_tokens INTEGER');
+        await db.execute(
+            'ALTER TABLE request_history ADD COLUMN total_tokens INTEGER');
+      }
+
+      // 一次性把存量明文 API Key 加密；未配置加密器（测试）时跳过。
+      final cipher = _cipher;
+      if (cipher != null) {
+        final rows = await db.query('api_configs', columns: ['id', 'api_key']);
+        for (final row in rows) {
+          final stored = row['api_key'] as String? ?? '';
+          if (stored.isEmpty || stored.startsWith(ApiKeyCipher.prefix)) {
+            continue;
+          }
+          await db.update(
+            'api_configs',
+            {'api_key': cipher.encrypt(stored)},
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+        }
+      }
+    }
   }
 
   Future<void> _createInteropAuditTable(Database db) async {
@@ -203,11 +269,13 @@ class DatabaseService {
   }
 
   Map<String, Object?> _apiConfigToMap(ApiConfig api) {
+    final cipher = _cipher;
+    final apiKey = cipher == null ? api.apiKey : cipher.encrypt(api.apiKey);
     return {
       'id': api.id,
       'name': api.name,
       'base_url': api.baseUrl,
-      'api_key': api.apiKey,
+      'api_key': apiKey,
       'models': api.models.join(','),
       'environment': api.environment,
       'api_group': api.group,
@@ -269,12 +337,13 @@ class DatabaseService {
 
   Future<void> updateApiConfig(ApiConfig api) async {
     final db = await database;
+    final cipher = _cipher;
     await db.update(
       'api_configs',
       {
         'name': api.name,
         'base_url': api.baseUrl,
-        'api_key': api.apiKey,
+        'api_key': cipher == null ? api.apiKey : cipher.encrypt(api.apiKey),
         'models': api.models.join(','),
         'environment': api.environment,
         'api_group': api.group,
@@ -362,7 +431,7 @@ class DatabaseService {
       id: map['id'] as String,
       name: map['name'] as String? ?? '',
       baseUrl: map['base_url'] as String? ?? '',
-      apiKey: map['api_key'] as String? ?? '',
+      apiKey: _decryptStoredApiKey(map['api_key'] as String? ?? ''),
       models: models,
       environment: map['environment'] as String? ?? 'development',
       group: map['api_group'] as String?,
@@ -385,6 +454,14 @@ class DatabaseService {
       importSourcePackage: map['import_source_package'] as String?,
       importTrustLevel: map['import_trust_level'] as String?,
     );
+  }
+
+  /// 读出的 api_key 兼容三种形态：明文（未启用加密的历史数据）、
+  /// `enc1:` 密文、以及主密钥丢失后解密失败的原样密文。
+  String _decryptStoredApiKey(String stored) {
+    final cipher = _cipher;
+    if (cipher == null) return stored;
+    return cipher.decrypt(stored);
   }
 
   String? _encodeMetadata(Map<String, dynamic>? metadata) =>
@@ -602,6 +679,9 @@ class DatabaseService {
           'response_body': responseBody,
           'status_code': history.statusCode,
           'duration': history.duration,
+          'prompt_tokens': history.promptTokens,
+          'completion_tokens': history.completionTokens,
+          'total_tokens': history.totalTokens,
           'created_at': history.createdAt.toIso8601String(),
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
@@ -666,6 +746,9 @@ class DatabaseService {
       responseBody: responseBody,
       statusCode: map['status_code'] as int?,
       duration: map['duration'] as int?,
+      promptTokens: map['prompt_tokens'] as int?,
+      completionTokens: map['completion_tokens'] as int?,
+      totalTokens: map['total_tokens'] as int?,
       createdAt: createdAtStr != null
           ? DateTime.tryParse(createdAtStr) ?? DateTime.now()
           : DateTime.now(),

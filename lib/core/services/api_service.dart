@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
+
 import '../models/api_config.dart';
+import 'api_protocol_adapter.dart';
 
 class ModelListFetchResult {
   final List<String> models;
@@ -151,10 +155,10 @@ class ApiService {
           final uri = Uri.parse(modelsUrl);
           final response = await http.get(
             uri,
-            headers: {
-              'Authorization': 'Bearer ${apiConfig.apiKey}',
-              'Content-Type': 'application/json',
-            },
+            headers: ApiProtocolAdapter.authHeaders(
+              protocolId: apiConfig.protocolId,
+              apiKey: apiConfig.apiKey,
+            ),
           ).timeout(const Duration(seconds: 15));
 
           if (response.statusCode != 200) {
@@ -248,23 +252,31 @@ class ApiService {
     final stopwatch = Stopwatch()..start();
 
     try {
-      final url = buildUrl(apiConfig.baseUrl, endpoint);
+      final effectiveEndpoint = endpoint.trim().isEmpty
+          ? ApiProtocolAdapter.defaultChatEndpoint(
+              apiConfig.baseUrl, apiConfig.protocolId)
+          : endpoint;
+      final url = buildUrl(apiConfig.baseUrl, effectiveEndpoint);
       final uri = Uri.parse(url);
 
-      // 确保 model 在请求体中
+      // 确保 model 在请求体中，并按协议转换请求体。
       final body = Map<String, dynamic>.from(requestBody);
       if (!body.containsKey('model')) {
         body['model'] = model;
       }
+      final protocolBody = ApiProtocolAdapter.requestBodyFor(
+        body,
+        apiConfig.protocolId,
+      );
 
       final response = await http
           .post(
             uri,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ${apiConfig.apiKey}',
-            },
-            body: jsonEncode(body),
+            headers: ApiProtocolAdapter.authHeaders(
+              protocolId: apiConfig.protocolId,
+              apiKey: apiConfig.apiKey,
+            ),
+            body: jsonEncode(protocolBody),
           )
           .timeout(const Duration(seconds: 60));
 
@@ -291,4 +303,133 @@ class ApiService {
       rethrow;
     }
   }
+
+  /// 流式发送聊天请求：逐帧产出增量文本，结束时给出完整归一化响应
+  /// （choices/usage 形状，兼容历史记录与响应查看器）。
+  Stream<StreamChatEvent> sendRequestStream({
+    required ApiConfig apiConfig,
+    required String model,
+    required Map<String, dynamic> requestBody,
+    bool includeUsage = true,
+  }) async* {
+    final protocolId = apiConfig.protocolId;
+    final endpoint = ApiProtocolAdapter.defaultChatEndpoint(
+      apiConfig.baseUrl,
+      protocolId,
+    );
+    final url = buildUrl(apiConfig.baseUrl, endpoint);
+    final uri = Uri.parse(url);
+
+    final body = Map<String, dynamic>.from(requestBody);
+    if (!body.containsKey('model')) {
+      body['model'] = model;
+    }
+    body['stream'] = true;
+    if (includeUsage && !ApiProtocolAdapter.isAnthropic(protocolId)) {
+      body['stream_options'] = {'include_usage': true};
+    }
+    final protocolBody = ApiProtocolAdapter.requestBodyFor(body, protocolId);
+
+    final request = http.Request('POST', uri)
+      ..headers.addAll(ApiProtocolAdapter.authHeaders(
+        protocolId: protocolId,
+        apiKey: apiConfig.apiKey,
+      ))
+      ..body = jsonEncode(protocolBody);
+
+    final stopwatch = Stopwatch()..start();
+    final client = http.Client();
+    try {
+      final response =
+          await client.send(request).timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) {
+        final errorBody = await response.stream.bytesToString();
+        throw ApiException(statusCode: response.statusCode, body: errorBody);
+      }
+
+      final contentBuffer = StringBuffer();
+      TokenUsage? usage;
+      var rawChunks = 0;
+
+      final lines = response.stream
+          .transform(const Utf8Decoder())
+          .transform(const LineSplitter());
+      await for (final line in lines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty || trimmed.startsWith(':')) continue;
+        if (!trimmed.startsWith('data:')) continue;
+        final data = trimmed.substring(5).trim();
+        if (data == '[DONE]') break;
+        final frame = jsonDecode(data);
+        if (frame is! Map<String, dynamic>) continue;
+        rawChunks++;
+        final parsed = SseStreamParser.parseFrame(frame, protocolId);
+        if (parsed.deltaText != null && parsed.deltaText!.isNotEmpty) {
+          contentBuffer.write(parsed.deltaText);
+          yield StreamChatEvent.delta(parsed.deltaText!);
+        }
+        if (parsed.usage != null) {
+          usage = parsed.usage;
+        }
+      }
+      stopwatch.stop();
+
+      final content = contentBuffer.toString();
+      final normalized = <String, dynamic>{
+        'choices': [
+          {
+            'message': {'role': 'assistant', 'content': content},
+            'finish_reason': 'stop',
+          }
+        ],
+        'model': model,
+        'stream': true,
+        if (usage != null)
+          'usage': {
+            'prompt_tokens': usage.promptTokens,
+            'completion_tokens': usage.completionTokens,
+            'total_tokens': usage.totalTokens,
+          },
+        if (rawChunks == 0) 'raw': '流式响应为空',
+      };
+      yield StreamChatEvent.done(
+        normalized,
+        durationMs: stopwatch.elapsedMilliseconds,
+        usage: usage,
+      );
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// 流式请求的事件：delta 增量或 done 终态。
+class StreamChatEvent {
+  final String? delta;
+  final Map<String, dynamic>? response;
+  final int? durationMs;
+  final TokenUsage? usage;
+
+  const StreamChatEvent.delta(this.delta)
+      : response = null,
+        durationMs = null,
+        usage = null;
+
+  const StreamChatEvent.done(this.response,
+      {required this.durationMs, required this.usage})
+      : delta = null;
+
+  bool get isDone => response != null;
+}
+
+/// 非 200 的协议层错误，便于界面区分鉴权失败等场景。
+class ApiException implements Exception {
+  final int statusCode;
+  final String body;
+
+  const ApiException({required this.statusCode, required this.body});
+
+  @override
+  String toString() => 'API 返回 $statusCode: '
+      '${body.length > 200 ? '${body.substring(0, 200)}…' : body}';
 }

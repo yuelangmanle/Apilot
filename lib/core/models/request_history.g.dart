@@ -16,6 +16,9 @@ RequestHistory _$RequestHistoryFromJson(Map<String, dynamic> json) =>
       responseBody: json['responseBody'] as Map<String, dynamic>?,
       statusCode: (json['statusCode'] as num?)?.toInt(),
       duration: (json['duration'] as num?)?.toInt(),
+      promptTokens: (json['promptTokens'] as num?)?.toInt(),
+      completionTokens: (json['completionTokens'] as num?)?.toInt(),
+      totalTokens: (json['totalTokens'] as num?)?.toInt(),
       createdAt: json['createdAt'] == null
           ? null
           : DateTime.parse(json['createdAt'] as String),
@@ -31,5 +34,8 @@ Map<String, dynamic> _$RequestHistoryToJson(RequestHistory instance) =>
       'responseBody': instance.responseBody,
       'statusCode': instance.statusCode,
       'duration': instance.duration,
+      'promptTokens': instance.promptTokens,
+      'completionTokens': instance.completionTokens,
+      'totalTokens': instance.totalTokens,
       'createdAt': instance.createdAt.toIso8601String(),
     };

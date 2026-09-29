@@ -1,5 +1,29 @@
 # 更新日志
 
+## v1.23.0 (2026-09-29)
+
+### 安全
+- **API Key 加密存储** - 所有密钥现在以 Fernet（AES-CBC + HMAC-SHA256）加密后写入 SQLite，主密钥保存在系统安全区（Android Keystore / 平台安全存储，不可用时回退受限文件）。升级后首次启动自动把存量明文密钥一次性加密（数据库迁移 v4），无需任何手动操作。
+- **同步传输加密** - "我的二维码"现在内嵌一次性配对密钥：扫码配对的双方后续配置读写走加密通道，局域网抓包只能看到密文；配对密钥经摄像头带外交换，不经网络。手动输 IP 连接回退为明文 + 本机确认（与上一版本一致）。
+
+### 新功能
+- **Anthropic Claude 官方协议支持** - 请求层按 `protocolId` 分发：Claude 现在使用 `x-api-key` + `anthropic-version` 头与 `/v1/messages` 端点，自动把 OpenAI 形状的请求体（system 提取、max_tokens 默认值）转换为 Anthropic Messages 格式，模型列表走 `/v1/models`。Claude 模板重新上线。
+- **流式输出（SSE）** - 测试页新增"流式输出"开关（默认开启）：逐帧渲染增量文本，不再苦等整包响应；同时支持 OpenAI chunk 与 Anthropic content_block_delta 两种流格式，对不支持流式的服务可一键关闭回退。
+- **Token 用量统计** - 请求响应中的 usage 自动提取（兼容 OpenAI 与 Anthropic 字段名），测试页展示总 token 与输入/输出拆分，请求历史随行记录；数据库新增三列（迁移自动完成）。
+- **新模板** - Google Gemini（官方 OpenAI 兼容层）、OpenRouter、硅基流动 SiliconFlow、Ollama（本地模型）。
+
+### 修复
+- **模板创建丢协议字段** - 从模板添加配置时 `protocolId`/`providerId` 会被重置为 custom，导致 Claude 模板即使支持了也会以错误协议保存；现在模板与编辑路径同样保留表单外字段。
+- **极老数据库迁移容错** - v1 时代缺失历史表的数据库在升级到 v4 时不再报"no such table"，自动按新结构补建。
+- **Android minSdk 提升** - 显式设为 max(24, Flutter 默认)，满足 EncryptedSharedPreferences 要求。
+- **macOS 部署目标提升到 12.0** - 适配新 Xcode 工具链的最低版本要求，同时 CocoaPods 后置钩子统一抬高所有插件目标，避免新旧工具链混编失败。
+
+### 工程与文档
+- 新增 22 个单元测试覆盖加密往返、密文落库、协议适配、SSE 帧解析与 QR 配对密钥提取（累计 126 个全部通过）；`flutter analyze` 零告警。
+- 版本号同步 - 应用版本更新为 `1.23.0+28`。
+
+---
+
 ## v1.22.0 (2026-09-29)
 
 ### 安全

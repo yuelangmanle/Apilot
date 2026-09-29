@@ -238,7 +238,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
             .apiNames[item.apiConfigId] ??
         '';
     final prefix = apiName.isNotEmpty ? '$apiName · ' : '';
-    return '$prefix${item.model} · ${_formatDate(item.createdAt)}';
+    final tokens = item.totalTokens;
+    final suffix = tokens == null ? '' : ' · $tokens tokens';
+    return '$prefix${item.model} · ${_formatDate(item.createdAt)}$suffix';
   }
 
   void _showHistoryDetail(BuildContext context, RequestHistory item) {

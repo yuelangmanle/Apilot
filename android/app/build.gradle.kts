@@ -23,7 +23,8 @@ android {
 
     defaultConfig {
         applicationId = "com.example.api_manager"
-        minSdk = flutter.minSdkVersion
+        // flutter_secure_storage（EncryptedSharedPreferences）要求 minSdk 23+。
+        minSdk = maxOf(24, flutter.minSdkVersion)
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName

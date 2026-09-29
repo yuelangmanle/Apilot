@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../services/sync_service.dart';
 import '../services/bluetooth_sync_service.dart';
+import '../../../core/services/api_key_cipher.dart';
 import '../utils/qr_sync_payload.dart';
 import '../utils/sync_mode_policy.dart';
 import '../../../core/models/api_config.dart';
@@ -481,6 +482,10 @@ class _SyncScreenState extends State<SyncScreen> {
         MaterialPageRoute(builder: (context) => const QrScannerScreen()),
       );
       if (scannedIP != null && scannedIP.isNotEmpty) {
+        final pairingKey = extractSyncKey(scannedIP);
+        if (pairingKey != null) {
+          _syncService.registerPeerKey(scannedIP, pairingKey);
+        }
         _connectByIP(scannedIP);
       }
     } catch (e) {
@@ -493,8 +498,15 @@ class _SyncScreenState extends State<SyncScreen> {
   }
 
   void _showQRCode() {
+    final localIp = _localDevice?.ipAddress ?? '';
+    // 本次展示生成的配对密钥：扫描方通过摄像头（带外）拿到它，
+    // 后续配置读写通道即走加密；明文网络抓包拿不到内容。
+    final pairingKey = generateMasterKeyBase64();
+    if (localIp.isNotEmpty) {
+      _syncService.registerPeerKey(localIp, pairingKey);
+    }
     final qrData =
-        '${_localDevice?.ipAddress ?? "unknown"}|${_localDevice?.id ?? ""}|${_localDevice?.name ?? ""}';
+        '$localIp|${_localDevice?.id ?? ""}|${_localDevice?.name ?? ""}|k=$pairingKey';
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
