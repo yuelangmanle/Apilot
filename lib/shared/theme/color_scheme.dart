@@ -13,6 +13,11 @@ class AppColors {
   static const Color warning = Color(0xFFFFC107);      // 警告黄
   static const Color error = Color(0xFFF44336);        // 错误红
 
+  // 浅亮色作底时配套的深色文字，保证白底上的可读性。
+  static const Color primaryText = Color(0xFF2F6FB5);   // 深蓝
+  static const Color secondaryText = Color(0xFF2E8B72); // 深薄荷绿
+  static const Color accentText = Color(0xFFC25057);    // 深粉红
+
   // 暗黑模式配色
   static const Color darkPrimary = Color(0xFF64B5F6);      // 柔和蓝
   static const Color darkSecondary = Color(0xFF81C784);    // 柔和绿

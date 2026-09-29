@@ -220,5 +220,23 @@ void main() {
         isNull,
       );
     });
+
+    test('does not mistake a version number for the API host', () {
+      final result = ApiConnectionPasteParser.parse('''
+          当前版本 1.21.0 发布说明
+          API_KEY=sk-version-note
+        ''');
+      // 文案里的版本号不应该被当成 URL，识别应直接失败。
+      expect(result, isNull);
+    });
+
+    test('accepts a bare IPv4 host with a key', () {
+      final result = ApiConnectionPasteParser.parse('''
+          地址：192.168.1.100:8000/v1
+          Key：sk-local-model
+        ''');
+      expect(result, isNotNull);
+      expect(result!.baseUrl, contains('192.168.1.100:8000'));
+    });
   });
 }

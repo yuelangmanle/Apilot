@@ -91,17 +91,6 @@ class ApiTemplates {
       isFavorite: false,
     ),
     ApiConfig(
-      id: 'template_claude',
-      name: 'Anthropic Claude',
-      baseUrl: 'https://api.anthropic.com/v1',
-      apiKey: '',
-      models: [],
-      environment: 'production',
-      group: 'LLM',
-      tags: ['anthropic', 'claude', 'llm'],
-      isFavorite: false,
-    ),
-    ApiConfig(
       id: 'template_doubao',
       name: '字节跳动豆包',
       baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
@@ -126,7 +115,8 @@ class ApiTemplates {
     ApiConfig(
       id: 'template_tencent',
       name: '腾讯混元',
-      baseUrl: 'https://hunyuan.tencentcloudapi.com/v1',
+      // OpenAI 兼容端点；hunyuan.tencentcloudapi.com 是 TC3 签名云 API，Bearer 打不通。
+      baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
       apiKey: '',
       models: [],
       environment: 'production',
@@ -181,7 +171,8 @@ class ApiTemplates {
     ApiConfig(
       id: 'template_spark',
       name: '科大讯飞星火',
-      baseUrl: 'https://spark-api.xf-yun.com/v3.5/chat',
+      // OpenAI 兼容 HTTP 端点；spark-api.xf-yun.com/v3.5/chat 是 WebSocket 握手路径。
+      baseUrl: 'https://spark-api-open.xf-yun.com/v1',
       apiKey: '',
       models: [],
       environment: 'production',

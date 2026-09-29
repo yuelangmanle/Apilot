@@ -132,26 +132,35 @@ class BluetoothTransferProtocol {
 }
 
 class BluetoothFrameDecoder {
-  final List<int> _pending = [];
+  Uint8List _buffer = Uint8List(0);
 
   List<BluetoothTransferFrame> add(Uint8List bytes) {
-    _pending.addAll(bytes);
+    final merged = Uint8List(_buffer.length + bytes.length);
+    merged.setRange(0, _buffer.length, _buffer);
+    merged.setRange(_buffer.length, merged.length, bytes);
+    _buffer = merged;
+
     final frames = <BluetoothTransferFrame>[];
-    while (_pending.length >= 4) {
-      final length = ByteData.sublistView(Uint8List.fromList(_pending), 0, 4)
-          .getUint32(0, Endian.big);
+    var offset = 0;
+    while (_buffer.length - offset >= 4) {
+      final length =
+          ByteData.sublistView(_buffer, offset, offset + 4).getUint32(0, Endian.big);
       if (length < 1 || length > BluetoothTransferProtocol.maxFrameBytes) {
-        _pending.clear();
+        _buffer = Uint8List(0);
+        offset = 0;
         throw FormatException('蓝牙传输帧长度无效：$length');
       }
-      if (_pending.length < length + 4) break;
-      final jsonBytes = _pending.sublist(4, length + 4);
-      _pending.removeRange(0, length + 4);
+      if (_buffer.length - offset < length + 4) break;
+      final jsonBytes = Uint8List.sublistView(_buffer, offset + 4, offset + length + 4);
+      offset += length + 4;
       final decoded = jsonDecode(utf8.decode(jsonBytes));
       if (decoded is! Map) throw const FormatException('蓝牙传输帧不是对象');
       frames.add(BluetoothTransferFrame.fromJson(
         Map<String, dynamic>.from(decoded),
       ));
+    }
+    if (offset > 0) {
+      _buffer = _buffer.sublist(offset);
     }
     return frames;
   }

@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/models/request_history.dart';
-import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/history_provider.dart';
@@ -43,8 +42,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ? TextField(
                 controller: _searchController,
                 autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                cursorColor: Colors.white,
                 decoration: const InputDecoration(
                   hintText: '搜索历史...',
+                  hintStyle: TextStyle(color: Colors.white70),
                   border: InputBorder.none,
                 ),
                 onChanged: (value) => setState(() => _searchQuery = value),
@@ -96,15 +98,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
       body: Consumer<HistoryProvider>(
         builder: (context, provider, child) {
           if (provider.history.isEmpty) {
-            return const Center(
+            final isDark = Theme.of(context).brightness == Brightness.dark;
+            final emptyColor = isDark
+                ? AppColors.darkTextSecondary
+                : AppColors.textSecondary;
+            return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.history, size: 64, color: AppColors.textSecondary),
-                  SizedBox(height: 16),
-                  Text('暂无请求历史', style: TextStyle(fontSize: 18, color: AppColors.textSecondary)),
-                  SizedBox(height: 8),
-                  Text('测试API后会自动记录', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+                  Icon(Icons.history, size: 64, color: emptyColor),
+                  const SizedBox(height: 16),
+                  Text('暂无请求历史', style: TextStyle(fontSize: 18, color: emptyColor)),
+                  const SizedBox(height: 8),
+                  Text('测试API后会自动记录', style: TextStyle(fontSize: 14, color: emptyColor)),
                 ],
               ),
             );
@@ -159,16 +165,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: FutureBuilder<String>(
-          future: _getApiName(item.apiConfigId),
-          builder: (context, snapshot) {
-            final apiName = snapshot.data ?? '';
-            final prefix = apiName.isNotEmpty ? '$apiName · ' : '';
-            return Text(
-              '$prefix${item.model} · ${_formatDate(item.createdAt)}',
-              style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
-            );
-          },
+        subtitle: Text(
+          _buildSubtitle(item, context),
+          style: TextStyle(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? AppColors.darkTextSecondary
+                : AppColors.textSecondary,
+            fontSize: 12,
+          ),
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -197,10 +201,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildSection('请求体', _prettyJson(item.requestBody)),
+                _buildSection('请求体', _prettyJson(item.requestBody), context),
                 const SizedBox(height: 16),
                 if (item.responseBody != null)
-                  _buildSection('响应体', _prettyJson(item.responseBody!)),
+                  _buildSection('响应体', _prettyJson(item.responseBody!), context),
                 if (item.statusCode != null) ...[
                   const SizedBox(height: 16),
                   Row(
@@ -228,16 +232,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  Future<String> _getApiName(String apiConfigId) async {
-    try {
-      final db = DatabaseService();
-      await db.initialize();
-      final config = await db.getApiConfig(apiConfigId);
-      await db.close();
-      return config?.name ?? '';
-    } catch (_) {
-      return '';
-    }
+  String _buildSubtitle(RequestHistory item, BuildContext context) {
+    final apiName = context
+            .read<HistoryProvider>()
+            .apiNames[item.apiConfigId] ??
+        '';
+    final prefix = apiName.isNotEmpty ? '$apiName · ' : '';
+    return '$prefix${item.model} · ${_formatDate(item.createdAt)}';
   }
 
   void _showHistoryDetail(BuildContext context, RequestHistory item) {
@@ -275,7 +276,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
-  Widget _buildSection(String title, String content) {
+  Widget _buildSection(String title, String content, BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -285,9 +287,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
           width: double.infinity,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: AppColors.background,
+            color: isDark ? AppColors.darkSurface : AppColors.background,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.shade300),
+            border: Border.all(
+              color: isDark ? Colors.grey.shade700 : Colors.grey.shade300,
+            ),
           ),
           child: SelectableText(
             content,

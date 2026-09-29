@@ -18,29 +18,32 @@ class BackupRestoreSummary {
   });
 }
 
+/// 默认路径的数据库在进程内共享一个连接；带自定义路径的实例（测试）持有
+/// 各自独立的连接。应用生命周期内不要 close 共享连接。
 class DatabaseService {
-  static Database? _database;
-  static int _refCount = 0;
+  static Database? _sharedDatabase;
+  Database? _ownedDatabase;
   final String? _customDbPath;
 
   DatabaseService({String? dbPath}) : _customDbPath = dbPath;
 
   Future<Database> get database async {
-    if (_database != null) {
-      _refCount++;
-      return _database!;
+    final customPath = _customDbPath;
+    if (customPath != null) {
+      return _ownedDatabase ??= await openDatabase(
+        customPath,
+        version: 3,
+        onCreate: _createDatabase,
+        onUpgrade: _upgradeDatabase,
+      );
     }
-    _database = await _initializeDatabase();
-    _refCount = 1;
-    return _database!;
+    return _sharedDatabase ??= await _initializeDatabase();
   }
 
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
-    final dbPath2 = _customDbPath ?? path.join(dbPath, 'api_manager.db');
-
     return await openDatabase(
-      dbPath2,
+      path.join(dbPath, 'api_manager.db'),
       version: 3,
       onCreate: _createDatabase,
       onUpgrade: _upgradeDatabase,
@@ -176,22 +179,17 @@ class DatabaseService {
     await database;
   }
 
+  /// 只关闭本实例自己打开的数据库（自定义路径实例）。共享连接不受影响。
   Future<void> close() async {
-    if (_refCount > 0) {
-      _refCount--;
-    }
-    if (_refCount == 0 && _database != null) {
-      await _database!.close();
-      _database = null;
-    }
+    await _ownedDatabase?.close();
+    _ownedDatabase = null;
   }
 
   Future<void> forceClose() async {
-    if (_database != null) {
-      await _database!.close();
-      _database = null;
-      _refCount = 0;
-    }
+    await _ownedDatabase?.close();
+    _ownedDatabase = null;
+    await _sharedDatabase?.close();
+    _sharedDatabase = null;
   }
 
   // ==================== API Config operations ====================
@@ -244,23 +242,20 @@ class DatabaseService {
   }
 
   Future<List<ApiConfig>> getAllApiConfigs() async {
-    try {
-      final db = await database;
-      final maps = await db.query('api_configs', orderBy: 'name ASC');
+    // 整表查询失败时向上抛出：调用方（列表页/备份/同步服务）需要感知数据库
+    // 异常，避免把故障误显示为"没有任何配置"而诱导用户执行清空恢复。
+    final db = await database;
+    final maps = await db.query('api_configs', orderBy: 'name ASC');
 
-      final List<ApiConfig> results = [];
-      for (final map in maps) {
-        try {
-          results.add(_mapToApiConfig(map));
-        } catch (e) {
-          debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
-        }
+    final List<ApiConfig> results = [];
+    for (final map in maps) {
+      try {
+        results.add(_mapToApiConfig(map));
+      } catch (e) {
+        debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
       }
-      return results;
-    } catch (e) {
-      debugPrint('getAllApiConfigs 错误: $e');
-      return [];
     }
+    return results;
   }
 
   Future<ApiConfig?> findBusinessEquivalentApiConfig(
@@ -580,8 +575,22 @@ class DatabaseService {
   }
 
   // ==================== Request History operations ====================
+  static const int _maxHistoryRows = 500;
+  static const int _maxStoredResponseBytes = 256 * 1024;
+
   Future<void> insertRequestHistory(RequestHistory history) async {
     final db = await database;
+    String? responseBody;
+    if (history.responseBody != null) {
+      responseBody = jsonEncode(history.responseBody);
+      if (responseBody.length > _maxStoredResponseBytes) {
+        // LLM 响应可达数百 KB，超限时只保留占位信息，避免数据库无限膨胀。
+        responseBody = jsonEncode({
+          '_note': '响应内容过大，未保存完整响应',
+          '_originalBytes': responseBody.length,
+        });
+      }
+    }
     await db.insert(
         'request_history',
         {
@@ -590,14 +599,18 @@ class DatabaseService {
           'model': history.model,
           'endpoint': history.endpoint,
           'request_body': jsonEncode(history.requestBody),
-          'response_body': history.responseBody != null
-              ? jsonEncode(history.responseBody)
-              : null,
+          'response_body': responseBody,
           'status_code': history.statusCode,
           'duration': history.duration,
           'created_at': history.createdAt.toIso8601String(),
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.execute(
+      'DELETE FROM request_history WHERE id NOT IN ('
+      'SELECT id FROM request_history ORDER BY created_at DESC LIMIT ?'
+      ')',
+      [_maxHistoryRows],
+    );
   }
 
   Future<List<RequestHistory>> getRequestHistory(

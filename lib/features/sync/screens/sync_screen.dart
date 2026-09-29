@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../services/sync_service.dart';
 import '../services/bluetooth_sync_service.dart';
+import '../utils/qr_sync_payload.dart';
 import '../utils/sync_mode_policy.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
@@ -14,6 +15,7 @@ import '../../../shared/theme/color_scheme.dart';
 import 'qr_scanner_screen.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
+import '../../settings/providers/settings_provider.dart';
 
 class SyncScreen extends StatefulWidget {
   const SyncScreen({super.key});
@@ -35,16 +37,25 @@ class _SyncScreenState extends State<SyncScreen> {
   StreamSubscription<BluetoothIncomingTransferOffer>?
       _incomingOfferSubscription;
   StreamSubscription<BluetoothReceivedTransfer>? _receivedTransferSubscription;
+  StreamSubscription<IncomingSyncRequest>? _incomingRequestSubscription;
+  bool _isHandlingIncomingRequest = false;
+  bool _isTransferBusy = false;
   String? _syncStatus;
   SyncMode _syncMode = SyncMode.wifi;
 
   @override
   void initState() {
     super.initState();
+    // 设置页的"蓝牙同步"开关决定进入本页时的默认传输方式。
+    _syncMode = context.read<SettingsProvider>().bluetoothSync
+        ? SyncMode.bluetooth
+        : SyncMode.wifi;
     _incomingOfferSubscription = _btService.incomingOffers
         .listen((offer) => unawaited(_handleIncomingBluetoothOffer(offer)));
     _receivedTransferSubscription = _btService.receivedTransfers.listen(
         (transfer) => unawaited(_handleReceivedBluetoothTransfer(transfer)));
+    _incomingRequestSubscription = _syncService.incomingRequests
+        .listen((request) => unawaited(_handleIncomingSyncRequest(request)));
     _initSync();
   }
 
@@ -53,8 +64,16 @@ class _SyncScreenState extends State<SyncScreen> {
     await _syncService.start(enableDiscovery: false);
     await _applySyncMode(clearDevices: false);
 
+    if (!mounted) {
+      await _syncService.stop();
+      return;
+    }
+
     _refreshTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (mounted) {
+        if (_syncMode == SyncMode.wifi) {
+          _syncService.pruneStaleDevices();
+        }
         _refreshSyncState();
       } else {
         timer.cancel();
@@ -67,14 +86,17 @@ class _SyncScreenState extends State<SyncScreen> {
   Future<void> _applySyncMode({bool clearDevices = true}) async {
     final shouldRunWifiDiscovery =
         SyncModePolicy.shouldRunWifiDiscovery(_syncMode);
-    await _syncService.setDiscoveryEnabled(
-      shouldRunWifiDiscovery,
-      clearDevices: clearDevices && !shouldRunWifiDiscovery,
-    );
     if (shouldRunWifiDiscovery) {
+      // 尊重设置页的"自动发现设备"开关。
+      final autoDiscovery = context.read<SettingsProvider>().autoDiscovery;
+      await _syncService.setDiscoveryEnabled(
+        autoDiscovery,
+        clearDevices: clearDevices && !autoDiscovery,
+      );
       await _btService.stopScan();
       await _btService.stopAdvertising();
     } else {
+      await _syncService.setDiscoveryEnabled(false, clearDevices: clearDevices);
       final localDevice =
           _localDevice ?? await _syncService.getLocalDeviceInfo();
       _localDevice = localDevice;
@@ -99,12 +121,31 @@ class _SyncScreenState extends State<SyncScreen> {
 
   Future<void> _setSyncMode(SyncMode mode) async {
     if (_syncMode == mode) return;
+    final messenger = ScaffoldMessenger.of(context);
     setState(() {
       _syncMode = mode;
       _syncStatus =
           mode == SyncMode.bluetooth ? '已切换到真实蓝牙传输模式' : '已切换到 WiFi 局域网同步模式';
     });
-    await _applySyncMode(clearDevices: true);
+    try {
+      await _applySyncMode(clearDevices: true);
+    } catch (e) {
+      // 蓝牙未开启/不支持等失败要回退，避免页面卡在不可用模式。
+      if (!mounted) return;
+      setState(() {
+        _syncMode = SyncMode.wifi;
+        _syncStatus = '切换失败，已回到 WiFi 模式';
+      });
+      try {
+        await _applySyncMode(clearDevices: true);
+      } catch (_) {}
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('无法切换到蓝牙模式：$e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
   }
 
   @override
@@ -112,6 +153,7 @@ class _SyncScreenState extends State<SyncScreen> {
     _refreshTimer?.cancel();
     _incomingOfferSubscription?.cancel();
     _receivedTransferSubscription?.cancel();
+    _incomingRequestSubscription?.cancel();
     _syncService.stop();
     _btService.dispose();
     super.dispose();
@@ -134,8 +176,11 @@ class _SyncScreenState extends State<SyncScreen> {
                   color: AppColors.primary, size: 16),
               const SizedBox(width: 8),
               Text(SyncModePolicy.title(_syncMode),
-                  style: const TextStyle(
-                      fontSize: 12, color: AppColors.textSecondary)),
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: isDark
+                          ? AppColors.darkTextSecondary
+                          : AppColors.textSecondary)),
               if (_syncMode == SyncMode.bluetooth) ...[
                 const Spacer(),
                 TextButton.icon(
@@ -455,18 +500,31 @@ class _SyncScreenState extends State<SyncScreen> {
       builder: (context) => AlertDialog(
         title: const Text('我的二维码'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          SizedBox(
-              width: 200,
-              height: 200,
-              child: QrImageView(
-                  data: qrData, version: QrVersions.auto, size: 200)),
+          // 固定白底黑码：二维码绘制在对话框表面，暗色模式下
+          // 默认黑色模块会隐形，扫码器也只识别高对比配色。
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: QrImageView(
+                data: qrData,
+                version: QrVersions.auto,
+                size: 200,
+                backgroundColor: Colors.white),
+          ),
           const SizedBox(height: 12),
           Text('IP: ${_localDevice?.ipAddress ?? ""}',
-              style:
-                  const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+              style: const TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          const Text('让对方扫描此码连接',
-              style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          Text('让对方扫描此码连接',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.textSecondary)),
         ]),
         actions: [
           TextButton(
@@ -480,70 +538,89 @@ class _SyncScreenState extends State<SyncScreen> {
 
   void _showManualConnect() {
     final ipController = TextEditingController();
+    String? ipError;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('手动连接'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(
-            _syncMode == SyncMode.bluetooth
-                ? '输入蓝牙发现到的设备 IP，或对方显示的直连地址'
-                : '输入对方设备的IP地址\n（在对方的"我的二维码"中查看）',
-            style:
-                const TextStyle(fontSize: 13, color: AppColors.textSecondary),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: ipController,
-            decoration: const InputDecoration(
-                labelText: 'IP地址',
-                hintText: '例如：192.168.1.100',
-                border: OutlineInputBorder()),
-            keyboardType: TextInputType.url,
-            autofocus: true,
-          ),
-        ]),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _connectByIP(ipController.text.trim());
-            },
-            child: const Text('连接'),
-          ),
-        ],
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('手动连接'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              _syncMode == SyncMode.bluetooth
+                  ? '输入蓝牙发现到的设备 IP，或对方显示的直连地址'
+                  : '输入对方设备的IP地址\n（在对方的"我的二维码"中查看）',
+              style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(dialogContext).brightness == Brightness.dark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ipController,
+              onChanged: (_) {
+                if (ipError != null) {
+                  setDialogState(() => ipError = null);
+                }
+              },
+              decoration: InputDecoration(
+                  labelText: 'IP地址',
+                  hintText: '例如：192.168.1.100',
+                  errorText: ipError,
+                  border: const OutlineInputBorder()),
+              keyboardType: TextInputType.url,
+              autofocus: true,
+            ),
+          ]),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消')),
+            ElevatedButton(
+              onPressed: () {
+                final ip = ipController.text.trim();
+                if (extractSyncIp(ip) == null) {
+                  setDialogState(() => ipError = '请输入有效的 IPv4 地址');
+                  return;
+                }
+                Navigator.pop(context);
+                _connectByIP(ip);
+              },
+              child: const Text('连接'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  void _connectByIP(String ip) async {
+  Future<void> _connectByIP(String ip) async {
     if (ip.isEmpty) return;
     setState(() => _syncStatus = '正在连接 $ip ...');
 
     final device = await _syncService.pingDevice(ip);
+    if (!mounted) return;
     if (device != null) {
       await _syncService.upsertDiscoveredDevice(device, sourceIp: ip);
-      setState(() => _devices = _syncService.discoveredDevices);
-      setState(() => _syncStatus = '已连接到 ${device.name} (${device.ipAddress})');
-    } else {
-      // 添加为手动设备
-      final manualDevice = DeviceInfo(
-        id: 'manual_$ip',
-        name: '设备 ($ip)',
-        platform: 'unknown',
-        ipAddress: ip,
-        lastSeen: DateTime.now(),
-        isOnline: true,
-      );
-      await _syncService.upsertDiscoveredDevice(manualDevice, sourceIp: ip);
+      if (!mounted) return;
       setState(() {
         _devices = _syncService.discoveredDevices;
-        _syncStatus = '已添加 $ip，请确认对方已开启同步';
+        _syncStatus = '已连接到 ${device.name} (${device.ipAddress})';
       });
+    } else {
+      // 连不上就如实告知，不伪造"在线"设备，避免用户对它发起必败的传输。
+      setState(() {
+        _devices = _syncService.discoveredDevices;
+        _syncStatus = '无法连接 $ip，请确认对方已打开同步页面且在同一网络';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('无法连接 $ip'),
+          backgroundColor: AppColors.warning,
+        ),
+      );
     }
-    Future.delayed(const Duration(seconds: 3), () {
+    Future.delayed(const Duration(seconds: 4), () {
       if (mounted) setState(() => _syncStatus = null);
     });
   }
@@ -607,11 +684,57 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  Future<void> _sendToDevice(DeviceInfo device) async {
-    setState(() => _syncStatus = '正在发送到 ${device.name}...');
+  /// 传输期间的忙碌锁：同一时间只允许一个传输任务，防止并发互相覆盖结果。
+  Future<void> _runTransferTask(
+    DeviceInfo device,
+    String taskLabel,
+    Future<String> Function() task,
+  ) async {
+    if (_isTransferBusy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已有传输正在进行，请等待完成'),
+          backgroundColor: AppColors.warning,
+        ),
+      );
+      return;
+    }
+    _isTransferBusy = true;
+    final messenger = ScaffoldMessenger.of(context);
     try {
+      final message = await task();
+      if (!mounted) return;
+      setState(() => _syncStatus = message);
+      final failed = message.contains('失败');
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('$taskLabel：$message'),
+          backgroundColor: failed ? AppColors.error : AppColors.success,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final message = '传输失败: $e';
+      setState(() => _syncStatus = message);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('$taskLabel：$message'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      _isTransferBusy = false;
+      Future.delayed(const Duration(seconds: 4), () {
+        if (mounted) setState(() => _syncStatus = null);
+      });
+    }
+  }
+
+  Future<void> _sendToDevice(DeviceInfo device) {
+    return _runTransferTask(device, '发送配置', () async {
       await _databaseService.initialize();
       final configs = await _databaseService.getAllApiConfigs();
+      if (configs.isEmpty) return '本机没有任何配置可发送';
       final success = _syncMode == SyncMode.bluetooth
           ? (await _btService.sendPayload(
               device: device,
@@ -620,58 +743,29 @@ class _SyncScreenState extends State<SyncScreen> {
             ))
               .success
           : await _syncService.sendConfigs(device, configs);
-      setState(
-          () => _syncStatus = success ? '已发送 ${configs.length} 个配置' : '发送失败');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(success
-                ? '已发送 ${configs.length} 个配置到 ${device.name}'
-                : '发送到 ${device.name} 失败'),
-            backgroundColor: success ? AppColors.success : AppColors.error,
-          ),
-        );
-      }
-    } catch (e) {
-      setState(() => _syncStatus = '发送失败: $e');
-    }
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _syncStatus = null);
+      return success
+          ? '已发送 ${configs.length} 个配置'
+          : '发送失败（对方可能未确认或未开启同步）';
     });
   }
 
-  Future<void> _receiveFromDevice(DeviceInfo device) async {
-    setState(() => _syncStatus = '正在从 ${device.name} 接收...');
-    try {
+  Future<void> _receiveFromDevice(DeviceInfo device) {
+    return _runTransferTask(device, '接收配置', () async {
       final configs = _syncMode == SyncMode.bluetooth
-          ? _decodeSyncPayload(await _btService.requestPayload(device: device))
+          ? _decodeSyncPayload(
+              await _btService.requestPayload(device: device))
           : await _syncService.receiveConfigs(device);
-      if (configs.isNotEmpty) {
-        final inserted = await _syncService.storeSyncedConfigs(configs);
-        setState(
-            () => _syncStatus = '已接收 ${configs.length} 个配置，新增 $inserted 个');
-        if (mounted) context.read<ApiProvider>().loadApiConfigs();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text('已从 ${device.name} 接收 ${configs.length} 个配置'),
-                backgroundColor: AppColors.success),
-          );
-        }
-      } else {
-        setState(() => _syncStatus = '未收到配置');
+      if (configs.isEmpty) return '未收到配置';
+      final inserted = await _syncService.storeSyncedConfigs(configs);
+      if (mounted) {
+        unawaited(context.read<ApiProvider>().loadApiConfigs());
       }
-    } catch (e) {
-      setState(() => _syncStatus = '接收失败: $e');
-    }
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _syncStatus = null);
+      return '已接收 ${configs.length} 个配置，新增 $inserted 个';
     });
   }
 
-  Future<void> _bidirectionalSync(DeviceInfo device) async {
-    setState(() => _syncStatus = '正在与 ${device.name} 双向同步...');
-    try {
+  Future<void> _bidirectionalSync(DeviceInfo device) {
+    return _runTransferTask(device, '双向同步', () async {
       await _databaseService.initialize();
       final localConfigs = await _databaseService.getAllApiConfigs();
       if (_syncMode == SyncMode.bluetooth) {
@@ -683,26 +777,17 @@ class _SyncScreenState extends State<SyncScreen> {
         if (!result.success) throw StateError(result.message);
       } else {
         final success = await _syncService.sendConfigs(device, localConfigs);
-        if (!success) throw StateError('发送配置失败');
+        if (!success) throw StateError('对方未确认或未开启同步');
       }
       final remoteConfigs = _syncMode == SyncMode.bluetooth
-          ? _decodeSyncPayload(await _btService.requestPayload(device: device))
+          ? _decodeSyncPayload(
+              await _btService.requestPayload(device: device))
           : await _syncService.receiveConfigs(device);
       final inserted = await _syncService.storeSyncedConfigs(remoteConfigs);
-      setState(() => _syncStatus = '同步完成，新增 $inserted 个配置');
-      if (mounted) context.read<ApiProvider>().loadApiConfigs();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('双向同步完成，新增 $inserted 个配置'),
-              backgroundColor: AppColors.success),
-        );
+        unawaited(context.read<ApiProvider>().loadApiConfigs());
       }
-    } catch (e) {
-      setState(() => _syncStatus = '同步失败: $e');
-    }
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _syncStatus = null);
+      return '双向同步完成，新增 $inserted 个配置';
     });
   }
 
@@ -760,6 +845,46 @@ class _SyncScreenState extends State<SyncScreen> {
     final decoded = jsonDecode(utf8.decode(payload));
     if (decoded is! Map) throw const FormatException('蓝牙配置内容格式错误');
     return SyncService.parseSyncPayload(Map<String, dynamic>.from(decoded));
+  }
+
+  /// WiFi 同步的入站确认：对端要读取或写入配置时，本机必须显式同意。
+  Future<void> _handleIncomingSyncRequest(IncomingSyncRequest request) async {
+    if (!mounted) {
+      request.respond(false);
+      return;
+    }
+    if (_isHandlingIncomingRequest) {
+      // 已有确认框弹出时直接拒绝后续请求，避免叠加对话框。
+      request.respond(false);
+      return;
+    }
+    _isHandlingIncomingRequest = true;
+    try {
+      final action = request.isWrite
+          ? '向本机写入 ${request.configCount} 个配置'
+          : '读取本机已保存的全部 API 配置（包含 API Key）';
+      final allowed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('同步请求确认'),
+          content: Text('${request.peerAddress} 请求$action。\n\n'
+              '拒绝后对方会收到失败提示。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('拒绝'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('允许'),
+            ),
+          ],
+        ),
+      );
+      request.respond(allowed == true);
+    } finally {
+      _isHandlingIncomingRequest = false;
+    }
   }
 
   Future<void> _handleIncomingBluetoothOffer(

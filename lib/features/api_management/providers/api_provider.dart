@@ -15,6 +15,7 @@ class ApiProvider with ChangeNotifier {
   String? _error;
   bool _showFavoritesOnly = false;
   String _sortBy = 'name'; // name, created, updated
+  List<ApiConfig>? _filteredCache;
 
   ApiProvider(this._databaseService);
 
@@ -24,10 +25,16 @@ class ApiProvider with ChangeNotifier {
   String? get selectedEnvironment => _selectedEnvironment;
   String? get selectedTag => _selectedTag;
   String get sortBy => _sortBy;
+  String get searchQuery => _searchQuery;
 
   List<ApiConfig> get allApiConfigs => List.unmodifiable(_apiConfigs);
 
+  /// 过滤+排序结果，按脏标记缓存。返回同一个列表实例，调用方只读，
+  /// 不要修改或缓存到界面状态之外（保证 itemCount 与行取值一致）。
   List<ApiConfig> get apiConfigs {
+    final cached = _filteredCache;
+    if (cached != null) return cached;
+
     var configs = _apiConfigs;
 
     if (_showFavoritesOnly) {
@@ -54,6 +61,9 @@ class ApiProvider with ChangeNotifier {
               c.baseUrl.toLowerCase().contains(_searchQuery.toLowerCase()) ||
               c.apiKey.toLowerCase().contains(_searchQuery.toLowerCase()))
           .toList();
+    } else {
+      // 未过滤时也复制一份，避免排序动到 _apiConfigs 本体。
+      configs = List.of(configs);
     }
 
     // 排序
@@ -71,7 +81,12 @@ class ApiProvider with ChangeNotifier {
         break;
     }
 
+    _filteredCache = configs;
     return configs;
+  }
+
+  void _invalidateFilteredCache() {
+    _filteredCache = null;
   }
 
   List<String> get availableGroups {
@@ -112,6 +127,7 @@ class ApiProvider with ChangeNotifier {
       debugPrint('loadApiConfigs 错误: $e');
       _error = '加载失败: $e';
     }
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
@@ -128,6 +144,7 @@ class ApiProvider with ChangeNotifier {
       debugPrint('loadGroups 错误: $e');
       _error = '加载分组失败: $e';
     }
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
@@ -141,10 +158,12 @@ class ApiProvider with ChangeNotifier {
       } else {
         _error = '保存失败：数据未写入';
       }
+      _invalidateFilteredCache();
       notifyListeners();
     } catch (e) {
       debugPrint('addApiConfig 错误: $e');
       _error = '保存失败: $e';
+      _invalidateFilteredCache();
       notifyListeners();
       rethrow;
     }
@@ -158,10 +177,12 @@ class ApiProvider with ChangeNotifier {
         _apiConfigs[index] = api;
       }
       _error = null;
+      _invalidateFilteredCache();
       notifyListeners();
     } catch (e) {
       debugPrint('updateApiConfig 错误: $e');
       _error = '更新失败: $e';
+      _invalidateFilteredCache();
       notifyListeners();
       rethrow;
     }
@@ -194,10 +215,12 @@ class ApiProvider with ChangeNotifier {
       await _databaseService.deleteApiConfig(id);
       _apiConfigs.removeWhere((a) => a.id == id);
       _error = null;
+      _invalidateFilteredCache();
       notifyListeners();
     } catch (e) {
       debugPrint('deleteApiConfig 错误: $e');
       _error = '删除失败: $e';
+      _invalidateFilteredCache();
       notifyListeners();
       rethrow;
     }

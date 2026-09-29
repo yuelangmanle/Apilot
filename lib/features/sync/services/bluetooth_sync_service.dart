@@ -74,6 +74,7 @@ class BluetoothSyncService {
   static final UUID _transferCharUuid =
       UUID.fromString('12345678-1234-1234-1234-123456789abe');
   static const _transferTimeout = Duration(seconds: 75);
+  static const _inboundSessionTtl = Duration(minutes: 2);
 
   final CentralManager _centralManager = CentralManager();
   final PeripheralManager _peripheralManager = PeripheralManager();
@@ -156,6 +157,7 @@ class BluetoothSyncService {
   }
 
   Future<void> startAdvertising(DeviceInfo localDevice) async {
+    if (_disposed) throw StateError('蓝牙同步服务已释放，请重新进入同步页面');
     _advertisedDevice = localDevice;
     if (_isAdvertising) return;
 
@@ -459,6 +461,7 @@ class BluetoothSyncService {
     Central central,
     BluetoothTransferFrame frame,
   ) async {
+    _sweepStaleInboundSessions();
     final key = _inboundKey(central, frame.sessionId);
     switch (frame.type) {
       case BluetoothTransferFrameType.offer:
@@ -537,6 +540,17 @@ class BluetoothSyncService {
       throw const FormatException('蓝牙传输元数据无效');
     }
     return value;
+  }
+
+  /// 清理长时间停留在"待确认"状态的入站会话，避免被恶意或失联的
+  /// 中心设备无限堆积。
+  void _sweepStaleInboundSessions() {
+    if (_inboundSessions.isEmpty) return;
+    final cutoff = DateTime.now().subtract(_inboundSessionTtl);
+    _inboundSessions.removeWhere((_, session) {
+      if (session.accepted) return false;
+      return session.createdAt.isBefore(cutoff);
+    });
   }
 
   String _inboundKey(Central central, String sessionId) =>
@@ -931,6 +945,7 @@ class _InboundTransferSession {
   final BluetoothTransferOperation operation;
   final int configCount;
   final int payloadBytes;
+  final DateTime createdAt;
   final BluetoothPayloadAssembler? payloadAssembler;
   bool accepted = false;
 
@@ -941,7 +956,7 @@ class _InboundTransferSession {
     required this.configCount,
     required this.payloadBytes,
     required this.payloadAssembler,
-  });
+  }) : createdAt = DateTime.now();
 }
 
 class _CentralTransferSession {

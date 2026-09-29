@@ -29,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final UpdateService _updateService = UpdateService();
   String _currentVersion = '';
   bool _isCheckingUpdate = false;
+  bool _isImporting = false;
 
   @override
   void initState() {
@@ -38,6 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadCurrentVersion() async {
     final version = await _updateService.getCurrentVersion();
+    if (!mounted) return;
     setState(() {
       _currentVersion = version;
     });
@@ -300,38 +302,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _isCheckingUpdate = true;
     });
 
-    try {
-      final updateInfo = await _updateService.checkForUpdate();
+    final result = await _updateService.checkForUpdate();
 
-      if (!mounted) return;
+    if (!mounted) return;
+    setState(() {
+      _isCheckingUpdate = false;
+    });
 
-      setState(() {
-        _isCheckingUpdate = false;
-      });
-
-      if (!mounted) return;
-      if (updateInfo != null) {
-        _showUpdateDialog(context, updateInfo);
-      } else {
+    switch (result.status) {
+      case UpdateCheckStatus.updateAvailable:
+        _showUpdateDialog(context, result.update!);
+        break;
+      case UpdateCheckStatus.upToDate:
         messenger.showSnackBar(
           const SnackBar(
             content: Text('当前已是最新版本'),
             backgroundColor: AppColors.success,
           ),
         );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isCheckingUpdate = false;
-        });
+        break;
+      case UpdateCheckStatus.checkFailed:
+      case UpdateCheckStatus.noPackageForPlatform:
         messenger.showSnackBar(
           SnackBar(
-            content: Text('检查更新失败: $e'),
+            content: Text(result.errorMessage ?? '检查更新失败'),
             backgroundColor: AppColors.error,
           ),
         );
-      }
+        break;
     }
   }
 
@@ -402,7 +400,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ElevatedButton.icon(
             onPressed: () {
               Navigator.pop(context);
-              _updateService.downloadUpdate(updateInfo.downloadUrl);
+              _startDownload(updateInfo.downloadUrl);
             },
             icon: const Icon(Icons.download),
             label: const Text('立即下载'),
@@ -416,13 +414,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Future<void> _startDownload(String downloadUrl) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await _updateService.downloadUpdate(downloadUrl);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('已打开下载页面')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('无法打开下载链接: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
   Future<void> _exportConfigs(BuildContext context) async {
     try {
+      // 备份文件包含明文 API Key，先让用户知情。
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('备份包含明文密钥'),
+          content: const Text(
+              '备份文件将以明文形式包含所有 API Key。\n\n请将备份文件保存在安全的位置，'
+              '不要通过不受信任的渠道传输。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('继续备份'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+
       final databaseService = DatabaseService();
-      await databaseService.initialize();
       final configs = await databaseService.getAllApiConfigs();
       final groups = await databaseService.getAllGroups();
-      await databaseService.close();
 
       final importExportService = ImportExportService();
       final json = await importExportService.exportConfigs(configs, groups);
@@ -461,6 +496,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _importConfigs(BuildContext context) async {
+    if (_isImporting) return;
+    _isImporting = true;
     try {
       final selection = await FilePicker.platform.pickFiles(
         dialogTitle: '选择 Apilot 备份文件',
@@ -489,13 +526,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (replaceExisting == null) return;
 
       final databaseService = DatabaseService();
-      await databaseService.initialize();
       final summary = await databaseService.restoreBackup(
         configs: configs,
         groups: groups,
         replaceExisting: replaceExisting,
       );
-      await databaseService.close();
 
       if (!context.mounted) return;
       final messenger = ScaffoldMessenger.of(context);
@@ -518,6 +553,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         );
       }
+    } finally {
+      _isImporting = false;
     }
   }
 

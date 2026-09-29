@@ -42,12 +42,13 @@ class ApiCard extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
         decoration: BoxDecoration(
             color: AppColors.warning, borderRadius: BorderRadius.circular(12)),
+        // 琥珀底上白字对比度只有 1.6:1，改用深色文字。
         child: const Row(children: [
-          Icon(Icons.star, color: Colors.white),
+          Icon(Icons.star, color: Colors.black87),
           SizedBox(width: 8),
           Text('收藏',
-              style:
-                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              style: TextStyle(
+                  color: Colors.black87, fontWeight: FontWeight.bold)),
         ]),
       ),
       secondaryBackground: Container(
@@ -68,27 +69,9 @@ class ApiCard extends StatelessWidget {
         if (direction == DismissDirection.startToEnd) {
           onFavoriteToggle();
           return false;
-        } else {
-          return await showDialog<bool>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('确认删除'),
-              content: Text('确定要删除 ${api.name} 吗？'),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('取消')),
-                TextButton(
-                    onPressed: () {
-                      Navigator.pop(context, true);
-                      onDelete();
-                    },
-                    child:
-                        const Text('删除', style: TextStyle(color: Colors.red))),
-              ],
-            ),
-          );
         }
+        // 删除确认由 onDelete 统一弹出，这里不要二次确认。
+        return true;
       },
       child: Card(
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
@@ -151,10 +134,13 @@ class ApiCard extends StatelessWidget {
                 Row(
                   children: [
                     if (api.group != null)
-                      _buildTag(api.group!, AppColors.primary),
-                    _buildTag(api.environment, AppColors.secondary),
+                      _buildTag(api.group!, AppColors.primary,
+                          textColor: AppColors.primaryText),
+                    _buildTag(api.environment, AppColors.secondary,
+                        textColor: AppColors.secondaryText),
                     if (api.models.length > 3)
-                      _buildTag('${api.models.length}个模型', AppColors.accent),
+                      _buildTag('${api.models.length}个模型', AppColors.accent,
+                          textColor: AppColors.accentText),
                     const Spacer(),
                     TextButton.icon(
                       icon: const Icon(Icons.play_arrow, size: 18),
@@ -211,7 +197,7 @@ class ApiCard extends StatelessWidget {
     return '${apiKey.substring(0, 4)}****${apiKey.substring(apiKey.length - 4)}';
   }
 
-  Widget _buildTag(String text, Color color) {
+  Widget _buildTag(String text, Color color, {Color? textColor}) {
     return Container(
       margin: const EdgeInsets.only(right: 6),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -220,7 +206,10 @@ class ApiCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(4)),
       child: Text(text,
           style: TextStyle(
-              fontSize: 11, color: color, fontWeight: FontWeight.w500)),
+              fontSize: 11,
+              // 浅色底配深色文字，保证可读性。
+              color: textColor ?? color,
+              fontWeight: FontWeight.w500)),
     );
   }
 }

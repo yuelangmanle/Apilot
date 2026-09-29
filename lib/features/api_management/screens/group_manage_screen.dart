@@ -16,6 +16,7 @@ class GroupManageScreen extends StatefulWidget {
 class _GroupManageScreenState extends State<GroupManageScreen> {
   final DatabaseService _db = DatabaseService();
   List<Group> _groups = [];
+  bool _isSaving = false;
 
   @override
   void initState() {
@@ -151,55 +152,74 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
               child: const Text('取消'),
             ),
             ElevatedButton(
-              onPressed: () async {
-                final name = nameController.text.trim();
-                if (name.isEmpty) {
-                  setDialogState(() => nameError = '请输入分组名称');
-                  return;
-                }
-                final isAvailable = await _db.isGroupNameAvailable(
-                  name,
-                  excludingId: group?.id,
-                );
-                if (!context.mounted) return;
-                if (!isAvailable) {
-                  setDialogState(() => nameError = '分组名称已存在');
-                  return;
-                }
+              onPressed: _isSaving
+                  ? null
+                  : () async {
+                      final name = nameController.text.trim();
+                      if (name.isEmpty) {
+                        setDialogState(() => nameError = '请输入分组名称');
+                        return;
+                      }
+                      setDialogState(() => _isSaving = true);
+                      try {
+                        final isAvailable = await _db.isGroupNameAvailable(
+                          name,
+                          excludingId: group?.id,
+                        );
+                        if (!context.mounted) return;
+                        if (!isAvailable) {
+                          setDialogState(() => nameError = '分组名称已存在');
+                          return;
+                        }
 
-                final navigator = Navigator.of(context);
-                if (isEditing) {
-                  final updated = Group(
-                    id: group.id,
-                    name: name,
-                    description: descController.text.trim().isNotEmpty
-                        ? descController.text.trim()
-                        : null,
-                    sortOrder: group.sortOrder,
-                    createdAt: group.createdAt,
-                  );
-                  await _db.updateGroup(updated);
-                } else {
-                  final newGroup = Group(
-                    id: 'group_${DateTime.now().millisecondsSinceEpoch}',
-                    name: name,
-                    description: descController.text.trim().isNotEmpty
-                        ? descController.text.trim()
-                        : null,
-                    sortOrder: _groups.length,
-                  );
-                  await _db.insertGroup(newGroup);
-                }
+                        if (isEditing) {
+                          final updated = Group(
+                            id: group.id,
+                            name: name,
+                            description: descController.text.trim().isNotEmpty
+                                ? descController.text.trim()
+                                : null,
+                            sortOrder: group.sortOrder,
+                            createdAt: group.createdAt,
+                          );
+                          await _db.updateGroup(updated);
+                        } else {
+                          final newGroup = Group(
+                            id: 'group_${DateTime.now().millisecondsSinceEpoch}',
+                            name: name,
+                            description:
+                                descController.text.trim().isNotEmpty
+                                    ? descController.text.trim()
+                                    : null,
+                            sortOrder: _groups.length,
+                          );
+                          await _db.insertGroup(newGroup);
+                        }
 
-                navigator.pop();
-                await _refreshAfterGroupMutation();
-              },
+                        if (!context.mounted) return;
+                        Navigator.of(context).pop();
+                        await _refreshAfterGroupMutation();
+                      } on StateError catch (error) {
+                        // 事务内的二次校验（重名/空名）失败时给出内联提示。
+                        if (!context.mounted) return;
+                        setDialogState(() => nameError = '保存失败：$error');
+                      } catch (error) {
+                        if (!context.mounted) return;
+                        setDialogState(
+                            () => nameError = '保存失败：$error');
+                      } finally {
+                        _isSaving = false;
+                      }
+                    },
               child: Text(isEditing ? '保存' : '创建'),
             ),
           ],
         ),
       ),
-    );
+    ).whenComplete(() {
+      nameController.dispose();
+      descController.dispose();
+    });
   }
 
   void _deleteGroup(Group group) {

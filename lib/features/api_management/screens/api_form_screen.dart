@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
+import '../../../core/models/api_profile.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
@@ -34,6 +35,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   bool _isValidating = false;
   bool _obscureApiKey = true;
   String _validationStatus = '';
+  bool _saved = false;
+  late final Map<String, String> _initialTextValues;
+  late final String? _initialGroup;
+  late final String _initialEnvironment;
+  late final bool _initialFavorite;
 
   @override
   void initState() {
@@ -49,6 +55,29 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       _environment = api.environment;
       _isFavorite = api.isFavorite;
     }
+    _initialTextValues = {
+      'name': _nameController.text,
+      'baseUrl': _baseUrlController.text,
+      'apiKey': _apiKeyController.text,
+      'models': _modelsController.text,
+      'tags': _tagsController.text,
+    };
+    _initialGroup = _selectedGroup;
+    _initialEnvironment = _environment;
+    _initialFavorite = _isFavorite;
+  }
+
+  bool _hasUnsavedChanges() {
+    if (_initialTextValues['name'] != _nameController.text ||
+        _initialTextValues['baseUrl'] != _baseUrlController.text ||
+        _initialTextValues['apiKey'] != _apiKeyController.text ||
+        _initialTextValues['models'] != _modelsController.text ||
+        _initialTextValues['tags'] != _tagsController.text) {
+      return true;
+    }
+    return _selectedGroup != _initialGroup ||
+        _environment != _initialEnvironment ||
+        _isFavorite != _initialFavorite;
   }
 
   @override
@@ -63,7 +92,38 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope<bool>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final navigator = Navigator.of(context);
+        if (_saved || !_hasUnsavedChanges()) {
+          navigator.pop(_saved);
+          return;
+        }
+        final discard = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('放弃未保存的修改？'),
+            content: const Text('表单内容尚未保存，返回后将丢失。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('继续编辑'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('放弃修改',
+                    style: TextStyle(color: Colors.red)),
+              ),
+            ],
+          ),
+        );
+        if (discard == true && mounted) {
+          navigator.pop(false);
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(widget.isEditing ? '编辑API' : '添加API'),
         actions: [
@@ -371,6 +431,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                 ),
               ),
             ),
+      ),
     );
   }
 
@@ -599,8 +660,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
           .where((e) => e.isNotEmpty)
           .toList();
 
+      // 编辑模式必须保留表单之外的字段（selectedModel/providerId/metadata/
+      // 导入溯源等），否则一次"编辑→保存"会把模板和刷新模型的数据全部抹掉。
+      final original = widget.isEditing ? widget.apiConfig! : null;
       final api = ApiConfig(
-        id: widget.isEditing ? widget.apiConfig!.id : const Uuid().v4(),
+        id: original?.id ?? const Uuid().v4(),
         name: _nameController.text.trim(),
         baseUrl: _baseUrlController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
@@ -609,12 +673,22 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         group: _selectedGroup,
         tags: tags,
         isFavorite: _isFavorite,
-        createdAt: widget.isEditing ? widget.apiConfig!.createdAt : null,
+        createdAt: original?.createdAt,
+        metadata: original?.metadata,
+        providerId: original?.providerId ?? ApiProviderIds.custom,
+        protocolId: original?.protocolId ?? ApiProtocolIds.openAiCompatible,
+        selectedModel: original?.selectedModel,
+        modelCatalogMode: original?.modelCatalogMode ?? ApiModelCatalogModes.saved,
+        modelSource: original?.modelSource ?? ApiModelSources.manual,
+        modelsRefreshedAt: original?.modelsRefreshedAt,
+        importSourceName: original?.importSourceName,
+        importSourcePackage: original?.importSourcePackage,
+        importTrustLevel: original?.importTrustLevel,
       );
 
-      // 重复检测
+      // 重复检测（基于全量配置，不受当前搜索/筛选影响）
       if (!widget.isEditing) {
-        final duplicate = provider.apiConfigs
+        final duplicate = provider.allApiConfigs
             .where((c) =>
                 c.baseUrl.trim() == api.baseUrl.trim() &&
                 c.apiKey.trim() == api.apiKey.trim())
@@ -651,6 +725,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       }
 
       if (mounted) {
+        _saved = true;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(widget.isEditing ? 'API已更新' : 'API已添加'),
@@ -660,10 +735,10 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         Navigator.pop(context, true);
       }
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
       if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('保存失败: $e'),
@@ -704,6 +779,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         await provider.deleteApiConfig(widget.apiConfig!.id);
 
         if (mounted) {
+          _saved = true;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('已删除 ${widget.apiConfig!.name}'),

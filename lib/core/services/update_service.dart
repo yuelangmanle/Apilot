@@ -39,6 +39,42 @@ class ReleaseInfo {
   });
 }
 
+enum UpdateCheckStatus {
+  /// 当前已是最新版本
+  upToDate,
+
+  /// 有新版本且当前平台有可用安装包
+  updateAvailable,
+
+  /// 检查失败（网络/GitHub 接口错误）
+  checkFailed,
+
+  /// 有新版本，但 Release 中没有当前平台的安装包
+  noPackageForPlatform,
+}
+
+class UpdateCheckResult {
+  final UpdateCheckStatus status;
+  final UpdateInfo? update;
+  final String? errorMessage;
+
+  const UpdateCheckResult._(this.status, {this.update, this.errorMessage});
+
+  const UpdateCheckResult.upToDate() : this._(UpdateCheckStatus.upToDate);
+
+  const UpdateCheckResult.available(UpdateInfo info)
+      : this._(UpdateCheckStatus.updateAvailable, update: info);
+
+  const UpdateCheckResult.failure(String message)
+      : this._(UpdateCheckStatus.checkFailed, errorMessage: message);
+
+  const UpdateCheckResult.noPackage(String version)
+      : this._(
+          UpdateCheckStatus.noPackageForPlatform,
+          errorMessage: '已发布 v$version，但没有当前平台可用的安装包',
+        );
+}
+
 class UpdateService {
   static const String _repoOwner = 'yuelangmanle';
   static const String _repoName = 'Apilot';
@@ -47,43 +83,54 @@ class UpdateService {
   static const String _releaseHistoryUrl =
       'https://api.github.com/repos/$_repoOwner/$_repoName/releases?per_page=100';
 
-  Future<UpdateInfo?> checkForUpdate() async {
+  Future<UpdateCheckResult> checkForUpdate() async {
     try {
       final packageInfo = await PackageInfo.fromPlatform();
       final currentVersion = packageInfo.version;
 
-      final response = await http.get(
-        Uri.parse(_latestReleaseUrl),
-        headers: {'Accept': 'application/vnd.github.v3+json'},
-      ).timeout(const Duration(seconds: 10));
+      final http.Response response;
+      try {
+        response = await http.get(
+          Uri.parse(_latestReleaseUrl),
+          headers: {'Accept': 'application/vnd.github.v3+json'},
+        ).timeout(const Duration(seconds: 10));
+      } catch (e) {
+        return UpdateCheckResult.failure('无法连接 GitHub：$e');
+      }
 
-      if (response.statusCode != 200) return null;
+      if (response.statusCode != 200) {
+        return UpdateCheckResult.failure('GitHub 返回 ${response.statusCode}');
+      }
 
       final data = jsonDecode(response.body);
-      if (data is! Map) return null;
+      if (data is! Map) {
+        return const UpdateCheckResult.failure('更新信息格式无效');
+      }
       final latestVersion = _versionFromTag(data['tag_name']);
-      if (latestVersion.isEmpty) return null;
-
-      final assets = data['assets'] as List? ?? [];
-      final downloadUrl = selectReleaseAssetUrl(assets) ?? '';
+      if (latestVersion.isEmpty) {
+        return const UpdateCheckResult.failure('更新信息缺少版本号');
+      }
 
       final release = _parseRelease(data);
 
-      if (_isNewerVersion(latestVersion, currentVersion)) {
-        if (downloadUrl.isEmpty) {
-          throw Exception('GitHub Release 中没有当前平台可用的安装包');
-        }
-        return UpdateInfo(
-          version: latestVersion,
-          downloadUrl: downloadUrl,
-          releaseNotes: release.releaseNotes,
-          publishedAt: release.publishedAt,
-        );
+      if (!_isNewerVersion(latestVersion, currentVersion)) {
+        return const UpdateCheckResult.upToDate();
       }
 
-      return null;
+      final assets = data['assets'] as List? ?? [];
+      final downloadUrl = selectReleaseAssetUrl(assets) ?? '';
+      if (downloadUrl.isEmpty) {
+        return UpdateCheckResult.noPackage(latestVersion);
+      }
+
+      return UpdateCheckResult.available(UpdateInfo(
+        version: latestVersion,
+        downloadUrl: downloadUrl,
+        releaseNotes: release.releaseNotes,
+        publishedAt: release.publishedAt,
+      ));
     } catch (e) {
-      return null;
+      return UpdateCheckResult.failure('检查更新失败: $e');
     }
   }
 

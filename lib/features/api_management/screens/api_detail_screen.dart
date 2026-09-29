@@ -8,6 +8,7 @@ import '../../../shared/theme/color_scheme.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
 import '../providers/api_provider.dart';
+import '../services/api_config_export_formatter.dart';
 
 class ApiDetailScreen extends StatefulWidget {
   final ApiConfig apiConfig;
@@ -38,11 +39,23 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
               _apiConfig.isFavorite ? Icons.star : Icons.star_border,
               color: _apiConfig.isFavorite ? AppColors.warning : null,
             ),
-            onPressed: () {
-              context.read<ApiProvider>().updateApiConfig(
-                    _apiConfig.copyWith(isFavorite: !_apiConfig.isFavorite),
-                  );
-              Navigator.pop(context, true);
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              final navigator = Navigator.of(context);
+              try {
+                await context.read<ApiProvider>().updateApiConfig(
+                      _apiConfig.copyWith(
+                          isFavorite: !_apiConfig.isFavorite),
+                    );
+                if (mounted) navigator.pop(true);
+              } catch (e) {
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text('操作失败: $e'),
+                    backgroundColor: AppColors.error,
+                  ),
+                );
+              }
             },
           ),
           IconButton(
@@ -474,32 +487,82 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
         SizedBox(
           width: double.infinity,
           child: OutlinedButton.icon(
-            onPressed: () {
-              final configText = '''
-API名称: ${_apiConfig.name}
-API地址: ${_apiConfig.baseUrl}
-API Key: ${_apiConfig.apiKey}
-模型列表: ${_apiConfig.models.join(', ')}
-环境: ${_apiConfig.environment}
-分组: ${_apiConfig.group ?? '无'}
-标签: ${_apiConfig.tags.join(', ')}
-''';
-              Clipboard.setData(ClipboardData(text: configText));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('已复制完整配置信息'),
-                  backgroundColor: AppColors.success,
-                ),
-              );
-            },
-            icon: const Icon(Icons.content_copy),
-            label: const Text('复制完整配置'),
+            onPressed: _showExportSheet,
+            icon: const Icon(Icons.ios_share),
+            label: const Text('复制为…（cURL / 环境变量 / SDK 片段）'),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
           ),
         ),
       ],
+    );
+  }
+
+  /// 把配置导出成其他工具可直接使用的格式，完成"快速切换"的最后一公里。
+  void _showExportSheet() {
+    final defaultModel =
+        _apiConfig.selectedModel ?? (_apiConfig.models.isEmpty ? '' : _apiConfig.models.first);
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.terminal),
+              title: const Text('复制为 cURL'),
+              subtitle: const Text('可直接在终端执行'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _copyExported(ApiConfigExportFormatter.toCurl(
+                  baseUrl: _apiConfig.baseUrl,
+                  apiKey: _apiConfig.apiKey,
+                  model: defaultModel,
+                ), 'cURL 命令');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.data_object),
+              title: const Text('复制为环境变量'),
+              subtitle: const Text('BASE_URL / API_KEY / MODEL'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _copyExported(ApiConfigExportFormatter.toEnv(
+                  name: _apiConfig.name,
+                  baseUrl: _apiConfig.baseUrl,
+                  apiKey: _apiConfig.apiKey,
+                  model: defaultModel.isEmpty ? null : defaultModel,
+                ), '环境变量');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.code),
+              title: const Text('复制为 OpenAI SDK 片段'),
+              subtitle: const Text('Python 客户端示例'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _copyExported(ApiConfigExportFormatter.toOpenAiClientSnippet(
+                  baseUrl: _apiConfig.baseUrl,
+                  apiKey: _apiConfig.apiKey,
+                  model: defaultModel.isEmpty ? 'gpt-3.5-turbo' : defaultModel,
+                ), 'SDK 片段');
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _copyExported(String text, String label) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制为$label'),
+        backgroundColor: AppColors.success,
+        duration: const Duration(seconds: 1),
+      ),
     );
   }
 

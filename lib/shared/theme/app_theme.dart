@@ -3,17 +3,24 @@ import 'color_scheme.dart';
 
 class AppTheme {
   static ThemeData get lightTheme {
+    // fromSeed 生成完整的 M3 色板（container/surface 等槽位不再回落到
+    // 基线紫色），再用品牌色覆盖关键槽位。
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: AppColors.primary,
+      brightness: Brightness.light,
+    ).copyWith(
+      primary: AppColors.primary,
+      secondary: AppColors.secondary,
+      error: AppColors.error,
+      surface: AppColors.cardBackground,
+      onPrimary: Colors.white,
+      onSecondary: Colors.white,
+      onSurface: AppColors.textPrimary,
+    );
+
     return ThemeData(
       useMaterial3: true,
-      brightness: Brightness.light,
-      colorScheme: const ColorScheme.light(
-        primary: AppColors.primary,
-        secondary: AppColors.secondary,
-        surface: AppColors.cardBackground,
-        onPrimary: Colors.white,
-        onSecondary: Colors.white,
-        onSurface: AppColors.textPrimary,
-      ),
+      colorScheme: colorScheme,
       scaffoldBackgroundColor: AppColors.background,
       cardTheme: const CardThemeData(
         color: AppColors.cardBackground,
@@ -31,6 +38,9 @@ class AppTheme {
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
       ),
+      snackBarTheme: const SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+      ),
       dividerTheme: const DividerThemeData(
         color: Color(0xFFE0E0E0),
       ),
@@ -38,17 +48,22 @@ class AppTheme {
   }
 
   static ThemeData get darkTheme {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: AppColors.darkPrimary,
+      brightness: Brightness.dark,
+    ).copyWith(
+      primary: AppColors.darkPrimary,
+      secondary: AppColors.darkSecondary,
+      error: AppColors.error,
+      surface: AppColors.darkCardBackground,
+      onPrimary: Colors.black,
+      onSecondary: Colors.black,
+      onSurface: AppColors.darkTextPrimary,
+    );
+
     return ThemeData(
       useMaterial3: true,
-      brightness: Brightness.dark,
-      colorScheme: const ColorScheme.dark(
-        primary: AppColors.darkPrimary,
-        secondary: AppColors.darkSecondary,
-        surface: AppColors.darkCardBackground,
-        onPrimary: Colors.black,
-        onSecondary: Colors.black,
-        onSurface: AppColors.darkTextPrimary,
-      ),
+      colorScheme: colorScheme,
       scaffoldBackgroundColor: AppColors.darkBackground,
       cardTheme: const CardThemeData(
         color: AppColors.darkCardBackground,
@@ -66,11 +81,11 @@ class AppTheme {
         backgroundColor: AppColors.darkPrimary,
         foregroundColor: Colors.black,
       ),
+      snackBarTheme: const SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+      ),
       dividerTheme: const DividerThemeData(
         color: AppColors.darkSurface,
-      ),
-      listTileTheme: const ListTileThemeData(
-        iconColor: AppColors.darkPrimary,
       ),
     );
   }

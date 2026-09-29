@@ -6,7 +6,28 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
+import '../../../core/services/api_config_identity.dart';
 import '../../../core/services/database_service.dart';
+
+/// 局域网内其他设备通过本机同步端口发起的读取/写入请求，
+/// 必须由本机用户在界面上确认后才会执行。
+class IncomingSyncRequest {
+  final String peerAddress;
+  final bool isWrite;
+  final int configCount;
+  final DateTime receivedAt;
+  final void Function(bool allow) _respond;
+
+  const IncomingSyncRequest({
+    required this.peerAddress,
+    required this.isWrite,
+    required this.configCount,
+    required this.receivedAt,
+    required void Function(bool allow) respond,
+  }) : _respond = respond;
+
+  void respond(bool allow) => _respond(allow);
+}
 
 class SyncService {
   static const int _discoveryPort = 45678;
@@ -14,18 +35,29 @@ class SyncService {
   static const String _magicHeader = 'API_MANAGER_SYNC';
   static const String _multicastGroup = '224.0.0.1';
   static const String _deviceIdPrefsKey = 'apilot_sync_device_id';
+  static const Duration _requestConfirmTimeout = Duration(seconds: 30);
+  static const Duration _clientIoTimeout = Duration(seconds: 15);
+  static const Duration _deviceStaleAfter = Duration(seconds: 12);
+  static const Duration _localIpCacheTtl = Duration(seconds: 10);
 
   final List<DeviceInfo> _devices = [];
+  final Set<String> _broadcastSeenDeviceIds = {};
   final String? _localDeviceIdOverride;
   final DatabaseService? _databaseServiceOverride;
+  final StreamController<IncomingSyncRequest> _incomingRequests =
+      StreamController.broadcast();
   HttpServer? _syncServer;
   RawDatagramSocket? _discoverySocket;
   Timer? _broadcastTimer;
   bool _isRunning = false;
   bool _isDiscoveryRunning = false;
   String? _localDeviceIdCache;
+  Set<String>? _localIpCache;
+  DateTime? _localIpCacheAt;
 
   List<DeviceInfo> get discoveredDevices => List.unmodifiable(_devices);
+  Stream<IncomingSyncRequest> get incomingRequests =>
+      _incomingRequests.stream;
   bool get isRunning => _isRunning;
   bool get isDiscoveryRunning => _isDiscoveryRunning;
 
@@ -88,7 +120,7 @@ class SyncService {
         }
       }
     } catch (e) {
-      debugPrint('获取本机IP失败: $e');
+      debugPrint('[Sync] 获取本机IP失败: $e');
     }
     return '127.0.0.1';
   }
@@ -106,8 +138,9 @@ class SyncService {
   Future<void> stop() async {
     _isRunning = false;
     await stopDiscovery(clearDevices: true);
-    await _syncServer?.close();
+    final server = _syncServer;
     _syncServer = null;
+    await server?.close();
     debugPrint('[Sync] 同步服务已停止');
   }
 
@@ -133,7 +166,10 @@ class SyncService {
     _discoverySocket?.close();
     _discoverySocket = null;
     _isDiscoveryRunning = false;
-    if (clearDevices) _devices.clear();
+    if (clearDevices) {
+      _devices.clear();
+      _broadcastSeenDeviceIds.clear();
+    }
   }
 
   Future<void> _startDiscovery() async {
@@ -179,7 +215,8 @@ class SyncService {
       final device = await getLocalDeviceInfo();
       final message =
           jsonEncode({'header': _magicHeader, 'device': device.toJson()});
-      final data = message.codeUnits;
+      // 必须按 UTF-8 编码：中文主机名等非 ASCII 内容用 codeUnits 会丢字节。
+      final data = utf8.encode(message);
 
       // 同时发送到多播组和广播地址
       try {
@@ -197,12 +234,13 @@ class SyncService {
 
   void _handleDiscoveryMessage(Datagram datagram) async {
     try {
-      final message = jsonDecode(String.fromCharCodes(datagram.data));
+      final message = jsonDecode(utf8.decode(datagram.data));
       if (message['header'] != _magicHeader) return;
 
       final device =
           DeviceInfo.fromJson(message['device'] as Map<String, dynamic>);
-      await upsertDiscoveredDevice(device, sourceIp: datagram.address.address);
+      await upsertDiscoveredDevice(device,
+          sourceIp: datagram.address.address, viaBroadcast: true);
     } catch (e) {
       debugPrint('[Sync] 解析发现消息失败: $e');
     }
@@ -211,6 +249,7 @@ class SyncService {
   Future<bool> upsertDiscoveredDevice(
     DeviceInfo device, {
     String? sourceIp,
+    bool viaBroadcast = false,
   }) async {
     if (await _isLocalDevice(device, sourceIp: sourceIp)) return false;
 
@@ -224,6 +263,7 @@ class SyncService {
       lastSeen: DateTime.now(),
       isOnline: true,
     );
+    if (viaBroadcast) _broadcastSeenDeviceIds.add(normalized.id);
 
     final index = _devices.indexWhere((existing) {
       if (existing.id == normalized.id) return true;
@@ -239,6 +279,23 @@ class SyncService {
     }
     _devices.sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
     return true;
+  }
+
+  /// 清理长时间未广播的设备（仅针对通过 UDP 广播发现的条目；
+  /// 手动添加的设备不受影响）。返回被移除的设备数。
+  int pruneStaleDevices() {
+    final cutoff = DateTime.now().subtract(_deviceStaleAfter);
+    final removed = _devices
+        .where((device) =>
+            _broadcastSeenDeviceIds.contains(device.id) &&
+            device.lastSeen.isBefore(cutoff))
+        .toList();
+    if (removed.isEmpty) return 0;
+    _devices.removeWhere(removed.contains);
+    for (final device in removed) {
+      _broadcastSeenDeviceIds.remove(device.id);
+    }
+    return removed.length;
   }
 
   Future<bool> _isLocalDevice(DeviceInfo device, {String? sourceIp}) async {
@@ -264,6 +321,14 @@ class SyncService {
   }
 
   Future<Set<String>> _getLocalIPv4Addresses() async {
+    final now = DateTime.now();
+    final cached = _localIpCache;
+    final cachedAt = _localIpCacheAt;
+    if (cached != null &&
+        cachedAt != null &&
+        now.difference(cachedAt) < _localIpCacheTtl) {
+      return cached;
+    }
     final addresses = <String>{'127.0.0.1'};
     try {
       for (final interface in await NetworkInterface.list(
@@ -277,40 +342,74 @@ class SyncService {
     } catch (e) {
       debugPrint('[Sync] 获取本机IP列表失败: $e');
     }
+    _localIpCache = addresses;
+    _localIpCacheAt = now;
     return addresses;
   }
 
   Future<void> _startSyncServer() async {
     if (_syncServer != null) return;
-    try {
-      _syncServer = await HttpServer.bind(InternetAddress.anyIPv4, _syncPort);
-      _isRunning = true;
-      debugPrint('[Sync] HTTP同步服务器已启动，端口: $_syncPort');
-
-      _syncServer!.listen((request) async {
-        debugPrint('[Sync] 收到请求: ${request.method} ${request.uri.path}');
-        if (request.method == 'POST' && request.uri.path == '/sync') {
-          await _handleSyncRequest(request);
-        } else if (request.method == 'GET' && request.uri.path == '/configs') {
-          await _handleGetConfigs(request);
-        } else if (request.method == 'GET' && request.uri.path == '/ping') {
-          request.response
-            ..statusCode = HttpStatus.ok
-            ..headers.contentType = ContentType.json
-            ..write(jsonEncode({
-              'status': 'ok',
-              'device': (await getLocalDeviceInfo()).toJson()
-            }))
-            ..close();
-        } else {
-          request.response
-            ..statusCode = HttpStatus.notFound
-            ..close();
+    HttpServer? server;
+    // 上一个实例可能仍在关闭端口，短暂重试避免 EADDRINUSE 让同步永久失效。
+    for (var attempt = 1; attempt <= 5; attempt++) {
+      try {
+        server = await HttpServer.bind(InternetAddress.anyIPv4, _syncPort);
+        break;
+      } on SocketException catch (e) {
+        if (attempt == 5) {
+          debugPrint('[Sync] HTTP服务器启动失败: $e');
+          return;
         }
-      });
-    } catch (e) {
-      _isRunning = false;
-      debugPrint('[Sync] HTTP服务器启动失败: $e');
+        await Future.delayed(const Duration(milliseconds: 400));
+      }
+    }
+    _syncServer = server;
+    _isRunning = true;
+    debugPrint('[Sync] HTTP同步服务器已启动，端口: $_syncPort');
+
+    server!.listen((request) async {
+      debugPrint('[Sync] 收到请求: ${request.method} ${request.uri.path}');
+      if (request.method == 'POST' && request.uri.path == '/sync') {
+        await _handleSyncRequest(request);
+      } else if (request.method == 'GET' && request.uri.path == '/configs') {
+        await _handleGetConfigs(request);
+      } else if (request.method == 'GET' && request.uri.path == '/ping') {
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({
+            'status': 'ok',
+            'device': (await getLocalDeviceInfo()).toJson()
+          }))
+          ..close();
+      } else {
+        request.response
+          ..statusCode = HttpStatus.notFound
+          ..close();
+      }
+    });
+  }
+
+  /// 弹出本机确认。没有 UI 监听或超时未确认时默认拒绝（fail closed）。
+  Future<bool> _confirmIncoming({
+    required String peerAddress,
+    required bool isWrite,
+    int configCount = 0,
+  }) async {
+    final completer = Completer<bool>();
+    _incomingRequests.add(IncomingSyncRequest(
+      peerAddress: peerAddress,
+      isWrite: isWrite,
+      configCount: configCount,
+      receivedAt: DateTime.now(),
+      respond: (allow) {
+        if (!completer.isCompleted) completer.complete(allow);
+      },
+    ));
+    try {
+      return await completer.future.timeout(_requestConfirmTimeout);
+    } on TimeoutException {
+      return false;
     }
   }
 
@@ -319,6 +418,20 @@ class SyncService {
       final body = await utf8.decoder.bind(request).join();
       final data = jsonDecode(body) as Map<String, dynamic>;
       final configs = parseSyncPayload(data);
+
+      final allowed = await _confirmIncoming(
+        peerAddress: request.connectionInfo?.remoteAddress.address ?? '未知设备',
+        isWrite: true,
+        configCount: configs.length,
+      );
+      if (!allowed) {
+        request.response
+          ..statusCode = HttpStatus.forbidden
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'error': '本机未确认此次同步请求'}))
+          ..close();
+        return;
+      }
 
       final inserted = await storeSyncedConfigs(configs);
       debugPrint('[Sync] 已接收 ${configs.length} 个配置，新增 $inserted 个');
@@ -337,27 +450,22 @@ class SyncService {
     }
   }
 
-  Future<int> storeSyncedConfigs(List<ApiConfig> configs) async {
-    final databaseService = _databaseServiceOverride ?? DatabaseService();
-    await databaseService.initialize();
-    var inserted = 0;
-    for (final config in configs) {
-      final sameId = await databaseService.getApiConfig(config.id);
-      if (sameId != null) {
-        await databaseService.updateApiConfig(config);
-        continue;
-      }
-      final equivalent = await databaseService.findBusinessEquivalentApiConfig(config);
-      if (equivalent != null) continue;
-      await databaseService.insertApiConfig(config);
-      inserted++;
-    }
-    return inserted;
-  }
-
   Future<void> _handleGetConfigs(HttpRequest request) async {
     try {
-      final dbService = DatabaseService();
+      final allowed = await _confirmIncoming(
+        peerAddress: request.connectionInfo?.remoteAddress.address ?? '未知设备',
+        isWrite: false,
+      );
+      if (!allowed) {
+        request.response
+          ..statusCode = HttpStatus.forbidden
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'error': '本机未确认此次读取请求'}))
+          ..close();
+        return;
+      }
+
+      final dbService = _databaseServiceOverride ?? DatabaseService();
       await dbService.initialize();
       final configs = await dbService.getAllApiConfigs();
 
@@ -378,15 +486,17 @@ class SyncService {
 
   /// 直接通过IP ping检测设备
   Future<DeviceInfo?> pingDevice(String ip) async {
+    HttpClient? client;
     try {
       if ((await _getLocalIPv4Addresses()).contains(ip)) return null;
-      final client = HttpClient();
+      client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 5);
-      final request =
-          await client.getUrl(Uri.parse('http://$ip:$_syncPort/ping'));
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
-      client.close();
+      final request = await client
+          .getUrl(Uri.parse('http://$ip:$_syncPort/ping'))
+          .timeout(_clientIoTimeout);
+      final response = await request.close().timeout(_clientIoTimeout);
+      final body =
+          await utf8.decoder.bind(response).join().timeout(_clientIoTimeout);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(body) as Map<String, dynamic>;
@@ -399,49 +509,112 @@ class SyncService {
       }
     } catch (e) {
       debugPrint('[Sync] Ping $ip 失败: $e');
+    } finally {
+      client?.close(force: true);
     }
     return null;
   }
 
   Future<bool> sendConfigs(DeviceInfo device, List<ApiConfig> configs) async {
+    HttpClient? client;
     try {
       final payload = createSyncPayload(configs);
-      final client = HttpClient();
+      client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 10);
-      final request = await client.postUrl(
-        Uri.parse('http://${device.ipAddress}:$_syncPort/sync'),
-      );
+      final request = await client
+          .postUrl(Uri.parse('http://${device.ipAddress}:$_syncPort/sync'))
+          .timeout(_clientIoTimeout);
       request.headers.contentType = ContentType.json;
       request.write(jsonEncode(payload));
 
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
-      client.close();
+      final response = await request.close().timeout(_clientIoTimeout);
+      final body =
+          await utf8.decoder.bind(response).join().timeout(_clientIoTimeout);
       debugPrint('[Sync] 发送结果: ${response.statusCode} $body');
+      if (response.statusCode == HttpStatus.forbidden) {
+        debugPrint('[Sync] 对方未确认同步请求');
+      }
       return response.statusCode == HttpStatus.ok;
     } catch (e) {
       debugPrint('[Sync] 发送配置失败: $e');
       return false;
+    } finally {
+      client?.close(force: true);
     }
   }
 
   Future<List<ApiConfig>> receiveConfigs(DeviceInfo device) async {
+    HttpClient? client;
     try {
-      final client = HttpClient();
+      client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 10);
-      final request = await client.getUrl(
-        Uri.parse('http://${device.ipAddress}:$_syncPort/configs'),
-      );
-      final response = await request.close();
-      final body = await utf8.decoder.bind(response).join();
-      client.close();
+      final request = await client
+          .getUrl(Uri.parse('http://${device.ipAddress}:$_syncPort/configs'))
+          .timeout(_clientIoTimeout);
+      final response = await request.close().timeout(_clientIoTimeout);
+      final body =
+          await utf8.decoder.bind(response).join().timeout(_clientIoTimeout);
 
+      if (response.statusCode != HttpStatus.ok) {
+        debugPrint('[Sync] 接收配置失败: 对方返回 ${response.statusCode}');
+        return [];
+      }
       final data = jsonDecode(body) as Map<String, dynamic>;
       return parseSyncPayload(data);
     } catch (e) {
       debugPrint('[Sync] 接收配置失败: $e');
       return [];
+    } finally {
+      client?.close(force: true);
     }
+  }
+
+  /// 接收其他设备推送/拉取的配置并合并入库。
+  ///
+  /// 合并策略：同一 id 或业务等价（地址+Key+默认模型相同）的配置按
+  /// `updatedAt` 新者胜，旧的本地编辑不会被旧数据回滚；其余按新配置插入。
+  Future<int> storeSyncedConfigs(List<ApiConfig> configs) async {
+    final databaseService = _databaseServiceOverride ?? DatabaseService();
+    await databaseService.initialize();
+    final existing = await databaseService.getAllApiConfigs();
+    final byId = {for (final config in existing) config.id: config};
+
+    var inserted = 0;
+    for (final config in configs) {
+      final sameId = byId[config.id];
+      if (sameId != null) {
+        if (!config.updatedAt.isAfter(sameId.updatedAt)) continue;
+        final merged =
+            config.copyWith(id: sameId.id, createdAt: sameId.createdAt);
+        await databaseService.updateApiConfig(merged);
+        byId[sameId.id] = merged;
+        continue;
+      }
+
+      ApiConfig? equivalent;
+      for (final candidate in byId.values) {
+        if (ApiConfigIdentity.matches(candidate, config)) {
+          equivalent = candidate;
+          break;
+        }
+      }
+      if (equivalent != null) {
+        if (config.updatedAt.isAfter(equivalent.updatedAt)) {
+          final merged = config.copyWith(
+            id: equivalent.id,
+            createdAt: equivalent.createdAt,
+          );
+          await databaseService.updateApiConfig(merged);
+          byId[equivalent.id] = merged;
+        }
+        continue;
+      }
+
+      await databaseService.insertApiConfig(config);
+      byId[config.id] = config;
+      inserted++;
+    }
+    return inserted;
   }
 
   static Map<String, dynamic> createSyncPayload(List<ApiConfig> configs) {

@@ -85,12 +85,15 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !Platform.isAndroid) return;
-      _thirdPartyImportChannel.initialize(
-        onRequest: _handleThirdPartyImportRequest,
-      );
-      _thirdPartyApiConfigPickChannel.initialize(
-        onRequest: _handleThirdPartyApiConfigPickRequest,
-      );
+      // 初始化失败（如平台通道不可用）不应成为未捕获异常。
+      _thirdPartyImportChannel
+          .initialize(onRequest: _handleThirdPartyImportRequest)
+          .catchError((Object e) =>
+              debugPrint('[Apilot] 第三方导入通道初始化失败: $e'));
+      _thirdPartyApiConfigPickChannel
+          .initialize(onRequest: _handleThirdPartyApiConfigPickRequest)
+          .catchError((Object e) =>
+              debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
     });
   }
 

@@ -96,6 +96,13 @@ class ApiService {
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode < 500) {
+        if (response.statusCode == 401 || response.statusCode == 403) {
+          return {
+            'valid': false,
+            'message':
+                '服务器拒绝了请求（状态码 ${response.statusCode}），请检查 API Key 是否正确',
+          };
+        }
         return {
           'valid': true,
           'message': 'API可达，状态码: ${response.statusCode}',
@@ -205,6 +212,38 @@ class ApiService {
     required String model,
     required String endpoint,
     required Map<String, dynamic> requestBody,
+  }) {
+    return _sendRequest(
+      apiConfig: apiConfig,
+      model: model,
+      endpoint: endpoint,
+      requestBody: requestBody,
+      includeHeaders: false,
+    );
+  }
+
+  /// 发送请求并返回完整响应（包含headers）
+  Future<Map<String, dynamic>> sendRequestWithHeaders({
+    required ApiConfig apiConfig,
+    required String model,
+    required String endpoint,
+    required Map<String, dynamic> requestBody,
+  }) {
+    return _sendRequest(
+      apiConfig: apiConfig,
+      model: model,
+      endpoint: endpoint,
+      requestBody: requestBody,
+      includeHeaders: true,
+    );
+  }
+
+  Future<Map<String, dynamic>> _sendRequest({
+    required ApiConfig apiConfig,
+    required String model,
+    required String endpoint,
+    required Map<String, dynamic> requestBody,
+    required bool includeHeaders,
   }) async {
     final stopwatch = Stopwatch()..start();
 
@@ -238,66 +277,15 @@ class ApiService {
         responseBody = {'raw': response.body};
       }
 
-      return {
+      final result = <String, dynamic>{
         'statusCode': response.statusCode,
         'body': responseBody,
         'duration': stopwatch.elapsedMilliseconds,
       };
-    } catch (e) {
-      stopwatch.stop();
-      rethrow;
-    }
-  }
-
-  /// 发送请求并返回完整响应（包含headers）
-  Future<Map<String, dynamic>> sendRequestWithHeaders({
-    required ApiConfig apiConfig,
-    required String model,
-    required String endpoint,
-    required Map<String, dynamic> requestBody,
-  }) async {
-    final stopwatch = Stopwatch()..start();
-
-    try {
-      final url = buildUrl(apiConfig.baseUrl, endpoint);
-      final uri = Uri.parse(url);
-
-      final body = Map<String, dynamic>.from(requestBody);
-      if (!body.containsKey('model')) {
-        body['model'] = model;
+      if (includeHeaders) {
+        result['headers'] = Map<String, String>.from(response.headers);
       }
-
-      final response = await http
-          .post(
-            uri,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ${apiConfig.apiKey}',
-            },
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 60));
-
-      stopwatch.stop();
-
-      Map<String, dynamic> responseBody;
-      try {
-        responseBody = jsonDecode(response.body) as Map<String, dynamic>;
-      } catch (_) {
-        responseBody = {'raw': response.body};
-      }
-
-      final headers = <String, String>{};
-      response.headers.forEach((key, value) {
-        headers[key] = value;
-      });
-
-      return {
-        'statusCode': response.statusCode,
-        'body': responseBody,
-        'headers': headers,
-        'duration': stopwatch.elapsedMilliseconds,
-      };
+      return result;
     } catch (e) {
       stopwatch.stop();
       rethrow;

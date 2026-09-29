@@ -15,13 +15,21 @@ class ResponseViewer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final codeBackground =
+        isDark ? AppColors.darkSurface : AppColors.background;
+    final codeBorder = isDark ? Colors.grey.shade700 : Colors.grey.shade300;
+    final secondaryTextColor =
+        isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+
     if (isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
 
     if (response == null) {
-      return const Center(
-        child: Text('发送请求查看响应', style: TextStyle(color: AppColors.textSecondary)),
+      return Center(
+        child: Text('发送请求查看响应',
+            style: TextStyle(color: secondaryTextColor)),
       );
     }
 
@@ -50,7 +58,7 @@ class ResponseViewer extends StatelessWidget {
               const SizedBox(width: 16),
               Text(
                 '耗时: ${duration}ms',
-                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                style: TextStyle(color: secondaryTextColor, fontSize: 13),
               ),
             ],
             const Spacer(),
@@ -71,9 +79,9 @@ class ResponseViewer extends StatelessWidget {
           child: Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppColors.background,
+              color: codeBackground,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey.shade300),
+              border: Border.all(color: codeBorder),
             ),
             child: SingleChildScrollView(
               child: SelectableText(

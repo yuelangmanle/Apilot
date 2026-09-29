@@ -571,8 +571,18 @@ class ApiConnectionPasteParser {
 
   static bool _looksLikeHost(String value) {
     final host = value.split('/').first;
-    return RegExp(r'^[A-Za-z0-9.-]+(?::\d+)?$').hasMatch(host) &&
-        (host == 'localhost' || host.contains('.') || host.contains(':'));
+    if (!RegExp(r'^[A-Za-z0-9.-]+(?::\d+)?$').hasMatch(host)) return false;
+    if (host == 'localhost' || host.contains(':')) return true;
+    if (!host.contains('.')) return false;
+    // 纯数字点分串只认 IPv4（4 段且每段 ≤255），避免把版本号
+    // （如 v1.21.0）误判成主机名。
+    final labels = host.split('.');
+    final allNumeric = labels.every((label) => RegExp(r'^\d+$').hasMatch(label));
+    if (allNumeric) {
+      return labels.length == 4 &&
+          labels.every((label) => int.parse(label) <= 255);
+    }
+    return true;
   }
 
   static String _trimDecorators(String value) {

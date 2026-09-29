@@ -49,9 +49,10 @@ bool _isValidIPv4(String value) {
   final parts = value.split('.');
   if (parts.length != 4) return false;
   for (final part in parts) {
-    if (part.isEmpty) return false;
-    final number = int.tryParse(part);
-    if (number == null || number < 0 || number > 255) return false;
+    // 只接受纯数字段，拒绝 "+4"、空格等 int.tryParse 会放行的写法。
+    if (!RegExp(r'^\d{1,3}$').hasMatch(part)) return false;
+    final number = int.parse(part);
+    if (number < 0 || number > 255) return false;
   }
   return true;
 }

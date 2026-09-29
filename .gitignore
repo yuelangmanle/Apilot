@@ -51,3 +51,9 @@ dmg_staging/
 build/
 *.apk
 *.dmg
+
+# Local tooling artifacts
+.mimosa/
+.video_agent/
+.v2c/
+.superpowers/

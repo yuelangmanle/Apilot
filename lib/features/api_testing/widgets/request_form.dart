@@ -7,11 +7,13 @@ import '../../../shared/theme/color_scheme.dart';
 class RequestForm extends StatefulWidget {
   final ApiConfig apiConfig;
   final Function(String model, String endpoint, Map<String, dynamic> body) onSubmit;
+  final bool isLoading;
 
   const RequestForm({
     super.key,
     required this.apiConfig,
     required this.onSubmit,
+    this.isLoading = false,
   });
 
   @override
@@ -145,9 +147,16 @@ class _RequestFormState extends State<RequestForm> {
           ),
           const SizedBox(height: 16),
           ElevatedButton.icon(
-            onPressed: _submit,
-            icon: const Icon(Icons.send),
-            label: const Text('发送请求'),
+            onPressed: widget.isLoading ? null : _submit,
+            icon: widget.isLoading
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.send),
+            label: Text(widget.isLoading ? '请求中...' : '发送请求'),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,

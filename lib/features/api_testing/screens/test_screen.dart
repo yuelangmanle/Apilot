@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -24,6 +26,8 @@ class TestScreen extends StatefulWidget {
 class _TestScreenState extends State<TestScreen> {
   final ApiService _apiService = ApiService();
   late ApiConfig _currentApi;
+  // 请求序号：切换 API 或重复发送后，旧请求的回包直接丢弃。
+  int _requestId = 0;
   Map<String, dynamic>? _response;
   Map<String, String>? _responseHeaders;
   bool _isLoading = false;
@@ -38,6 +42,9 @@ class _TestScreenState extends State<TestScreen> {
   }
 
   Future<void> _sendRequest(String model, String endpoint, Map<String, dynamic> body) async {
+    if (_isLoading) return;
+    final api = _currentApi;
+    final requestId = ++_requestId;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -49,11 +56,13 @@ class _TestScreenState extends State<TestScreen> {
 
     try {
       final result = await _apiService.sendRequestWithHeaders(
-        apiConfig: _currentApi,
+        apiConfig: api,
         model: model,
         endpoint: endpoint,
         requestBody: body,
       );
+
+      if (!mounted || requestId != _requestId) return;
 
       setState(() {
         _response = result['body'] as Map<String, dynamic>;
@@ -63,20 +72,19 @@ class _TestScreenState extends State<TestScreen> {
         _isLoading = false;
       });
 
-      if (mounted) {
-        final history = RequestHistory(
-          id: const Uuid().v4(),
-          apiConfigId: _currentApi.id,
-          model: model,
-          endpoint: endpoint,
-          requestBody: body,
-          responseBody: _response,
-          statusCode: _statusCode,
-          duration: _duration,
-        );
-        context.read<HistoryProvider>().addHistory(history);
-      }
+      final history = RequestHistory(
+        id: const Uuid().v4(),
+        apiConfigId: api.id,
+        model: model,
+        endpoint: endpoint,
+        requestBody: body,
+        responseBody: _response,
+        statusCode: _statusCode,
+        duration: _duration,
+      );
+      context.read<HistoryProvider>().addHistory(history);
     } catch (e) {
+      if (!mounted || requestId != _requestId) return;
       setState(() {
         _isLoading = false;
         _errorMessage = _friendlyError(e);
@@ -101,7 +109,18 @@ class _TestScreenState extends State<TestScreen> {
     return '请求失败: $msg';
   }
 
+  String _prettyJson(Map<String, dynamic> json) {
+    try {
+      const encoder = JsonEncoder.withIndent('  ');
+      return encoder.convert(json);
+    } catch (_) {
+      return json.toString();
+    }
+  }
+
   void _switchApi(ApiConfig api) {
+    // 作废在途请求，避免旧接口的结果挂到新接口名下。
+    _requestId++;
     setState(() {
       _currentApi = api;
       _response = null;
@@ -109,6 +128,7 @@ class _TestScreenState extends State<TestScreen> {
       _errorMessage = null;
       _statusCode = null;
       _duration = null;
+      _isLoading = false;
     });
   }
 
@@ -130,7 +150,8 @@ class _TestScreenState extends State<TestScreen> {
             IconButton(
               icon: const Icon(Icons.copy),
               onPressed: () {
-                Clipboard.setData(ClipboardData(text: _response.toString()));
+                Clipboard.setData(
+                    ClipboardData(text: _prettyJson(_response!)));
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('响应已复制'), duration: Duration(seconds: 1)),
                 );
@@ -150,6 +171,7 @@ class _TestScreenState extends State<TestScreen> {
                       child: RequestForm(
                         apiConfig: _currentApi,
                         onSubmit: _sendRequest,
+                        isLoading: _isLoading,
                       ),
                     ),
                   ),
@@ -161,7 +183,11 @@ class _TestScreenState extends State<TestScreen> {
                 children: [
                   Expanded(
                     flex: 1,
-                    child: RequestForm(apiConfig: _currentApi, onSubmit: _sendRequest),
+                    child: RequestForm(
+                      apiConfig: _currentApi,
+                      onSubmit: _sendRequest,
+                      isLoading: _isLoading,
+                    ),
                   ),
                   const SizedBox(height: 16),
                   const Divider(),
@@ -206,16 +232,21 @@ class _TestScreenState extends State<TestScreen> {
   }
 
   Widget _buildResponseArea() {
+    final secondaryTextColor = Theme.of(context).brightness == Brightness.dark
+        ? AppColors.darkTextSecondary
+        : AppColors.textSecondary;
+    final errorColor = Theme.of(context).colorScheme.error;
+
     if (_isLoading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('请求中...', style: TextStyle(color: AppColors.textSecondary)),
-            SizedBox(height: 8),
-            Text('等待服务器响应', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text('请求中...', style: TextStyle(color: secondaryTextColor)),
+            const SizedBox(height: 8),
+            Text('等待服务器响应', style: TextStyle(fontSize: 12, color: secondaryTextColor)),
           ],
         ),
       );
@@ -226,13 +257,13 @@ class _TestScreenState extends State<TestScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline, size: 48, color: AppColors.error),
+            Icon(Icons.error_outline, size: 48, color: errorColor),
             const SizedBox(height: 16),
             const Text('请求失败', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(_errorMessage!, style: const TextStyle(color: AppColors.error, fontSize: 14), textAlign: TextAlign.center),
+              child: Text(_errorMessage!, style: TextStyle(color: errorColor, fontSize: 14), textAlign: TextAlign.center),
             ),
           ],
         ),
@@ -240,13 +271,13 @@ class _TestScreenState extends State<TestScreen> {
     }
 
     if (_response == null) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.send_outlined, size: 48, color: AppColors.textSecondary),
-            SizedBox(height: 16),
-            Text('发送请求查看响应', style: TextStyle(color: AppColors.textSecondary)),
+            Icon(Icons.send_outlined, size: 48, color: secondaryTextColor),
+            const SizedBox(height: 16),
+            Text('发送请求查看响应', style: TextStyle(color: secondaryTextColor)),
           ],
         ),
       );
@@ -269,7 +300,7 @@ class _TestScreenState extends State<TestScreen> {
               ),
             if (_duration != null) ...[
               const SizedBox(width: 12),
-              Text('${_duration}ms', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+              Text('${_duration}ms', style: TextStyle(color: secondaryTextColor, fontSize: 13)),
             ],
             const Spacer(),
             if (_responseHeaders != null)

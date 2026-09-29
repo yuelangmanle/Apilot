@@ -79,12 +79,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
               _buildFilterBar(context, provider),
               Expanded(
                 child: provider.apiConfigs.isEmpty
-                    ? Center(
-                        child: Text(
-                          '没有匹配的API',
-                          style: TextStyle(color: isDark ? AppColors.darkTextSecondary : AppColors.textSecondary),
-                        ),
-                      )
+                    ? _buildFilteredEmptyState(context, provider)
                     : RefreshIndicator(
                         onRefresh: () => provider.loadApiConfigs(),
                         child: ListView.builder(
@@ -123,14 +118,32 @@ class _ApiListScreenState extends State<ApiListScreen> {
                                         child: const Text('取消'),
                                       ),
                                       TextButton(
-                                        onPressed: () {
-                                          provider.deleteApiConfig(api.id);
+                                        onPressed: () async {
+                                          final messenger =
+                                              ScaffoldMessenger.of(context);
                                           Navigator.pop(context);
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(content: Text('已删除 ${api.name}')),
-                                          );
+                                          try {
+                                            await provider
+                                                .deleteApiConfig(api.id);
+                                            messenger.showSnackBar(
+                                              SnackBar(
+                                                  content:
+                                                      Text('已删除 ${api.name}')),
+                                            );
+                                          } catch (e) {
+                                            messenger.showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                    '删除 ${api.name} 失败: $e'),
+                                                backgroundColor:
+                                                    AppColors.error,
+                                              ),
+                                            );
+                                          }
                                         },
-                                        child: const Text('删除', style: TextStyle(color: Colors.red)),
+                                        child: const Text('删除',
+                                            style:
+                                                TextStyle(color: Colors.red)),
                                       ),
                                     ],
                                   ),
@@ -259,6 +272,52 @@ class _ApiListScreenState extends State<ApiListScreen> {
     );
   }
 
+  /// 有筛选条件但结果为空时给出"清除全部筛选"的出口，避免死胡同。
+  Widget _buildFilteredEmptyState(
+      BuildContext context, ApiProvider provider) {
+    final conditions = <String>[
+      if (provider.showFavoritesOnly) '仅收藏',
+      if (provider.selectedGroup != null) '分组: ${provider.selectedGroup}',
+      if (provider.selectedEnvironment != null)
+        '环境: ${provider.selectedEnvironment}',
+      if (provider.selectedTag != null) '标签: ${provider.selectedTag}',
+      if (provider.searchQuery.isNotEmpty) '搜索: ${provider.searchQuery}',
+    ];
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.filter_alt_off_outlined,
+            size: 56,
+            color: Theme.of(context).brightness == Brightness.dark
+                ? AppColors.darkTextSecondary
+                : AppColors.textSecondary,
+          ),
+          const SizedBox(height: 16),
+          const Text('没有匹配的API', style: TextStyle(fontSize: 16)),
+          const SizedBox(height: 8),
+          Text(
+            '当前条件：${conditions.join(' · ')}',
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? AppColors.darkTextSecondary
+                  : AppColors.textSecondary,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: provider.clearAllFilters,
+            icon: const Icon(Icons.clear_all),
+            label: const Text('清除全部筛选'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmptyState(BuildContext context, bool isDark) {
     return Center(
       child: SingleChildScrollView(
@@ -280,7 +339,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                     ListTile(
                       leading: const Icon(Icons.auto_awesome, color: AppColors.primary),
                       title: const Text('从模板开始'),
-                      subtitle: const Text('内置 19 个常用 AI API 模板，一键配置'),
+                      subtitle: const Text('内置 18 个常用 AI API 模板，一键配置'),
                       onTap: () => _navigateToTemplate(context),
                       contentPadding: EdgeInsets.zero,
                     ),
