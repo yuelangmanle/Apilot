@@ -30,6 +30,9 @@ class ApiConfig {
   final String? importSourcePackage;
   final String? importTrustLevel;
 
+  /// 回收站标记：非空表示已软删除，删除时间为进入回收站的时间。
+  final DateTime? deletedAt;
+
   ApiConfig({
     required this.id,
     required this.name,
@@ -52,6 +55,7 @@ class ApiConfig {
     this.importSourceName,
     this.importSourcePackage,
     this.importTrustLevel,
+    this.deletedAt,
   })  : createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
 

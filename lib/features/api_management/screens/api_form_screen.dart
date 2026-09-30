@@ -805,8 +805,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('确认删除'),
-        content: Text('确定要删除 ${widget.apiConfig!.name} 吗？'),
+        title: const Text('移入回收站？'),
+        content: Text('「${widget.apiConfig!.name}」将移入回收站，保留期内可随时恢复。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -834,7 +834,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
           _saved = true;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('已删除 ${widget.apiConfig!.name}'),
+              content: Text('已移入回收站：${widget.apiConfig!.name}'),
               backgroundColor: AppColors.success,
             ),
           );

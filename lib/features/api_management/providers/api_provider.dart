@@ -212,21 +212,44 @@ class ApiProvider with ChangeNotifier {
     return updated;
   }
 
-  Future<void> deleteApiConfig(String id) async {
+  /// 删除 = 移入回收站（可恢复），到期前不真正清除。
+  Future<void> moveToRecycleBin(String id) async {
     try {
-      await _databaseService.deleteApiConfig(id);
+      await _databaseService.softDeleteApiConfig(id);
       _apiConfigs.removeWhere((a) => a.id == id);
       _error = null;
       _invalidateFilteredCache();
       notifyListeners();
     } catch (e) {
-      debugPrint('deleteApiConfig 错误: $e');
+      debugPrint('moveToRecycleBin 错误: $e');
       _error = '删除失败: $e';
       _invalidateFilteredCache();
       notifyListeners();
       rethrow;
     }
   }
+
+  /// 从回收站恢复并刷新列表。
+  Future<void> restoreFromRecycleBin(String id) async {
+    await _databaseService.restoreApiConfig(id);
+    await loadApiConfigs();
+  }
+
+  /// 彻底删除（含请求历史）。返回是否删除。
+  Future<bool> purgeFromRecycleBin(String id) async {
+    final purged = await _databaseService.purgeApiConfig(id);
+    notifyListeners();
+    return purged;
+  }
+
+  /// 清空回收站，返回清除数量。
+  Future<int> clearRecycleBin() async {
+    final purged = await _databaseService.clearRecycleBin();
+    notifyListeners();
+    return purged;
+  }
+
+  Future<void> deleteApiConfig(String id) => moveToRecycleBin(id);
 
   Future<void> recordInteropAudit(ApiInteropAudit audit) {
     return _databaseService.insertInteropAudit(audit);

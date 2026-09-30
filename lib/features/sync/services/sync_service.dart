@@ -645,7 +645,10 @@ class SyncService {
   Future<int> storeSyncedConfigs(List<ApiConfig> configs) async {
     final databaseService = _databaseServiceOverride ?? DatabaseService();
     await databaseService.initialize();
-    final existing = await databaseService.getAllApiConfigs();
+    // 索引包含回收站内容：同步进来的同款不应复活本机已删除的配置，
+    // 而是把较新数据写回回收站内的对应条目（保持隐藏）。
+    final existing =
+        await databaseService.getAllApiConfigs(includeDeleted: true);
     final byId = {for (final config in existing) config.id: config};
 
     var inserted = 0;

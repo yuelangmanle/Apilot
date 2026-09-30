@@ -144,12 +144,17 @@ class HealthCheckService {
   }
 
   /// 批量体检。逐个串行执行，避免对同一服务商并发轰炸。
+  /// [onProgress] 在每完成一项时回调 (已完成数, 总数)，供界面刷新角标。
   Future<Map<String, HealthCheckResult>> checkAll(
-    List<ApiConfig> configs,
-  ) async {
+    List<ApiConfig> configs, {
+    void Function(int done, int total)? onProgress,
+  }) async {
     await _ensureLoaded();
+    var done = 0;
     for (final config in configs) {
       _results[config.id] = await checkOne(config);
+      done++;
+      onProgress?.call(done, configs.length);
     }
     await _persist({for (final c in configs) c.id: c});
     return Map.unmodifiable(_results);

@@ -52,7 +52,7 @@ class DatabaseService {
     return _sharedDatabase ??= await _initializeDatabase();
   }
 
-  static const int _databaseVersion = 4;
+  static const int _databaseVersion = 5;
 
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
@@ -87,7 +87,8 @@ class DatabaseService {
         models_refreshed_at TEXT,
         import_source_name TEXT,
         import_source_package TEXT,
-        import_trust_level TEXT
+        import_trust_level TEXT,
+        deleted_at TEXT
       )
     ''');
 
@@ -167,6 +168,9 @@ class DatabaseService {
     }
     if (oldVersion < 3) {
       await _createInteropAuditTable(db);
+    }
+    if (oldVersion < 5) {
+      await db.execute('ALTER TABLE api_configs ADD COLUMN deleted_at TEXT');
     }
     if (oldVersion < 4) {
       final historyTable = await db.query('sqlite_master',
@@ -293,6 +297,7 @@ class DatabaseService {
       'import_source_name': api.importSourceName,
       'import_source_package': api.importSourcePackage,
       'import_trust_level': api.importTrustLevel,
+      'deleted_at': api.deletedAt?.toIso8601String(),
     };
   }
 
@@ -309,12 +314,34 @@ class DatabaseService {
     return _mapToApiConfig(maps.first);
   }
 
-  Future<List<ApiConfig>> getAllApiConfigs() async {
+  /// 默认只返回存活配置（回收站中的除外）。
+  Future<List<ApiConfig>> getAllApiConfigs({bool includeDeleted = false}) async {
     // 整表查询失败时向上抛出：调用方（列表页/备份/同步服务）需要感知数据库
     // 异常，避免把故障误显示为"没有任何配置"而诱导用户执行清空恢复。
     final db = await database;
     final maps = await db.query('api_configs', orderBy: 'name ASC');
 
+    final List<ApiConfig> results = [];
+    for (final map in maps) {
+      try {
+        final config = _mapToApiConfig(map);
+        if (!includeDeleted && config.deletedAt != null) continue;
+        results.add(config);
+      } catch (e) {
+        debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
+      }
+    }
+    return results;
+  }
+
+  /// 回收站内容，按删除时间倒序。
+  Future<List<ApiConfig>> getDeletedApiConfigs() async {
+    final db = await database;
+    final maps = await db.query(
+      'api_configs',
+      where: 'deleted_at IS NOT NULL',
+      orderBy: 'deleted_at DESC',
+    );
     final List<ApiConfig> results = [];
     for (final map in maps) {
       try {
@@ -326,9 +353,66 @@ class DatabaseService {
     return results;
   }
 
+  /// 软删除：移入回收站，同时保留请求历史以便恢复。
+  Future<void> softDeleteApiConfig(String id) async {
+    final db = await database;
+    await db.update(
+      'api_configs',
+      {'deleted_at': DateTime.now().toIso8601String()},
+      where: 'id = ? AND deleted_at IS NULL',
+      whereArgs: [id],
+    );
+  }
+
+  /// 从回收站恢复。
+  Future<void> restoreApiConfig(String id) async {
+    final db = await database;
+    await db.update(
+      'api_configs',
+      {'deleted_at': null},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 彻底删除（连同请求历史）。返回是否确实删除了一行。
+  Future<bool> purgeApiConfig(String id) async {
+    final db = await database;
+    await db
+        .delete('request_history', where: 'api_config_id = ?', whereArgs: [id]);
+    final count = await db
+        .delete('api_configs', where: 'id = ?', whereArgs: [id]);
+    return count > 0;
+  }
+
+  /// 清空回收站。返回清除的数量。
+  Future<int> clearRecycleBin() async {
+    final deleted = await getDeletedApiConfigs();
+    var purged = 0;
+    for (final config in deleted) {
+      if (await purgeApiConfig(config.id)) purged++;
+    }
+    return purged;
+  }
+
+  /// 清除超过保留期的回收站内容，返回清除的数量。在应用启动与打开回收站时调用。
+  Future<int> purgeExpiredApiConfigs(DateTime cutoff) async {
+    final db = await database;
+    final rows = await db.query('api_configs',
+        columns: ['id'],
+        where: 'deleted_at IS NOT NULL AND deleted_at < ?',
+        whereArgs: [cutoff.toIso8601String()]);
+    var purged = 0;
+    for (final row in rows) {
+      if (await purgeApiConfig(row['id'] as String)) purged++;
+    }
+    return purged;
+  }
+
   Future<ApiConfig?> findBusinessEquivalentApiConfig(
       ApiConfig candidate) async {
-    final configs = await getAllApiConfigs();
+    // 包含回收站中的配置：同步进来的同款不应绕过本机删除决定。
+    final configs = await getAllApiConfigs(includeDeleted: true);
     for (final config in configs) {
       if (ApiConfigIdentity.matches(config, candidate)) return config;
     }
@@ -453,6 +537,7 @@ class DatabaseService {
       importSourceName: map['import_source_name'] as String?,
       importSourcePackage: map['import_source_package'] as String?,
       importTrustLevel: map['import_trust_level'] as String?,
+      deletedAt: _parseDateTime(map['deleted_at']),
     );
   }
 

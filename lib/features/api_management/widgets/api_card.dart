@@ -84,8 +84,8 @@ class ApiCard extends StatelessWidget {
         return await showDialog<bool>(
               context: context,
               builder: (dialogContext) => AlertDialog(
-                title: const Text('确认删除'),
-                content: Text('确定要删除 ${api.name} 吗？其请求历史会一并删除。'),
+                title: const Text('移入回收站？'),
+                content: Text('「${api.name}」将移入回收站，保留期内可随时恢复。'),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(dialogContext, false),
@@ -93,7 +93,8 @@ class ApiCard extends StatelessWidget {
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(dialogContext, true),
-                    child: const Text('删除', style: TextStyle(color: Colors.red)),
+                    child: const Text('移入回收站',
+                        style: TextStyle(color: Colors.red)),
                   ),
                 ],
               ),

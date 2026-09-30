@@ -39,6 +39,9 @@ ApiConfig _$ApiConfigFromJson(Map<String, dynamic> json) => ApiConfig(
       importSourceName: json['importSourceName'] as String?,
       importSourcePackage: json['importSourcePackage'] as String?,
       importTrustLevel: json['importTrustLevel'] as String?,
+      deletedAt: json['deletedAt'] == null
+          ? null
+          : DateTime.parse(json['deletedAt'] as String),
     );
 
 Map<String, dynamic> _$ApiConfigToJson(ApiConfig instance) => <String, dynamic>{
@@ -63,4 +66,5 @@ Map<String, dynamic> _$ApiConfigToJson(ApiConfig instance) => <String, dynamic>{
       'importSourceName': instance.importSourceName,
       'importSourcePackage': instance.importSourcePackage,
       'importTrustLevel': instance.importTrustLevel,
+      'deletedAt': instance.deletedAt?.toIso8601String(),
     };

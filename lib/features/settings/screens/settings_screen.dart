@@ -15,6 +15,7 @@ import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
 import 'privacy_screen.dart';
 import 'usage_stats_screen.dart';
+import '../../api_management/screens/recycle_bin_screen.dart';
 import '../../security/app_lock_controller.dart';
 import '../../security/biometric_service.dart';
 import '../../security/pin_screen.dart';
@@ -103,6 +104,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     context,
                     MaterialPageRoute(
                         builder: (context) => const UsageStatsScreen()),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.recycling),
+                title: const Text('回收站'),
+                subtitle: const Text('删除的方案保留一段时间，可随时恢复'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const RecycleBinScreen()),
                   );
                 },
               ),

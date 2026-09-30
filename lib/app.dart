@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'shared/theme/app_theme.dart';
 import 'shared/widgets/responsive_layout.dart';
 import 'core/services/api_key_cipher.dart';
@@ -38,6 +39,22 @@ class ApiManagerApp extends StatelessWidget {
         // 密钥子系统故障不阻止应用启动：数据库回退明文行为。
         debugPrint('[Apilot] API Key 加密初始化失败，回退明文存储: $e');
       }
+    }
+    await _purgeExpiredRecycleBin();
+  }
+
+  /// 应用启动时清理超过保留期的回收站内容（保留天数由用户设置，默认 7 天）。
+  static Future<void> _purgeExpiredRecycleBin() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final days = prefs.getInt('apilot_recycle_retention_days') ?? 7;
+      final cutoff = DateTime.now().subtract(Duration(days: days));
+      final purged = await DatabaseService().purgeExpiredApiConfigs(cutoff);
+      if (purged > 0) {
+        debugPrint('[Apilot] 回收站自动清理了 $purged 个过期方案');
+      }
+    } catch (e) {
+      debugPrint('[Apilot] 回收站过期清理失败: $e');
     }
   }
 

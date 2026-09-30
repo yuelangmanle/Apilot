@@ -22,6 +22,8 @@ class _ApiListScreenState extends State<ApiListScreen> {
   final _searchController = TextEditingController();
   final HealthCheckService _healthService = HealthCheckService();
   bool _isHealthChecking = false;
+  int _healthDone = 0;
+  int _healthTotal = 0;
   bool _selectMode = false;
   final Set<String> _selectedIds = {};
 
@@ -80,16 +82,35 @@ class _ApiListScreenState extends State<ApiListScreen> {
               ]
             : [
                 IconButton(
-                  icon: _isHealthChecking
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child:
-                              CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.health_and_safety_outlined),
-                  tooltip: '一键体检全部 Key',
-                  onPressed:
-                      _isHealthChecking ? null : _runHealthCheck,
+                  // 图标常驻：体检进度用角标展示，结束后可再次点击。
+                  icon: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      const Icon(Icons.health_and_safety_outlined),
+                      if (_isHealthChecking)
+                        Positioned(
+                          right: -6,
+                          bottom: -4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '$_healthDone/$_healthTotal',
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 9),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  tooltip: _isHealthChecking
+                      ? '正在体检 $_healthDone/$_healthTotal，点击可查看'
+                      : '一键体检全部 Key',
+                  onPressed: _runHealthCheck,
                 ),
                 IconButton(
                   icon: const Icon(Icons.checklist),
@@ -161,12 +182,12 @@ class _ApiListScreenState extends State<ApiListScreen> {
                               onDelete: () async {
                                 final messenger =
                                     ScaffoldMessenger.of(context);
-                                // 确认已在 confirmDismiss 中完成，这里直接执行删除。
+                                // 确认已在 confirmDismiss 中完成，这里直接移入回收站。
                                 try {
                                   await provider.deleteApiConfig(api.id);
                                   messenger.showSnackBar(
                                     SnackBar(
-                                      content: Text('已删除 ${api.name}'),
+                                      content: Text('已移入回收站：${api.name}'),
                                       backgroundColor: AppColors.success,
                                       duration: const Duration(seconds: 2),
                                     ),
@@ -304,6 +325,16 @@ class _ApiListScreenState extends State<ApiListScreen> {
   }
 
   Future<void> _runHealthCheck() async {
+    // 体检进行中再点：只汇报进度，不并发重跑。
+    if (_isHealthChecking) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('体检进行中：$_healthDone/$_healthTotal'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
     final provider = context.read<ApiProvider>();
     final configs = provider.allApiConfigs;
     if (configs.isEmpty) {
@@ -312,10 +343,18 @@ class _ApiListScreenState extends State<ApiListScreen> {
       );
       return;
     }
-    setState(() => _isHealthChecking = true);
+    setState(() {
+      _isHealthChecking = true;
+      _healthDone = 0;
+      _healthTotal = configs.length;
+    });
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await _healthService.checkAll(configs);
+      await _healthService.checkAll(configs, onProgress: (done, total) {
+        if (!mounted) return;
+        // 每个体检完一项就刷新：健康徽标逐个出现。
+        setState(() => _healthDone = done);
+      });
       if (!mounted) return;
       setState(() {}); // 刷新徽标
       final dead = configs
@@ -349,15 +388,16 @@ class _ApiListScreenState extends State<ApiListScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('批量删除'),
-        content: Text('确定删除选中的 $count 个 API 配置吗？其请求历史会一并删除。'),
+        title: const Text('批量移入回收站'),
+        content: Text('选中的 $count 个 API 配置将移入回收站，保留期内可随时恢复。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
               child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除', style: TextStyle(color: Colors.red)),
+            child: const Text('移入回收站',
+                style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -368,7 +408,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
     var failed = 0;
     for (final id in _selectedIds.toList()) {
       try {
-        await provider.deleteApiConfig(id);
+        await provider.moveToRecycleBin(id);
         deleted++;
       } catch (e) {
         failed++;
@@ -382,8 +422,8 @@ class _ApiListScreenState extends State<ApiListScreen> {
     messenger.showSnackBar(
       SnackBar(
         content: Text(failed == 0
-            ? '已删除 $deleted 个配置'
-            : '已删除 $deleted 个，$failed 个失败'),
+            ? '已移入回收站 $deleted 个配置'
+            : '已移入回收站 $deleted 个，$failed 个失败'),
         backgroundColor: failed == 0 ? null : AppColors.error,
       ),
     );
