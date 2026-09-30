@@ -21,7 +21,8 @@ class HistoryProvider with ChangeNotifier {
   }
 
   Future<void> loadHistory() async {
-    _history = await _databaseService.getRequestHistory(limit: 200);
+    // 与数据库 500 条上限对齐：统计口径与文案一致。
+    _history = await _databaseService.getRequestHistory(limit: 500);
     _loaded = true;
     try {
       final configs = await _databaseService.getAllApiConfigs();

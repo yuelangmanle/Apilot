@@ -30,13 +30,15 @@ void main() {
       expect(cipher.decrypt('plaintext-key'), 'plaintext-key');
     });
 
-    test('decrypt with a foreign key degrades instead of throwing', () {
+    test('decrypt with a foreign key returns empty instead of leaking', () {
       final cipherA = ApiKeyCipher.fromKeyBase64(generateMasterKeyBase64());
       final cipherB = ApiKeyCipher.fromKeyBase64(generateMasterKeyBase64());
 
       final encrypted = cipherA.encrypt('sk-abc');
-      // 密钥不匹配时返回原样密文（占位），不得抛异常拖垮列表加载。
-      expect(cipherB.decrypt(encrypted), encrypted);
+      // 密钥不匹配：返回空串——密文绝不能被当作真实 Key 外发。
+      expect(cipherB.decrypt(encrypted), '');
+      // 不抛异常拖垮列表加载。
+      expect(cipherB.decrypt(encrypted), isNotNull);
     });
 
     test('rejects master keys that are not 32 bytes', () {

@@ -77,9 +77,8 @@ class _PinScreenState extends State<PinScreen> {
 
   Future<void> _authenticateWithBiometrics() async {
     final lock = context.read<AppLockController>();
-    final ok = await BiometricService.authenticate();
+    final ok = await lock.authenticateAndUnlock();
     if (!mounted || !ok) return;
-    lock.unlockViaBiometric();
     final navigator = Navigator.of(context);
     if (navigator.canPop()) navigator.pop(true);
   }

@@ -106,6 +106,12 @@ class HealthCheckService {
   final Map<String, HealthCheckResult> _results = {};
   bool _loaded = false;
 
+  HealthCheckService() {
+    // 构造即异步加载缓存：应用重启后徽标能立即回显，
+    // 而不是等到下一次 checkAll 才出现。
+    unawaited(_ensureLoaded());
+  }
+
   HealthCheckResult? resultFor(String configId) => _results[configId];
 
   Future<void> _ensureLoaded() async {
@@ -206,7 +212,7 @@ class HealthCheckService {
         Uri.parse(endpoint),
         headers: {
           'Authorization': 'Bearer ${config.apiKey}',
-          if (host.contains('anthropic'))
+          if (host == 'api.anthropic.com')
             ..._anthropicHeaders(config.apiKey),
         },
       ).timeout(const Duration(seconds: 10));
@@ -221,25 +227,26 @@ class HealthCheckService {
     }
   }
 
+  /// 仅当 base URL 的 host 与官方裸域**完全一致**时才查询余额：
+  /// 中转/代理域名（如 xxx.openrouter.ai.proxy.example.com）的 Key
+  /// 绝不能被发往官方域。
   String? _balanceEndpointFor(String host) {
-    if (host.contains('api.deepseek.com')) {
+    if (host == 'api.deepseek.com') {
       return 'https://api.deepseek.com/user/balance';
     }
-    if (host.contains('api.siliconflow.cn')) {
+    if (host == 'api.siliconflow.cn') {
       return 'https://api.siliconflow.cn/v1/user/info';
     }
-    if (host.contains('openrouter.ai')) {
+    if (host == 'openrouter.ai') {
       return 'https://openrouter.ai/api/v1/key';
     }
     return null;
   }
 
   String? Function(Map<String, dynamic>) _balanceParserFor(String host) {
-    if (host.contains('api.deepseek.com')) return BalanceParsers.deepseek;
-    if (host.contains('api.siliconflow.cn')) {
-      return BalanceParsers.siliconflow;
-    }
-    if (host.contains('openrouter.ai')) return BalanceParsers.openrouter;
+    if (host == 'api.deepseek.com') return BalanceParsers.deepseek;
+    if (host == 'api.siliconflow.cn') return BalanceParsers.siliconflow;
+    if (host == 'openrouter.ai') return BalanceParsers.openrouter;
     return (_) => null;
   }
 

@@ -47,9 +47,15 @@ class DatabaseService {
         version: _databaseVersion,
         onCreate: _createDatabase,
         onUpgrade: _upgradeDatabase,
+        onDowngrade: _onDowngrade,
       );
     }
     return _sharedDatabase ??= await _initializeDatabase();
+  }
+
+  /// 降级安装时不删除数据库（sqflite 默认会删库），保留用户数据。
+  Future<void> _onDowngrade(Database db, int oldVersion, int newVersion) async {
+    debugPrint('[DB] 版本降级 $oldVersion -> $newVersion，保留数据不删库');
   }
 
   static const int _databaseVersion = 5;
@@ -169,9 +175,7 @@ class DatabaseService {
     if (oldVersion < 3) {
       await _createInteropAuditTable(db);
     }
-    if (oldVersion < 5) {
-      await db.execute('ALTER TABLE api_configs ADD COLUMN deleted_at TEXT');
-    }
+    // 顺序说明：v4 在 v5 之前仅是历史阅读顺序，二者互不依赖。
     if (oldVersion < 4) {
       final historyTable = await db.query('sqlite_master',
           where: "type = 'table' AND name = 'request_history'");
@@ -212,14 +216,22 @@ class DatabaseService {
           if (stored.isEmpty || stored.startsWith(ApiKeyCipher.prefix)) {
             continue;
           }
-          await db.update(
-            'api_configs',
-            {'api_key': cipher.encrypt(stored)},
-            where: 'id = ?',
-            whereArgs: [row['id']],
-          );
+          try {
+            await db.update(
+              'api_configs',
+              {'api_key': cipher.encrypt(stored)},
+              where: 'id = ?',
+              whereArgs: [row['id']],
+            );
+          } catch (e) {
+            // 单行失败不让整个迁移崩掉：该行保持明文，下次升级重试。
+            debugPrint('[DB] 加密存量 Key 失败 id=${row['id']}: $e');
+          }
         }
       }
+    }
+    if (oldVersion < 5) {
+      await db.execute('ALTER TABLE api_configs ADD COLUMN deleted_at TEXT');
     }
   }
 
@@ -265,9 +277,24 @@ class DatabaseService {
   // ==================== API Config operations ====================
   Future<void> insertApiConfig(ApiConfig api) async {
     final db = await database;
+    // 同 id 的已软删行被显式重新写入（第三方导入/模板添加）时视为
+    // 重新启用：清除回收站标记，避免配置重复入库。
+    final existing = await db.query(
+      'api_configs',
+      columns: ['deleted_at'],
+      where: 'id = ?',
+      whereArgs: [api.id],
+      limit: 1,
+    );
+    final wasTrashed = existing.isNotEmpty &&
+        existing.first['deleted_at'] != null;
+    final map = _apiConfigToMap(api);
+    if (wasTrashed && map['deleted_at'] == null) {
+      map['deleted_at'] = null;
+    }
     await db.insert(
       'api_configs',
-      _apiConfigToMap(api),
+      map,
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
@@ -396,17 +423,23 @@ class DatabaseService {
   }
 
   /// 清除超过保留期的回收站内容，返回清除的数量。在应用启动与打开回收站时调用。
+  /// 两条批量 SQL + 事务：避免逐条删除留下半清状态。
   Future<int> purgeExpiredApiConfigs(DateTime cutoff) async {
     final db = await database;
-    final rows = await db.query('api_configs',
-        columns: ['id'],
-        where: 'deleted_at IS NOT NULL AND deleted_at < ?',
-        whereArgs: [cutoff.toIso8601String()]);
-    var purged = 0;
-    for (final row in rows) {
-      if (await purgeApiConfig(row['id'] as String)) purged++;
-    }
-    return purged;
+    return db.transaction((txn) async {
+      final rows = await txn.query('api_configs',
+          columns: ['id'],
+          where: 'deleted_at IS NOT NULL AND deleted_at < ?',
+          whereArgs: [cutoff.toIso8601String()]);
+      if (rows.isEmpty) return 0;
+      final ids = rows.map((row) => row['id'] as String).toList();
+      final placeholders = List.filled(ids.length, '?').join(',');
+      await txn.delete('request_history',
+          where: 'api_config_id IN ($placeholders)', whereArgs: ids);
+      await txn.delete('api_configs',
+          where: 'id IN ($placeholders)', whereArgs: ids);
+      return ids.length;
+    });
   }
 
   Future<ApiConfig?> findBusinessEquivalentApiConfig(
@@ -484,6 +517,20 @@ class DatabaseService {
         );
       }
       for (final config in configs) {
+        // 合并模式不复活回收站中的同 id 配置：本机的删除决定优先。
+        if (!replaceExisting) {
+          final existing = await transaction.query(
+            'api_configs',
+            columns: ['deleted_at'],
+            where: 'id = ?',
+            whereArgs: [config.id],
+            limit: 1,
+          );
+          if (existing.isNotEmpty &&
+              existing.first['deleted_at'] != null) {
+            continue;
+          }
+        }
         await transaction.insert(
           'api_configs',
           _apiConfigToMap(config),
@@ -543,9 +590,12 @@ class DatabaseService {
 
   /// 读出的 api_key 兼容三种形态：明文（未启用加密的历史数据）、
   /// `enc1:` 密文、以及主密钥丢失后解密失败的原样密文。
+  /// 密文无法解密时返回空串——密文绝不能被当作真实 Key 外发。
   String _decryptStoredApiKey(String stored) {
     final cipher = _cipher;
-    if (cipher == null) return stored;
+    if (cipher == null) {
+      return stored.startsWith(ApiKeyCipher.prefix) ? '' : stored;
+    }
     return cipher.decrypt(stored);
   }
 

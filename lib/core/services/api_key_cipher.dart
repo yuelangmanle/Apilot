@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:encrypt/encrypt.dart' as enc;
+import 'package:flutter/foundation.dart';
 
 import 'secret_store.dart';
 
@@ -34,6 +35,9 @@ class ApiKeyCipher {
   }
 
   /// `enc1:` 前缀的密文 → 明文；非密文输入原样返回（历史明文行）。
+  ///
+  /// 解密失败返回**空字符串**：密文绝不能被当作真实 API Key 外发到
+  /// 请求头、备份文件或同步载荷。界面层据此展示空密钥并提示重录。
   String decrypt(String stored) {
     if (!_isEncrypted(stored)) return stored;
     try {
@@ -41,8 +45,11 @@ class ApiKeyCipher {
         stored.substring(prefix.length),
       ));
     } catch (e) {
-      // 主密钥丢失/更换时宁可保留占位也不抛异常拖垮列表加载。
-      return stored;
+      assert(() {
+        debugPrint('[Cipher] 解密失败（主密钥不匹配或密文损坏），已置空');
+        return true;
+      }());
+      return '';
     }
   }
 

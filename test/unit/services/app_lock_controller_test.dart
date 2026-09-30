@@ -42,18 +42,17 @@ void main() {
       controller.dispose();
     });
 
-    test('biometric unlock only works when both flags are on', () async {
+    test('biometric unlock requires real system auth (fail-closed)',
+        () async {
       final controller = AppLockController();
       await Future<void>.delayed(Duration.zero);
       await controller.enable('1234');
-      // 生物识别未开启：不应放行。
-      controller.unlockViaBiometric();
-      expect(controller.locked, isTrue);
-
       await controller.setBiometricEnabled(true);
       expect(controller.biometricEnabled, isTrue);
-      controller.unlockViaBiometric();
-      expect(controller.locked, isFalse);
+      // 测试环境没有系统认证：放行通道必须拒绝，不得无凭证解锁。
+      final unlocked = await controller.authenticateAndUnlock();
+      expect(unlocked, isFalse);
+      expect(controller.locked, isTrue);
       controller.dispose();
     });
 

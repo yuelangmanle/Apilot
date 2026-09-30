@@ -40,11 +40,10 @@ class ApiManagerApp extends StatelessWidget {
         debugPrint('[Apilot] API Key 加密初始化失败，回退明文存储: $e');
       }
     }
-    await _purgeExpiredRecycleBin();
   }
 
-  /// 应用启动时清理超过保留期的回收站内容（保留天数由用户设置，默认 7 天）。
-  static Future<void> _purgeExpiredRecycleBin() async {
+  /// 应用启动后清理超过保留期的回收站内容（保留天数由用户设置，默认 7 天）。
+  static Future<void> purgeRecycleBinAfterStartup() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final days = prefs.getInt('apilot_recycle_retention_days') ?? 7;

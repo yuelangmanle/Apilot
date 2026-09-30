@@ -18,6 +18,7 @@
     
     <application
         android:label="Apilot"
+        android:allowBackup="false"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">

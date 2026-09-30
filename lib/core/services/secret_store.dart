@@ -111,11 +111,26 @@ class AppSecrets {
   static String? _masterKeyCache;
 
   /// 32 字节 Fernet 主密钥（base64url）。首次访问时生成并持久化。
+  ///
+  /// 严格区分两种情形：
+  /// - 存储中确实没有密钥（全新安装）→ 生成新密钥；
+  /// - 存储读取**异常**（如 Android 系统备份恢复后 Keystore 密钥丢失）→
+  ///   抛出 [SecretStoreException]，绝不静默生成新密钥——那会让所有
+  ///   存量密文永久不可解。
   static Future<String> masterKeyBase64() async {
     final cached = _masterKeyCache;
     if (cached != null) return cached;
 
-    var key = await _store.read(_masterKeyStorageKey);
+    String? key;
+    try {
+      key = await _store.read(_masterKeyStorageKey);
+    } catch (error) {
+      throw SecretStoreException(
+        '主密钥读取失败（系统安全区不可用或已被系统备份恢复重置）。'
+        '为保护已有密文，本次不生成新密钥。',
+        error,
+      );
+    }
     if (key == null || key.isEmpty) {
       key = base64UrlEncode(_randomBytes(32));
       await _store.write(_masterKeyStorageKey, key);
@@ -128,4 +143,16 @@ class AppSecrets {
     final random = Random.secure();
     return List<int>.generate(length, (_) => random.nextInt(256));
   }
+}
+
+/// 主密钥存取异常：调用方应停止加密流程，而不是生成新密钥。
+class SecretStoreException implements Exception {
+  final String message;
+  final Object? cause;
+
+  const SecretStoreException(this.message, [this.cause]);
+
+  @override
+  String toString() => 'SecretStoreException: $message'
+      '${cause == null ? '' : ' (${cause!.toString().split('\n').first})'}';
 }

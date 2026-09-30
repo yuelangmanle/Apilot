@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,6 +9,7 @@ import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
 import '../../../shared/widgets/responsive_layout.dart';
+import '../../api_testing/providers/history_provider.dart';
 import '../providers/api_provider.dart';
 
 /// 回收站：删除的 API 方案在此保留 [retentionDays] 天，期间可恢复，
@@ -57,6 +60,37 @@ class _RecycleBinScreenState extends State<RecycleBinScreen> {
   }
 
   Future<void> _setRetention(int days) async {
+    if (days == _retentionDays) return;
+    // 变更保留期会对现有条目立即生效：缩短可能提前清除，明确告知。
+    final shortenRisk = _deleted.any((config) {
+      final deletedAt = config.deletedAt;
+      if (deletedAt == null) return false;
+      return days < _retentionDays &&
+          deletedAt
+              .add(Duration(days: days))
+              .isBefore(DateTime.now());
+    });
+    var confirmed = true;
+    if (shortenRisk && mounted) {
+      confirmed = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('缩短保留期'),
+              content: const Text(
+                  '部分回收站条目按新保留期已到期，下次打开回收站时将被自动清除。继续吗？'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('取消')),
+                TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('继续')),
+              ],
+            ),
+          ) ??
+          false;
+    }
+    if (!confirmed) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_retentionPrefsKey, days);
     setState(() => _retentionDays = days);
@@ -77,8 +111,9 @@ class _RecycleBinScreenState extends State<RecycleBinScreen> {
     if (_busy) return;
     setState(() => _busy = true);
     final messenger = ScaffoldMessenger.of(context);
+    final apiProvider = context.read<ApiProvider>();
     try {
-      await context.read<ApiProvider>().restoreFromRecycleBin(config.id);
+      await apiProvider.restoreFromRecycleBin(config.id);
       messenger.showSnackBar(
         SnackBar(
           content: Text('已恢复「${config.name}」'),
@@ -120,8 +155,12 @@ class _RecycleBinScreenState extends State<RecycleBinScreen> {
     if (!mounted) return;
     setState(() => _busy = true);
     final messenger = ScaffoldMessenger.of(context);
+    final apiProvider = context.read<ApiProvider>();
+    final historyProvider = context.read<HistoryProvider>();
     try {
-      await context.read<ApiProvider>().purgeFromRecycleBin(config.id);
+      await apiProvider.purgeFromRecycleBin(config.id);
+      // 彻底删除会连带请求历史：同步刷新历史页内存数据。
+      unawaited(historyProvider.loadHistory());
       messenger.showSnackBar(
         SnackBar(
             content: Text('已永久删除「${config.name}」'),
@@ -159,8 +198,11 @@ class _RecycleBinScreenState extends State<RecycleBinScreen> {
 
     setState(() => _busy = true);
     final messenger = ScaffoldMessenger.of(context);
+    final apiProvider = context.read<ApiProvider>();
+    final historyProvider = context.read<HistoryProvider>();
     try {
-      final purged = await context.read<ApiProvider>().clearRecycleBin();
+      final purged = await apiProvider.clearRecycleBin();
+      unawaited(historyProvider.loadHistory());
       messenger.showSnackBar(
         SnackBar(
             content: Text('已清空 $purged 个方案'),

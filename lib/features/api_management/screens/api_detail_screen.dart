@@ -633,12 +633,13 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
   }
 
   void _copyExported(String text, String label) {
-    Clipboard.setData(ClipboardData(text: text));
+    // 导出片段内嵌明文 Key，与单 Key 复制同样走 60 秒自动清空。
+    ClipboardPrivacy.copySensitive(text);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('已复制为$label'),
+        content: Text('已复制为$label（60秒后剪贴板自动清空）'),
         backgroundColor: AppColors.success,
-        duration: const Duration(seconds: 1),
+        duration: const Duration(seconds: 2),
       ),
     );
   }

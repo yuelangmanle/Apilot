@@ -189,7 +189,14 @@ class _ApiListScreenState extends State<ApiListScreen> {
                                     SnackBar(
                                       content: Text('已移入回收站：${api.name}'),
                                       backgroundColor: AppColors.success,
-                                      duration: const Duration(seconds: 2),
+                                      duration: const Duration(seconds: 4),
+                                      action: SnackBarAction(
+                                        label: '撤销',
+                                        onPressed: () {
+                                          provider
+                                              .restoreFromRecycleBin(api.id);
+                                        },
+                                      ),
                                     ),
                                   );
                                 } catch (e) {
