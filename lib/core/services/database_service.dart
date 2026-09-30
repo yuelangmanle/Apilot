@@ -59,7 +59,7 @@ class DatabaseService {
     debugPrint('[DB] 版本降级 $oldVersion -> $newVersion，保留数据不删库');
   }
 
-  static const int _databaseVersion = 8;
+  static const int _databaseVersion = 9;
 
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
@@ -148,6 +148,13 @@ class DatabaseService {
         'CREATE INDEX IF NOT EXISTS idx_history_created ON request_history (created_at DESC)');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_history_config ON request_history (api_config_id)');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS deleted_config_ids (
+        id TEXT PRIMARY KEY,
+        deleted_at TEXT NOT NULL
+      )
+    ''');
 
     await db.execute('''
       CREATE TABLE IF NOT EXISTS groups (
@@ -267,6 +274,21 @@ class DatabaseService {
     }
     if (oldVersion < 5) {
       await db.execute('ALTER TABLE api_configs ADD COLUMN deleted_at TEXT');
+    }
+    if (oldVersion < 9) {
+      // 墓碑表：删除 id 的权威记录。api_configs 行被任何写入者改动
+      // （更新/重插/合并）都不会影响删除状态，从查询层面杜绝复活。
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS deleted_config_ids (
+          id TEXT PRIMARY KEY,
+          deleted_at TEXT NOT NULL
+        )
+      ''');
+      // 存量回收站内容回填墓碑。
+      await db.execute('''
+        INSERT OR IGNORE INTO deleted_config_ids (id, deleted_at)
+        SELECT id, deleted_at FROM api_configs WHERE deleted_at IS NOT NULL
+      ''');
     }
     if (oldVersion < 8) {
       await db.execute(
@@ -414,6 +436,9 @@ class DatabaseService {
 
   /// 默认只返回存活配置（回收站中的除外）。
   /// [executor] 允许在外层事务内执行同一批读取（同步合并使用）。
+  ///
+  /// 删除状态以墓碑表 `deleted_config_ids` 为权威来源：即使 api_configs
+  /// 行的 deleted_at 被任何写入路径覆盖，墓碑仍将其排除在活列表之外。
   Future<List<ApiConfig>> getAllApiConfigs({
     bool includeDeleted = false,
     DatabaseExecutor? executor,
@@ -421,14 +446,22 @@ class DatabaseService {
     // 整表查询失败时向上抛出：调用方（列表页/备份/同步服务）需要感知数据库
     // 异常，避免把故障误显示为"没有任何配置"而诱导用户执行清空恢复。
     final db = executor ?? await database;
-    final maps = await db.query('api_configs', orderBy: 'name ASC');
+    final maps = await db.rawQuery('''
+      SELECT a.*, COALESCE(t.deleted_at, a.deleted_at) AS effective_deleted_at
+      FROM api_configs a
+      LEFT JOIN deleted_config_ids t ON t.id = a.id
+      ORDER BY a.name ASC
+    ''');
 
     final List<ApiConfig> results = [];
     for (final map in maps) {
       try {
-        final config = _mapToApiConfig(map);
-        if (!includeDeleted && config.deletedAt != null) continue;
-        results.add(config);
+        final effectiveDeletedAt =
+            map['effective_deleted_at'] as String?;
+        if (!includeDeleted && effectiveDeletedAt != null) continue;
+        final row = Map<String, Object?>.from(map);
+        row['deleted_at'] = effectiveDeletedAt;
+        results.add(_mapToApiConfig(row));
       } catch (e) {
         debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
       }
@@ -436,18 +469,22 @@ class DatabaseService {
     return results;
   }
 
-  /// 回收站内容，按删除时间倒序。
+  /// 回收站内容，按删除时间倒序。以墓碑表为准（行标记被覆盖也能找回）。
   Future<List<ApiConfig>> getDeletedApiConfigs() async {
     final db = await database;
-    final maps = await db.query(
-      'api_configs',
-      where: 'deleted_at IS NOT NULL',
-      orderBy: 'deleted_at DESC',
-    );
+    final maps = await db.rawQuery('''
+      SELECT a.*,
+             COALESCE(t.deleted_at, a.deleted_at) AS effective_deleted_at
+      FROM api_configs a
+      JOIN deleted_config_ids t ON t.id = a.id
+      ORDER BY effective_deleted_at DESC
+    ''');
     final List<ApiConfig> results = [];
     for (final map in maps) {
       try {
-        results.add(_mapToApiConfig(map));
+        final row = Map<String, Object?>.from(map);
+        row['deleted_at'] = map['effective_deleted_at'];
+        results.add(_mapToApiConfig(row));
       } catch (e) {
         debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
       }
@@ -458,14 +495,18 @@ class DatabaseService {
   /// 软删除：移入回收站，同时保留请求历史以便恢复。
   Future<void> softDeleteApiConfig(String id) async {
     final db = await database;
+    final now = DateTime.now().toIso8601String();
     await db.update(
       'api_configs',
-      {
-        'deleted_at': DateTime.now().toIso8601String(),
-        'updated_at': DateTime.now().toIso8601String(),
-      },
+      {'deleted_at': now, 'updated_at': now},
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id],
+    );
+    // 墓碑是删除状态的权威记录：即便行被任何写入者覆盖也不会复活。
+    await db.insert(
+      'deleted_config_ids',
+      {'id': id, 'deleted_at': now},
+      conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
@@ -481,11 +522,13 @@ class DatabaseService {
       where: 'id = ?',
       whereArgs: [id],
     );
+    await db.delete('deleted_config_ids', where: 'id = ?', whereArgs: [id]);
   }
 
   /// 彻底删除（连同请求历史）。返回是否确实删除了一行。
   Future<bool> purgeApiConfig(String id) async {
     final db = await database;
+    await db.delete('deleted_config_ids', where: 'id = ?', whereArgs: [id]);
     await db
         .delete('request_history', where: 'api_config_id = ?', whereArgs: [id]);
     final count = await db
@@ -496,11 +539,19 @@ class DatabaseService {
   /// 清空回收站。返回清除的数量。
   Future<int> clearRecycleBin() async {
     final deleted = await getDeletedApiConfigs();
-    var purged = 0;
-    for (final config in deleted) {
-      if (await purgeApiConfig(config.id)) purged++;
-    }
-    return purged;
+    if (deleted.isEmpty) return 0;
+    final db = await database;
+    final ids = deleted.map((c) => c.id).toList();
+    final placeholders = List.filled(ids.length, '?').join(',');
+    await db.transaction((txn) async {
+      await txn.delete('deleted_config_ids',
+          where: 'id IN ($placeholders)', whereArgs: ids);
+      await txn.delete('request_history',
+          where: 'api_config_id IN ($placeholders)', whereArgs: ids);
+      await txn.delete('api_configs',
+          where: 'id IN ($placeholders)', whereArgs: ids);
+    });
+    return ids.length;
   }
 
   /// 清除超过保留期的回收站内容，返回清除的数量。在应用启动与打开回收站时调用。
@@ -508,16 +559,18 @@ class DatabaseService {
   Future<int> purgeExpiredApiConfigs(DateTime cutoff) async {
     final db = await database;
     return db.transaction((txn) async {
-      final rows = await txn.query('api_configs',
-          columns: ['id'],
-          where: 'deleted_at IS NOT NULL AND deleted_at < ?',
-          whereArgs: [cutoff.toIso8601String()]);
+      final rows = await txn.rawQuery('''
+        SELECT t.id AS id FROM deleted_config_ids t
+        WHERE t.deleted_at < ?
+      ''', [cutoff.toIso8601String()]);
       if (rows.isEmpty) return 0;
       final ids = rows.map((row) => row['id'] as String).toList();
       final placeholders = List.filled(ids.length, '?').join(',');
       await txn.delete('request_history',
           where: 'api_config_id IN ($placeholders)', whereArgs: ids);
       await txn.delete('api_configs',
+          where: 'id IN ($placeholders)', whereArgs: ids);
+      await txn.delete('deleted_config_ids',
           where: 'id IN ($placeholders)', whereArgs: ids);
       return ids.length;
     });
@@ -585,6 +638,8 @@ class DatabaseService {
         await transaction.delete('request_history');
         await transaction.delete('api_configs');
         await transaction.delete('groups');
+        // 用户显式选择"清空后恢复"：回收站一并清空（含墓碑）。
+        await transaction.delete('deleted_config_ids');
       }
       for (final group in groups) {
         await transaction.insert(
@@ -602,7 +657,18 @@ class DatabaseService {
       }
       for (final config in configs) {
         // 合并模式不复活回收站中的同 id 配置：本机的删除决定优先。
+        // 删除状态以墓碑表为权威（行标记可能被任何写入者覆盖）。
         if (!replaceExisting) {
+          final tombstone = await transaction.query(
+            'deleted_config_ids',
+            columns: ['id'],
+            where: 'id = ?',
+            whereArgs: [config.id],
+            limit: 1,
+          );
+          if (tombstone.isNotEmpty) {
+            continue;
+          }
           final existing = await transaction.query(
             'api_configs',
             columns: ['deleted_at'],
@@ -612,6 +678,15 @@ class DatabaseService {
           );
           if (existing.isNotEmpty &&
               existing.first['deleted_at'] != null) {
+            // 行上有标记但墓碑缺失（v9 迁移前的边角）：补录墓碑并跳过。
+            await transaction.insert(
+              'deleted_config_ids',
+              {
+                'id': config.id,
+                'deleted_at': DateTime.now().toIso8601String(),
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
             continue;
           }
         }
