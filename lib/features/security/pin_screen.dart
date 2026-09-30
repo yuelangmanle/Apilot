@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/theme/app_theme.dart';
 import 'app_lock_controller.dart';
+import 'biometric_service.dart';
 
 /// 锁屏门：锁定时遮住整个应用，输入正确 PIN 后放行。
 class LockGate extends StatelessWidget {
@@ -49,8 +50,39 @@ class _PinScreenState extends State<PinScreen> {
   String? _error;
   String _firstPin = '';
   late PinScreenMode _mode = widget.mode;
+  bool _biometricAvailable = false;
+  bool _biometricPrompted = false;
 
   static const _length = 4;
+
+  @override
+  void initState() {
+    super.initState();
+    _prepareBiometric();
+  }
+
+  /// 解锁模式下：设备支持且用户开启了生物识别时，进入页面自动弹一次
+  /// 系统指纹/面容；取消后仍可用 PIN。
+  Future<void> _prepareBiometric() async {
+    if (_mode != PinScreenMode.unlock) return;
+    final lock = context.read<AppLockController>();
+    if (!lock.biometricEnabled) return;
+    final available = await BiometricService.isAvailable();
+    if (!mounted || !available) return;
+    setState(() => _biometricAvailable = true);
+    if (_biometricPrompted) return;
+    _biometricPrompted = true;
+    await _authenticateWithBiometrics();
+  }
+
+  Future<void> _authenticateWithBiometrics() async {
+    final lock = context.read<AppLockController>();
+    final ok = await BiometricService.authenticate();
+    if (!mounted || !ok) return;
+    lock.unlockViaBiometric();
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) navigator.pop(true);
+  }
 
   void _append(String digit) {
     if (_pin.length >= _length) return;
@@ -131,6 +163,19 @@ class _PinScreenState extends State<PinScreen> {
             const Icon(Icons.lock_outline, size: 44, color: AppColors.primary),
             const SizedBox(height: 12),
             Text(title, style: const TextStyle(fontSize: 18)),
+            if (_mode == PinScreenMode.unlock && _biometricAvailable) ...[
+              const SizedBox(height: 16),
+              IconButton.filledTonal(
+                onPressed: _authenticateWithBiometrics,
+                icon: const Icon(Icons.fingerprint, size: 32),
+                iconSize: 32,
+                tooltip: '使用指纹或面容解锁',
+              ),
+              const SizedBox(height: 4),
+              const Text('或使用下方 PIN 解锁',
+                  style: TextStyle(
+                      fontSize: 11, color: AppColors.textSecondary)),
+            ],
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),

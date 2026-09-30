@@ -16,6 +16,7 @@ import 'release_history_screen.dart';
 import 'privacy_screen.dart';
 import 'usage_stats_screen.dart';
 import '../../security/app_lock_controller.dart';
+import '../../security/biometric_service.dart';
 import '../../security/pin_screen.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/models/api_config.dart';
@@ -33,11 +34,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _currentVersion = '';
   bool _isCheckingUpdate = false;
   bool _isImporting = false;
+  bool _biometricAvailable = false;
+
+  bool get _lockEnabled => context.read<AppLockController>().enabled;
+
+  String get _biometricSubtitle {
+    final lock = context.watch<AppLockController>();
+    if (!lock.enabled) return '先开启应用锁';
+    if (!_biometricAvailable) return '当前设备不支持或未录入指纹/面容';
+    return '解锁时可用系统指纹或面容代替 PIN';
+  }
 
   @override
   void initState() {
     super.initState();
     _loadCurrentVersion();
+    _detectBiometric();
+  }
+
+  Future<void> _detectBiometric() async {
+    final available = await BiometricService.isAvailable();
+    if (!mounted) return;
+    setState(() => _biometricAvailable = available);
   }
 
   Future<void> _loadCurrentVersion() async {
@@ -115,6 +133,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: context.watch<AppLockController>().enabled,
                 onChanged: (_) => _toggleAppLock(),
                 secondary: const Icon(Icons.lock_outline),
+              ),
+              SwitchListTile(
+                title: const Text('指纹/面容解锁'),
+                subtitle: Text(_biometricSubtitle),
+                value: context.watch<AppLockController>().biometricEnabled,
+                onChanged: _lockEnabled ? (_) => _toggleBiometric() : null,
+                secondary: const Icon(Icons.fingerprint),
               ),
               ListTile(
                 leading: const Icon(Icons.verified_user_outlined),
@@ -299,6 +324,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(),
       ],
     );
+  }
+
+  Future<void> _toggleBiometric() async {
+    final lock = context.read<AppLockController>();
+    final target = !lock.biometricEnabled;
+    if (target) {
+      // 开启前先用一次系统认证确认是本人操作。
+      final ok = await BiometricService.authenticate();
+      if (!mounted) return;
+      if (!ok) return;
+    }
+    await lock.setBiometricEnabled(target);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(target ? '生物识别解锁已开启' : '生物识别解锁已关闭'),
+          backgroundColor: AppColors.success,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
   }
 
   Future<void> _toggleAppLock() async {

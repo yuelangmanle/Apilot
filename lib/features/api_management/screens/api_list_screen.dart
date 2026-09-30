@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/health_check_service.dart';
+import '../../../shared/utils/friendly_error.dart';
 import '../providers/api_provider.dart';
 import '../widgets/api_card.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -157,48 +158,27 @@ class _ApiListScreenState extends State<ApiListScreen> {
                                   ),
                                 );
                               },
-                              onDelete: () {
-                                showDialog(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    title: const Text('确认删除'),
-                                    content: Text('确定要删除 ${api.name} 吗？'),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(context),
-                                        child: const Text('取消'),
-                                      ),
-                                      TextButton(
-                                        onPressed: () async {
-                                          final messenger =
-                                              ScaffoldMessenger.of(context);
-                                          Navigator.pop(context);
-                                          try {
-                                            await provider
-                                                .deleteApiConfig(api.id);
-                                            messenger.showSnackBar(
-                                              SnackBar(
-                                                  content:
-                                                      Text('已删除 ${api.name}')),
-                                            );
-                                          } catch (e) {
-                                            messenger.showSnackBar(
-                                              SnackBar(
-                                                content: Text(
-                                                    '删除 ${api.name} 失败: $e'),
-                                                backgroundColor:
-                                                    AppColors.error,
-                                              ),
-                                            );
-                                          }
-                                        },
-                                        child: const Text('删除',
-                                            style:
-                                                TextStyle(color: Colors.red)),
-                                      ),
-                                    ],
-                                  ),
-                                );
+                              onDelete: () async {
+                                final messenger =
+                                    ScaffoldMessenger.of(context);
+                                // 确认已在 confirmDismiss 中完成，这里直接执行删除。
+                                try {
+                                  await provider.deleteApiConfig(api.id);
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text('已删除 ${api.name}'),
+                                      backgroundColor: AppColors.success,
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                } catch (e) {
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text(friendlyError(e)),
+                                      backgroundColor: AppColors.error,
+                                    ),
+                                  );
+                                }
                               },
                             );
                           },

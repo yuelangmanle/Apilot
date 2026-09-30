@@ -80,8 +80,25 @@ class ApiCard extends StatelessWidget {
           onFavoriteToggle();
           return false;
         }
-        // 删除确认由 onDelete 统一弹出，这里不要二次确认。
-        return true;
+        // 左滑删除必须先确认：取消时卡片弹回原位，不会先消失。
+        return await showDialog<bool>(
+              context: context,
+              builder: (dialogContext) => AlertDialog(
+                title: const Text('确认删除'),
+                content: Text('确定要删除 ${api.name} 吗？其请求历史会一并删除。'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, false),
+                    child: const Text('取消'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    child: const Text('删除', style: TextStyle(color: Colors.red)),
+                  ),
+                ],
+              ),
+            ) ==
+            true;
       },
       child: Card(
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
