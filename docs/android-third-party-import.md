@@ -4,6 +4,9 @@ Apilot 面向任意第三方 Android App 开放 API 方案互操作。所有导�
 
 当前 Android 包名：`com.example.api_manager`
 
+> 版本兼容：V1 导入在所有版本可用；V2（`schemaVersion: 2`）需要 **Apilot ≥ 1.20.0**。
+> 本文档对应 Apilot v1.24.0 的行为，最后更新于 2026-09-29。
+
 ## 协议版本
 
 | 版本 | 状态 | 用途 |
@@ -50,6 +53,8 @@ V2 将连接与服务商语义分开：
 | 目录来源 | `models.source`: `manual`、`refreshed`、`third_party`、`unknown` |
 
 `provider.id` 优先于 URL 推测。未指定时，Apilot 可从官方域名推测 DeepSeek/OpenAI/Anthropic/Google；无法识别统一保存为 `custom + openai_compatible`。因此，DeepSeek 方案在 V2 中会保持为 `provider.id: deepseek`，不会被降级成普通通用配置。
+
+自 Apilot 1.23.0 起，`protocol.id: anthropic_messages` 的方案在请求层获得完整支持（`x-api-key` 鉴权与 `/messages` 端点），导入的 Claude 方案可以直接测试使用；`google_genai` 建议暂以 `openai_compatible` + Gemini OpenAI 兼容端点导入。
 
 ## V2 导入到 Apilot
 
@@ -205,8 +210,10 @@ putExtra("com.apilot.extra.MODEL_MODE", "all")
 
 - 用户取消授权或导入时，Activity Result 返回 `RESULT_CANCELED`，调用方不得把它当作失败重试或静默回退。
 - `RESULT_OK` 但缺少 extra 和 data URI 时，应视为无效结果并提示用户重新操作。
-- `content://` URI 仅在当前交互内临时可读；Apilot 会在 60 秒后删除缓存文件。调用方应立刻读取，不能持久保存 URI。
+- `content://` URI 仅在当前交互内临时可读；Apilot 会在 **10 分钟后**删除缓存文件（下次授权时也会清理过期文件）。调用方应在收到结果后立刻读取，不能持久保存 URI。
 - 不要把 API Key 写入 URL、deep link、日志、剪贴板或不加密共享存储。
+- Apilot 侧密钥自 1.23.0 起加密落库（Fernet，主密钥在系统安全区），调用方 received 的明文 Key 请自行妥善保管。
+- 若用户开启了应用锁（1.24.0+），跳转 Apilot 后会先停留在 PIN 解锁页；解锁后才会看到导入/授权界面。调用方不应把这段停留视为无响应。
 - Apilot 客户端会记录不含密钥/payload 的导入和授权审计记录；用户可在设置中清除。
 - 常见入站错误：`schemaVersion` 非 1/2、缺少 `apiConfigs`/`apiProfiles`、连接缺少 name/baseUrl、URI 没有读权限。
 - 原生回传错误：`no_pick_request` 表示当前 Activity 不是选择请求；`invalid_pick_payload` 表示 Apilot 未能生成结果。调用方取消时是 `RESULT_CANCELED`，不是错误码。

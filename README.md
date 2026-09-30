@@ -52,6 +52,13 @@
 - **直接配置传输** - 发送、接收和双向同步均通过 BLE GATT 完成，不依赖同一 WiFi
 - **传输确认与校验** - 接收方确认后才传输；内容分片并使用 SHA-256 校验完整性
 
+### 🔗 第三方接入（Android 互操作）
+其他 Android App 可以与 Apilot 桥接，互传 API 方案：
+
+- **导入到 Apilot** - 通过 `IMPORT_API_CONFIGS` Intent 把配置（含语义化 API Profile）交给用户确认后导入
+- **从 Apilot 授权读取** - 通过 `PICK_API_CONFIG` 让用户选择一条已保存方案；默认只返回连接信息与默认模型，模型目录和 API Key 需用户逐项勾选
+- **文档与示例** - 📖 [第三方接入操作手册](docs/android-third-party-import.md) · 🧪 [可构建的 Android 调用示例](examples/android-api-profile-client) · 应用内入口：设置 → 开发者 → 第三方接入文档
+
 ### 🎨 UI 设计
 - Material Design 3 设计语言
 - 小清新配色方案
