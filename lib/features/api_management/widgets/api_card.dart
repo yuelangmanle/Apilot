@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_profile_registry.dart';
+import '../../../core/services/health_check_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/clipboard_privacy.dart';
 import '../../api_testing/screens/test_screen.dart';
 
 class ApiCard extends StatelessWidget {
@@ -10,6 +12,10 @@ class ApiCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onFavoriteToggle;
   final VoidCallback onDelete;
+  final HealthCheckResult? health;
+  final bool selectMode;
+  final bool selected;
+  final VoidCallback? onSelectToggle;
 
   const ApiCard({
     super.key,
@@ -17,6 +23,10 @@ class ApiCard extends StatelessWidget {
     required this.onTap,
     required this.onFavoriteToggle,
     required this.onDelete,
+    this.health,
+    this.selectMode = false,
+    this.selected = false,
+    this.onSelectToggle,
   });
 
   @override
@@ -75,8 +85,14 @@ class ApiCard extends StatelessWidget {
       },
       child: Card(
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        shape: selected && selectMode
+            ? RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: AppColors.primary, width: 2),
+              )
+            : null,
         child: InkWell(
-          onTap: onTap,
+          onTap: selectMode ? onSelectToggle : onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -85,6 +101,22 @@ class ApiCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
+                    if (selectMode)
+                      GestureDetector(
+                        onTap: onSelectToggle,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 10),
+                          child: Icon(
+                            selected
+                                ? Icons.check_circle
+                                : Icons.radio_button_unchecked,
+                            color: selected
+                                ? AppColors.primary
+                                : AppColors.textSecondary,
+                            size: 22,
+                          ),
+                        ),
+                      ),
                     Expanded(
                         child: Text(api.name,
                             style: TextStyle(
@@ -141,6 +173,7 @@ class ApiCard extends StatelessWidget {
                     if (api.models.length > 3)
                       _buildTag('${api.models.length}个模型', AppColors.accent,
                           textColor: AppColors.accentText),
+                    _buildHealthTag(),
                     const Spacer(),
                     TextButton.icon(
                       icon: const Icon(Icons.play_arrow, size: 18),
@@ -179,9 +212,17 @@ class ApiCard extends StatelessWidget {
                 overflow: TextOverflow.ellipsis)),
         InkWell(
           onTap: () {
-            Clipboard.setData(ClipboardData(text: copyText ?? text));
+            if (copyText != null && snackMsg.contains('Key')) {
+              // Key 复制走隐私剪贴板：60 秒后自动清空。
+              ClipboardPrivacy.copySensitive(copyText);
+            } else {
+              Clipboard.setData(ClipboardData(text: copyText ?? text));
+            }
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(snackMsg), duration: const Duration(seconds: 1)));
+                content: Text(snackMsg == 'API Key已复制'
+                    ? '$snackMsg（60秒后自动清空剪贴板）'
+                    : snackMsg),
+                duration: const Duration(seconds: 1)));
           },
           borderRadius: BorderRadius.circular(4),
           child: const Padding(
@@ -190,6 +231,18 @@ class ApiCard extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Widget _buildHealthTag() {
+    if (health == null) return const SizedBox.shrink();
+    final (Color color, String text) = switch (health!.status) {
+      KeyHealthStatus.ok => (AppColors.success, '正常'),
+      KeyHealthStatus.authFailed => (AppColors.error, '失效'),
+      KeyHealthStatus.unreachable => (AppColors.warning, '失联'),
+      KeyHealthStatus.emptyOk => (AppColors.secondaryText, '可达'),
+      KeyHealthStatus.unknown => (AppColors.textSecondary, '未知'),
+    };
+    return _buildTag(text, color, textColor: color);
   }
 
   String _maskApiKey(String apiKey) {

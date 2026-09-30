@@ -4,7 +4,10 @@ import 'package:provider/provider.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_service.dart';
 import '../../../core/services/api_profile_registry.dart';
+import '../../../core/services/health_check_service.dart';
+import '../../../shared/utils/clipboard_privacy.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/friendly_error.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
 import '../providers/api_provider.dart';
@@ -21,6 +24,10 @@ class ApiDetailScreen extends StatefulWidget {
 
 class _ApiDetailScreenState extends State<ApiDetailScreen> {
   late ApiConfig _apiConfig;
+  HealthCheckResult? _health;
+  bool _isCheckingHealth = false;
+  bool _isRefreshingModels = false;
+  final HealthCheckService _healthService = HealthCheckService();
 
   @override
   void initState() {
@@ -146,6 +153,8 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                 canCopy: true,
                 copyValue: _apiConfig.apiKey,
                 copyLabel: 'API Key'),
+            const SizedBox(height: 12),
+            _buildHealthRow(),
             if (_apiConfig.group != null) ...[
               const SizedBox(height: 12),
               _buildInfoRow(context, '分组', _apiConfig.group!, canCopy: false),
@@ -180,6 +189,64 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
     );
   }
 
+  Widget _buildHealthRow() {
+    final result = _health ?? _healthService.resultFor(_apiConfig.id);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final secondary =
+        isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+    final badge = healthBadgeText(result);
+    final color = switch (result?.status) {
+      KeyHealthStatus.ok => AppColors.success,
+      KeyHealthStatus.authFailed => AppColors.error,
+      KeyHealthStatus.unreachable => AppColors.warning,
+      _ => secondary,
+    };
+    return Row(
+      children: [
+        SizedBox(
+            width: 80,
+            child: Text('体检', style: TextStyle(color: secondary, fontSize: 14))),
+        Expanded(
+          child: Text(badge,
+              style: TextStyle(fontSize: 14, color: color)),
+        ),
+        TextButton(
+          onPressed: _isCheckingHealth ? null : _checkHealthNow,
+          child: _isCheckingHealth
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('立即体检'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _checkHealthNow() async {
+    setState(() => _isCheckingHealth = true);
+    try {
+      final result = await _healthService.checkOne(_apiConfig);
+      if (!mounted) return;
+      setState(() => _health = result);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '体检完成：${healthBadgeText(result)}${result.balanceText == null ? '' : ' · 余额 ${result.balanceText}'}'),
+          backgroundColor: result.isOk ? AppColors.success : AppColors.warning,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('体检失败: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isCheckingHealth = false);
+    }
+  }
+
   Widget _buildInfoRow(BuildContext context, String label, String value,
       {required bool canCopy, String? copyValue, String? copyLabel}) {
     return Row(
@@ -204,6 +271,16 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
         if (canCopy)
           InkWell(
             onTap: () {
+              if (copyValue != null && (copyLabel ?? label) == 'API Key') {
+                ClipboardPrivacy.copySensitive(copyValue);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('API Key 已复制（60秒后自动清空剪贴板）'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+                return;
+              }
               Clipboard.setData(ClipboardData(text: copyValue ?? value));
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
@@ -567,7 +644,10 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
   }
 
   Future<void> _refreshModels() async {
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (_isRefreshingModels) return;
+    setState(() => _isRefreshingModels = true);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
       const SnackBar(
           content: Text('正在获取模型列表...'), duration: Duration(seconds: 1)),
     );
@@ -597,11 +677,15 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
         ),
       );
     } catch (e) {
-      if (context.mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('获取失败: $e'), backgroundColor: AppColors.error),
+          SnackBar(
+              content: Text(friendlyError(e)),
+              backgroundColor: AppColors.error),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isRefreshingModels = false);
     }
   }
 

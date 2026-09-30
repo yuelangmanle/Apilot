@@ -7,13 +7,16 @@ import '../../../core/services/import_export_service.dart';
 import '../../../core/services/database_service.dart';
 import '../../../core/services/update_service.dart';
 import '../../../shared/theme/color_scheme.dart';
-import '../../api_testing/screens/history_screen.dart';
+import '../../../shared/utils/friendly_error.dart';
 import '../../api_management/providers/api_provider.dart';
-import '../../sync/screens/sync_screen.dart';
 import '../../api_management/screens/group_manage_screen.dart';
 import '../../third_party_import/screens/third_party_import_docs_screen.dart';
 import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
+import 'privacy_screen.dart';
+import 'usage_stats_screen.dart';
+import '../../security/app_lock_controller.dart';
+import '../../security/pin_screen.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/group.dart';
@@ -66,6 +69,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onTap: () => _exportConfigs(context),
               ),
               ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('恢复数据'),
+                subtitle: const Text('从备份文件恢复API配置'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _importConfigs(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.insights),
+                title: const Text('用量统计'),
+                subtitle: const Text('按配置查看 token 消耗与请求数'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const UsageStatsScreen()),
+                  );
+                },
+              ),
+              ListTile(
                 leading: const Icon(Icons.receipt_long_outlined),
                 title: const Text('第三方交互记录'),
                 subtitle: const Text('查看本地导入与对外授权记录，不包含密钥内容'),
@@ -80,12 +103,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   );
                 },
               ),
+            ],
+          ),
+          _buildSection(
+            context: context,
+            title: '安全',
+            children: [
+              SwitchListTile(
+                title: const Text('应用锁'),
+                subtitle: const Text('启动或从后台返回时需要输入 PIN'),
+                value: context.watch<AppLockController>().enabled,
+                onChanged: (_) => _toggleAppLock(),
+                secondary: const Icon(Icons.lock_outline),
+              ),
               ListTile(
-                leading: const Icon(Icons.download),
-                title: const Text('恢复数据'),
-                subtitle: const Text('从备份文件恢复API配置'),
+                leading: const Icon(Icons.verified_user_outlined),
+                title: const Text('数据与安全'),
+                subtitle: const Text('了解密钥存储、同步与隐私保护机制'),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => _importConfigs(context),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const PrivacyScreen()),
+                  );
+                },
               ),
             ],
           ),
@@ -103,43 +145,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     context,
                     MaterialPageRoute(
                         builder: (context) => const GroupManageScreen()),
-                  );
-                },
-              ),
-            ],
-          ),
-          _buildSection(
-            context: context,
-            title: '设备同步',
-            children: [
-              ListTile(
-                leading: const Icon(Icons.sync),
-                title: const Text('设备同步'),
-                subtitle: const Text('通过局域网同步API配置'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const SyncScreen()),
-                  );
-                },
-              ),
-            ],
-          ),
-          _buildSection(
-            context: context,
-            title: '历史记录',
-            children: [
-              ListTile(
-                leading: const Icon(Icons.history),
-                title: const Text('请求历史'),
-                subtitle: const Text('查看API测试历史记录'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => const HistoryScreen()),
                   );
                 },
               ),
@@ -294,6 +299,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(),
       ],
     );
+  }
+
+  Future<void> _toggleAppLock() async {
+    final lock = context.read<AppLockController>();
+    if (lock.enabled) {
+      // 关闭前先验证 PIN（解锁成功才会走到这里之后）。
+      final unlocked = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+            builder: (context) => const PinScreen(mode: PinScreenMode.unlock)),
+      );
+      if (unlocked == true) {
+        await lock.disable();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('应用锁已关闭')),
+          );
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PIN 验证未通过，应用锁保持开启')),
+        );
+      }
+      return;
+    }
+    final enabled = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+          builder: (context) =>
+              const PinScreen(mode: PinScreenMode.setFirst)),
+    );
+    if (mounted && enabled == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('应用锁已开启'), backgroundColor: AppColors.success),
+      );
+    }
   }
 
   Future<void> _checkForUpdate() async {
@@ -487,7 +528,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('导出失败: $e'),
+            content: Text(friendlyError(e)),
             backgroundColor: AppColors.error,
           ),
         );
@@ -548,7 +589,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('导入失败: $e'),
+            content: Text(friendlyError(e)),
             backgroundColor: AppColors.error,
           ),
         );

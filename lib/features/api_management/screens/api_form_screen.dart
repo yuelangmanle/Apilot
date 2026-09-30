@@ -6,6 +6,7 @@ import '../../../core/models/api_config.dart';
 import '../../../core/models/api_profile.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/friendly_error.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/api_provider.dart';
 import '../services/api_connection_paste_parser.dart';
@@ -36,6 +37,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   bool _obscureApiKey = true;
   String _validationStatus = '';
   bool _saved = false;
+  ApiConnectionPasteResult? _clipboardSuggestion;
   late final Map<String, String> _initialTextValues;
   late final String? _initialGroup;
   late final String _initialEnvironment;
@@ -65,6 +67,25 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     _initialGroup = _selectedGroup;
     _initialEnvironment = _environment;
     _initialFavorite = _isFavorite;
+    _probeClipboard();
+  }
+
+  /// 激活优化：进入表单时自动探测剪贴板，识别到成对的地址+Key 就
+  /// 给出一键填入的横幅（不自动覆盖表单，由用户确认）。
+  Future<void> _probeClipboard() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text ?? '';
+      if (text.trim().isEmpty || !mounted) return;
+      final parsed = ApiConnectionPasteParser.parse(text);
+      if (parsed == null || !mounted) return;
+      final alreadyFilled = _baseUrlController.text.trim() == parsed.baseUrl &&
+          _apiKeyController.text.trim() == parsed.apiKey;
+      if (alreadyFilled) return;
+      setState(() => _clipboardSuggestion = parsed);
+    } catch (_) {
+      // 剪贴板不可读不影响表单使用。
+    }
   }
 
   bool _hasUnsavedChanges() {
@@ -145,6 +166,36 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      if (_clipboardSuggestion != null)
+                        Card(
+                          color: AppColors.primary.withValues(alpha: 0.08),
+                          margin: const EdgeInsets.only(bottom: 12),
+                          child: ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.auto_fix_high,
+                                color: AppColors.primary),
+                            title: const Text('检测到剪贴板中的连接信息',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold)),
+                            subtitle: Text(_clipboardSuggestion!.baseUrl,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11)),
+                            trailing: TextButton(
+                              onPressed: () {
+                                setState(() {
+                                  _baseUrlController.text =
+                                      _clipboardSuggestion!.baseUrl;
+                                  _apiKeyController.text =
+                                      _clipboardSuggestion!.apiKey;
+                                  _clipboardSuggestion = null;
+                                });
+                              },
+                              child: const Text('一键填入'),
+                            ),
+                          ),
+                        ),
                       OutlinedButton.icon(
                         onPressed: _recognizePastedConnection,
                         icon: const Icon(Icons.content_paste_search),
@@ -565,7 +616,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       if (mounted) {
         setState(() {
           _isValidating = false;
-          _validationStatus = '验证失败: $e';
+          _validationStatus = friendlyError(e);
         });
       }
     }
@@ -628,7 +679,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('获取失败: $e'),
+            content: Text(friendlyError(e)),
             backgroundColor: AppColors.error,
           ),
         );
@@ -742,7 +793,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('保存失败: $e'),
+            content: Text(friendlyError(e)),
             backgroundColor: AppColors.error,
           ),
         );
@@ -796,7 +847,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('删除失败: $e'),
+              content: Text(friendlyError(e)),
               backgroundColor: AppColors.error,
             ),
           );

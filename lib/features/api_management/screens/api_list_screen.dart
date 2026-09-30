@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../core/services/health_check_service.dart';
 import '../providers/api_provider.dart';
 import '../widgets/api_card.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -18,6 +19,10 @@ class ApiListScreen extends StatefulWidget {
 class _ApiListScreenState extends State<ApiListScreen> {
   bool _isSearching = false;
   final _searchController = TextEditingController();
+  final HealthCheckService _healthService = HealthCheckService();
+  bool _isHealthChecking = false;
+  bool _selectMode = false;
+  final Set<String> _selectedIds = {};
 
   @override
   void initState() {
@@ -40,7 +45,9 @@ class _ApiListScreenState extends State<ApiListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: _isSearching
+        title: _selectMode
+            ? Text('已选 ${_selectedIds.length} 项')
+            : _isSearching
             ? TextField(
                 controller: _searchController,
                 autofocus: true,
@@ -53,20 +60,54 @@ class _ApiListScreenState extends State<ApiListScreen> {
                 onChanged: (value) => context.read<ApiProvider>().setSearchQuery(value),
               )
             : const Text('Apilot'),
-        actions: [
-          IconButton(
-            icon: Icon(_isSearching ? Icons.close : Icons.search),
-            onPressed: () {
-              setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) {
-                  _searchController.clear();
-                  context.read<ApiProvider>().setSearchQuery('');
-                }
-              });
-            },
-          ),
-        ],
+        actions: _selectMode
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: '退出选择',
+                  onPressed: () => setState(() {
+                    _selectMode = false;
+                    _selectedIds.clear();
+                  }),
+                ),
+                IconButton(
+                  icon: Icon(Icons.delete_outline,
+                      color: _selectedIds.isEmpty ? null : AppColors.error),
+                  tooltip: '删除所选',
+                  onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
+                ),
+              ]
+            : [
+                IconButton(
+                  icon: _isHealthChecking
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child:
+                              CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.health_and_safety_outlined),
+                  tooltip: '一键体检全部 Key',
+                  onPressed:
+                      _isHealthChecking ? null : _runHealthCheck,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.checklist),
+                  tooltip: '批量管理',
+                  onPressed: () => setState(() => _selectMode = true),
+                ),
+                IconButton(
+                  icon: Icon(_isSearching ? Icons.close : Icons.search),
+                  onPressed: () {
+                    setState(() {
+                      _isSearching = !_isSearching;
+                      if (!_isSearching) {
+                        _searchController.clear();
+                        context.read<ApiProvider>().setSearchQuery('');
+                      }
+                    });
+                  },
+                ),
+              ],
       ),
       body: Consumer<ApiProvider>(
         builder: (context, provider, child) {
@@ -88,6 +129,16 @@ class _ApiListScreenState extends State<ApiListScreen> {
                             final api = provider.apiConfigs[index];
                             return ApiCard(
                               api: api,
+                              health: _healthService.resultFor(api.id),
+                              selectMode: _selectMode,
+                              selected: _selectedIds.contains(api.id),
+                              onSelectToggle: () => setState(() {
+                                if (_selectedIds.contains(api.id)) {
+                                  _selectedIds.remove(api.id);
+                                } else {
+                                  _selectedIds.add(api.id);
+                                }
+                              }),
                               onTap: () async {
                                 final result = await Navigator.push<bool>(
                                   context,
@@ -268,6 +319,92 @@ class _ApiListScreenState extends State<ApiListScreen> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _runHealthCheck() async {
+    final provider = context.read<ApiProvider>();
+    final configs = provider.allApiConfigs;
+    if (configs.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('还没有可体检的 API 配置')),
+      );
+      return;
+    }
+    setState(() => _isHealthChecking = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await _healthService.checkAll(configs);
+      if (!mounted) return;
+      setState(() {}); // 刷新徽标
+      final dead = configs
+          .where((c) =>
+              _healthService.resultFor(c.id)?.status ==
+              KeyHealthStatus.authFailed)
+          .length;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(dead == 0
+              ? '体检完成：全部 ${configs.length} 个 Key 正常'
+              : '体检完成：发现 $dead 个失效 Key，已标红'),
+          backgroundColor: dead == 0 ? AppColors.success : AppColors.warning,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('体检失败: $e'), backgroundColor: AppColors.error),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isHealthChecking = false);
+    }
+  }
+
+  Future<void> _deleteSelected() async {
+    final count = _selectedIds.length;
+    final provider = context.read<ApiProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('批量删除'),
+        content: Text('确定删除选中的 $count 个 API 配置吗？其请求历史会一并删除。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    var deleted = 0;
+    var failed = 0;
+    for (final id in _selectedIds.toList()) {
+      try {
+        await provider.deleteApiConfig(id);
+        deleted++;
+      } catch (e) {
+        failed++;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _selectedIds.clear();
+      _selectMode = false;
+    });
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(failed == 0
+            ? '已删除 $deleted 个配置'
+            : '已删除 $deleted 个，$failed 个失败'),
+        backgroundColor: failed == 0 ? null : AppColors.error,
       ),
     );
   }

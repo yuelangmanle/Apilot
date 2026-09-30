@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../core/models/api_config.dart';
 import '../../../core/models/request_history.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../api_management/providers/api_provider.dart';
+import '../screens/test_screen.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/history_provider.dart';
 
@@ -187,6 +190,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 ),
               ),
             IconButton(
+              icon: const Icon(Icons.replay, size: 16),
+              onPressed: () => _retest(context, item),
+              tooltip: '用此配置重测',
+            ),
+            IconButton(
               icon: const Icon(Icons.copy, size: 16),
               onPressed: () {
                 _showHistoryDetail(context, item);
@@ -228,6 +236,35 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 一键重测：跳回测试页并预填历史的模型与请求体。
+  Future<void> _retest(BuildContext context, RequestHistory item) async {
+    final configs = context.read<ApiProvider>().allApiConfigs;
+    ApiConfig? config;
+    for (final candidate in configs) {
+      if (candidate.id == item.apiConfigId) {
+        config = candidate;
+        break;
+      }
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    if (config == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('原配置已被删除，无法重测')),
+      );
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TestScreen(
+          apiConfig: config!,
+          initialModel: item.model,
+          initialBody: item.requestBody,
+        ),
       ),
     );
   }

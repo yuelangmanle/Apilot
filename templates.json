@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "templates": [
+    {
+      "id": "groq",
+      "name": "Groq（极速推理）",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+      "group": "社区",
+      "tags": ["groq", "llama", "fast"]
+    },
+    {
+      "id": "xai",
+      "name": "xAI Grok",
+      "baseUrl": "https://api.x.ai/v1",
+      "models": ["grok-4", "grok-3-mini"],
+      "group": "社区",
+      "tags": ["xai", "grok"]
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral AI",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "models": [],
+      "group": "社区",
+      "tags": ["mistral"]
+    },
+    {
+      "id": "together",
+      "name": "Together AI（聚合）",
+      "baseUrl": "https://api.together.xyz/v1",
+      "models": [],
+      "group": "社区",
+      "tags": ["together", "aggregator"]
+    }
+  ]
+}

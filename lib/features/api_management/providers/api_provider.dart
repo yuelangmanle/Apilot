@@ -55,11 +55,13 @@ class ApiProvider with ChangeNotifier {
     }
 
     if (_searchQuery.isNotEmpty) {
+      // 支持按名称/地址/模型名搜索（重度用户场景：找"哪里能用某模型"）。
       configs = configs
           .where((c) =>
               c.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
               c.baseUrl.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-              c.apiKey.toLowerCase().contains(_searchQuery.toLowerCase()))
+              c.models.any((m) =>
+                  m.toLowerCase().contains(_searchQuery.toLowerCase())))
           .toList();
     } else {
       // 未过滤时也复制一份，避免排序动到 _apiConfigs 本体。

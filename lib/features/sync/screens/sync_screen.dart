@@ -13,6 +13,7 @@ import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
 import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/friendly_error.dart';
 import 'qr_scanner_screen.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
@@ -726,7 +727,7 @@ class _SyncScreenState extends State<SyncScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      final message = '传输失败: $e';
+      final message = friendlyError(e);
       setState(() => _syncStatus = message);
       messenger.showSnackBar(
         SnackBar(

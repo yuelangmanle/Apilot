@@ -9,6 +9,7 @@ import '../../../core/models/request_history.dart';
 import '../../../core/services/api_protocol_adapter.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/friendly_error.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../widgets/request_form.dart';
@@ -18,7 +19,16 @@ import '../providers/history_provider.dart';
 class TestScreen extends StatefulWidget {
   final ApiConfig apiConfig;
 
-  const TestScreen({super.key, required this.apiConfig});
+  /// 重测：携带历史请求的模型与请求体预填表单。
+  final String? initialModel;
+  final Map<String, dynamic>? initialBody;
+
+  const TestScreen({
+    super.key,
+    required this.apiConfig,
+    this.initialModel,
+    this.initialBody,
+  });
 
   @override
   State<TestScreen> createState() => _TestScreenState();
@@ -78,7 +88,7 @@ class _TestScreenState extends State<TestScreen> {
       setState(() {
         _isLoading = false;
         _streaming = false;
-        _errorMessage = _friendlyError(e);
+        _errorMessage = friendlyError(e);
       });
     }
   }
@@ -190,23 +200,6 @@ class _TestScreenState extends State<TestScreen> {
     }
   }
 
-  String _friendlyError(dynamic e) {
-    final msg = e.toString();
-    if (msg.contains('SocketException') || msg.contains('Failed host lookup')) {
-      return '无法连接到服务器，请检查网络和API地址是否正确';
-    }
-    if (msg.contains('TimeoutException') || msg.contains('timeout')) {
-      return '请求超时，服务器响应太慢';
-    }
-    if (msg.contains('Connection refused')) {
-      return '连接被拒绝，请检查API地址和端口';
-    }
-    if (msg.contains('HandshakeException')) {
-      return 'SSL握手失败，请检查HTTPS配置';
-    }
-    return '请求失败: $msg';
-  }
-
   String _prettyJson(Map<String, dynamic> json) {
     try {
       const encoder = JsonEncoder.withIndent('  ');
@@ -277,6 +270,8 @@ class _TestScreenState extends State<TestScreen> {
                         streamEnabled: _streamEnabled,
                         onStreamChanged: (value) =>
                             setState(() => _streamEnabled = value),
+                        initialModel: widget.initialModel,
+                        initialBody: widget.initialBody,
                       ),
                     ),
                   ),
@@ -296,6 +291,8 @@ class _TestScreenState extends State<TestScreen> {
                       streamEnabled: _streamEnabled,
                       onStreamChanged: (value) =>
                           setState(() => _streamEnabled = value),
+                      initialModel: widget.initialModel,
+                      initialBody: widget.initialBody,
                     ),
                   ),
                   const SizedBox(height: 16),

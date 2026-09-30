@@ -14,6 +14,8 @@ import 'features/api_management/screens/api_list_screen.dart';
 import 'features/api_testing/screens/history_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_screen.dart';
+import 'features/security/app_lock_controller.dart';
+import 'features/security/pin_screen.dart';
 import 'features/third_party_import/models/third_party_import_models.dart';
 import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
 import 'features/third_party_import/screens/third_party_api_config_pick_screen.dart';
@@ -52,16 +54,22 @@ class ApiManagerApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => SettingsProvider(),
         ),
+        ChangeNotifierProvider(
+          create: (_) => AppLockController(),
+        ),
       ],
-      child: Consumer<SettingsProvider>(
-        builder: (context, settings, _) {
-          return MaterialApp(
-            title: 'Apilot',
-            theme: AppTheme.lightTheme,
-            darkTheme: AppTheme.darkTheme,
-            themeMode: settings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-            home: const AppShell(),
-            debugShowCheckedModeBanner: false,
+      child: Consumer2<SettingsProvider, AppLockController>(
+        builder: (context, settings, lock, _) {
+          // 应用锁在 MaterialApp 外层：锁定时只渲染 PIN 输入。
+          return LockGate(
+            child: MaterialApp(
+              title: 'Apilot',
+              theme: AppTheme.lightTheme,
+              darkTheme: AppTheme.darkTheme,
+              themeMode: settings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
+              home: const AppShell(),
+              debugShowCheckedModeBanner: false,
+            ),
           );
         },
       ),

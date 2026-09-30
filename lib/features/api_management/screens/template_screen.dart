@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/data/api_templates.dart';
 import '../../../core/models/api_config.dart';
+import '../services/template_catalog_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/api_provider.dart';
@@ -17,6 +18,28 @@ class TemplateScreen extends StatefulWidget {
 class _TemplateScreenState extends State<TemplateScreen> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
+  TemplateCatalog? _catalog;
+  bool _loadingCatalog = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCatalog();
+  }
+
+  Future<void> _loadCatalog() async {
+    try {
+      final catalog = await TemplateCatalogService.loadCatalog();
+      if (!mounted) return;
+      setState(() {
+        _catalog = catalog;
+        _loadingCatalog = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingCatalog = false);
+    }
+  }
+
 
   @override
   void dispose() {
@@ -25,9 +48,12 @@ class _TemplateScreenState extends State<TemplateScreen> {
   }
 
   List<ApiConfig> get _filteredTemplates {
-    if (_searchQuery.isEmpty) return ApiTemplates.templates;
+    final all = _catalog == null
+        ? ApiTemplates.templates
+        : [..._catalog!.builtin, ..._catalog!.community];
+    if (_searchQuery.isEmpty) return all;
     final query = _searchQuery.toLowerCase();
-    return ApiTemplates.templates.where((t) {
+    return all.where((t) {
       return t.name.toLowerCase().contains(query) ||
           t.baseUrl.toLowerCase().contains(query) ||
           t.tags.any((tag) => tag.toLowerCase().contains(query));
@@ -61,6 +87,8 @@ class _TemplateScreenState extends State<TemplateScreen> {
             onChanged: (value) => setState(() => _searchQuery = value),
           ),
         ),
+        if (_loadingCatalog)
+          const LinearProgressIndicator(minHeight: 2),
         Expanded(
           child: templates.isEmpty
               ? const Center(child: Text('没有匹配的模板', style: TextStyle(color: AppColors.textSecondary)))
@@ -98,7 +126,31 @@ class _TemplateScreenState extends State<TemplateScreen> {
         ),
         title: Row(
           children: [
-            Expanded(child: Text(template.name, style: const TextStyle(fontWeight: FontWeight.bold))),
+            Expanded(
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(template.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  if (template.tags.contains('community')) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text('社区',
+                          style: TextStyle(
+                              fontSize: 10, color: AppColors.primaryText)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             if (added)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

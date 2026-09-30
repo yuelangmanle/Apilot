@@ -10,6 +10,8 @@ class RequestForm extends StatefulWidget {
   final bool isLoading;
   final bool streamEnabled;
   final ValueChanged<bool>? onStreamChanged;
+  final String? initialModel;
+  final Map<String, dynamic>? initialBody;
 
   const RequestForm({
     super.key,
@@ -18,6 +20,8 @@ class RequestForm extends StatefulWidget {
     this.isLoading = false,
     this.streamEnabled = true,
     this.onStreamChanged,
+    this.initialModel,
+    this.initialBody,
   });
 
   @override
@@ -36,10 +40,22 @@ class _RequestFormState extends State<RequestForm> {
   }
 
   void _initFromApiConfig() {
-    if (widget.apiConfig.models.isNotEmpty) {
+    if (widget.initialModel != null &&
+        widget.initialModel!.isNotEmpty &&
+        (widget.apiConfig.models.isEmpty ||
+            widget.apiConfig.models.contains(widget.initialModel))) {
+      // 重测场景：优先用历史请求的模型。
+      _selectedModel = widget.initialModel;
+    } else if (widget.apiConfig.models.isNotEmpty) {
       _selectedModel = widget.apiConfig.models.first;
     } else {
       _selectedModel = null;
+    }
+    if (widget.initialBody != null && widget.initialBody!.isNotEmpty) {
+      _endpointController.text = '/chat/completions';
+      _bodyController.text =
+          const JsonEncoder.withIndent('  ').convert(widget.initialBody);
+      return;
     }
     // 智能设置默认端点：如果 base 已有 /v1，端点只写 /chat/completions
     final base = widget.apiConfig.baseUrl;
