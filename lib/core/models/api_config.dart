@@ -98,6 +98,10 @@ class ApiConfig {
     String? importSourceName,
     String? importSourcePackage,
     String? importTrustLevel,
+    DateTime? deletedAt,
+    Object? expiresAt = _unsetSelectedModel,
+    Object? lowBalanceThreshold = _unsetSelectedModel,
+    Object? monthlyBudget = _unsetSelectedModel,
   }) {
     return ApiConfig(
       id: id ?? this.id,
@@ -123,6 +127,17 @@ class ApiConfig {
       importSourceName: importSourceName ?? this.importSourceName,
       importSourcePackage: importSourcePackage ?? this.importSourcePackage,
       importTrustLevel: importTrustLevel ?? this.importTrustLevel,
+      deletedAt: deletedAt ?? this.deletedAt,
+      expiresAt: identical(expiresAt, _unsetSelectedModel)
+          ? this.expiresAt
+          : expiresAt as DateTime?,
+      lowBalanceThreshold:
+          identical(lowBalanceThreshold, _unsetSelectedModel)
+              ? this.lowBalanceThreshold
+              : lowBalanceThreshold as String?,
+      monthlyBudget: identical(monthlyBudget, _unsetSelectedModel)
+          ? this.monthlyBudget
+          : monthlyBudget as double?,
     );
   }
 }

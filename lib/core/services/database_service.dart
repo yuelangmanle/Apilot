@@ -67,6 +67,7 @@ class DatabaseService {
       version: _databaseVersion,
       onCreate: _createDatabase,
       onUpgrade: _upgradeDatabase,
+      onDowngrade: _onDowngrade,
     );
   }
 

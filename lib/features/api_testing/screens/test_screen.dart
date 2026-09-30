@@ -164,6 +164,7 @@ class _TestScreenState extends State<TestScreen> {
         if (!completer.isCompleted) completer.complete();
       },
     );
+    _streamSub = sub;
 
     try {
       await completer.future;
