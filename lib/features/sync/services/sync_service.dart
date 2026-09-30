@@ -42,6 +42,9 @@ class SyncService {
   static const Duration _clientIoTimeout = Duration(seconds: 15);
   static const Duration _deviceStaleAfter = Duration(seconds: 12);
   static const Duration _localIpCacheTtl = Duration(seconds: 10);
+  /// 本机作为同步接收方落库后的回调（供界面刷新列表）。
+  static Future<void> Function()? onServerSyncApplied;
+
   static const String _encryptedHeader = 'X-Apilot-Enc';
   static const String _encryptedHeaderValue = 'fernet-v1';
 
@@ -458,6 +461,8 @@ class SyncService {
 
       final inserted = await storeSyncedConfigs(configs);
       debugPrint('[Sync] 已接收 ${configs.length} 个配置，新增 $inserted 个');
+      // 通知界面层刷新（服务器端接收不经过 provider 的常规路径）。
+      onServerSyncApplied?.call();
 
       _writeJsonResponse(request, cipher,
           {'status': 'ok', 'received': configs.length, 'inserted': inserted},
@@ -665,9 +670,12 @@ class SyncService {
           if (!config.updatedAt.isAfter(sameId.updatedAt)) continue;
           final merged =
               config.copyWith(id: sameId.id, createdAt: sameId.createdAt);
+          final row = _configRow(merged, databaseService);
+          // 回收站保护：同 id 合并不改变本机的删除标记。
+          row['deleted_at'] = sameId.deletedAt?.toIso8601String();
           await txn.update(
             'api_configs',
-            _configRow(merged, databaseService),
+            row,
             where: 'id = ?',
             whereArgs: [merged.id],
           );
@@ -688,9 +696,11 @@ class SyncService {
               id: equivalent.id,
               createdAt: equivalent.createdAt,
             );
+            final row = _configRow(merged, databaseService);
+            row['deleted_at'] = equivalent.deletedAt?.toIso8601String();
             await txn.update(
               'api_configs',
-              _configRow(merged, databaseService),
+              row,
               where: 'id = ?',
               whereArgs: [merged.id],
             );

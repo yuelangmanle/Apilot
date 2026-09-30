@@ -2,11 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../shared/theme/color_scheme.dart';
-import '../../../shared/theme/app_theme.dart';
 import 'app_lock_controller.dart';
 import 'biometric_service.dart';
 
-/// 锁屏门：锁定时遮住整个应用，输入正确 PIN 后放行。
+/// 锁屏门：锁定时直接替换应用首页（同一 MaterialApp 内 home swap）。
+/// 锁屏是唯一路由且禁止返回键离开——不存在被"点空白"绕过、看到或
+/// 操作内页的可能；生物识别弹窗只是浮在锁屏之上的系统 UI。
 class LockGate extends StatelessWidget {
   final Widget child;
 
@@ -15,19 +16,8 @@ class LockGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final lock = context.watch<AppLockController>();
-    if (!lock.initialized) {
-      return const MaterialApp(
-        debugShowCheckedModeBanner: false,
-        home: Scaffold(body: Center(child: CircularProgressIndicator())),
-      );
-    }
     if (lock.enabled && lock.locked) {
-      return MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.lightTheme,
-        darkTheme: AppTheme.darkTheme,
-        home: const PinScreen(),
-      );
+      return const PinScreen();
     }
     return child;
   }
@@ -55,10 +45,30 @@ class _PinScreenState extends State<PinScreen> {
 
   static const _length = 4;
 
+  late final _LifecycleHook _lifecycleHook = _LifecycleHook(_onResumed);
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(_lifecycleHook);
     _prepareBiometric();
+  }
+
+  /// 从后台返回时：只要还处于锁定，就重新弹出生物识别。
+  /// 修复"取消指纹→切桌面→回来不再验证"的漏洞。
+  void _onResumed() {
+    if (!mounted) return;
+    final lock = context.read<AppLockController>();
+    if (lock.enabled && lock.locked) {
+      _biometricPrompted = false;
+      _prepareBiometric();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(_lifecycleHook);
+    super.dispose();
   }
 
   /// 解锁模式下：设备支持且用户开启了生物识别时，进入页面自动弹一次
@@ -149,15 +159,30 @@ class _PinScreenState extends State<PinScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final lock = context.watch<AppLockController>();
     final title = switch (_mode) {
       PinScreenMode.unlock => '输入 PIN 解锁',
       PinScreenMode.setFirst => '设置应用锁 PIN',
       PinScreenMode.setConfirm => '再次输入确认',
     };
-    return Scaffold(
+    return PopScope(
+      // 锁屏是唯一的路由：返回键不允许离开。
+      canPop: false,
+      child: Scaffold(
       body: SafeArea(
         child: Column(
           children: [
+            if (lock.loadFailed)
+              Container(
+                width: double.infinity,
+                color: AppColors.error,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: const Text(
+                  '锁设置读取失败，已进入保护态。请输入 PIN；若遗忘请清除应用数据重置。',
+                  style: TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ),
             const Spacer(flex: 2),
             const Icon(Icons.lock_outline, size: 44, color: AppColors.primary),
             const SizedBox(height: 12),
@@ -204,6 +229,7 @@ class _PinScreenState extends State<PinScreen> {
             const SizedBox(height: 24),
           ],
         ),
+      ),
       ),
     );
   }
@@ -259,5 +285,16 @@ class _PinScreenState extends State<PinScreen> {
         child: child,
       ),
     );
+  }
+}
+
+/// 轻量生命周期观察者：把 resumed 事件转发给回调。
+class _LifecycleHook with WidgetsBindingObserver {
+  final VoidCallback onResumed;
+  _LifecycleHook(this.onResumed);
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) onResumed();
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/api_config.dart';
@@ -268,17 +269,44 @@ class ApiService {
         body,
         apiConfig.protocolId,
       );
+      final headers = ApiProtocolAdapter.authHeaders(
+        protocolId: apiConfig.protocolId,
+        apiKey: apiConfig.apiKey,
+      );
 
-      final response = await http
+      // Key 池：健康优先的候选序列，首发即避开已知失效的 Key。
+      final candidates = KeyPool.candidates(apiConfig);
+      var candidateIndex = 0;
+
+      http.Response response = await http
           .post(
             uri,
-            headers: ApiProtocolAdapter.authHeaders(
-              protocolId: apiConfig.protocolId,
-              apiKey: apiConfig.apiKey,
-            ),
+            headers: headers,
             body: jsonEncode(protocolBody),
           )
           .timeout(const Duration(seconds: 60));
+
+      // 401/403 自动切换下一把候选 Key 重试。
+      while (response.statusCode == 401 || response.statusCode == 403) {
+        final failedKey = candidates[candidateIndex];
+        KeyPool.markFailed(apiConfig.id, failedKey);
+        candidateIndex++;
+        if (candidateIndex >= candidates.length) break;
+        final nextKey = candidates[candidateIndex];
+        response = await http
+            .post(
+              uri,
+              headers: ApiProtocolAdapter.authHeaders(
+                protocolId: apiConfig.protocolId,
+                apiKey: nextKey,
+              ),
+              body: jsonEncode(protocolBody),
+            )
+            .timeout(const Duration(seconds: 60));
+        if (response.statusCode != 401 && response.statusCode != 403) {
+          KeyPool.markHealthy(apiConfig.id, nextKey);
+        }
+      }
 
       stopwatch.stop();
 
@@ -340,45 +368,108 @@ class ApiService {
     final stopwatch = Stopwatch()..start();
     final client = http.Client();
     try {
-      final response =
+      var response =
           await client.send(request).timeout(const Duration(seconds: 30));
+      // 流式故障转移：候选 Key 依次重试（非 200 时）。
+      final candidates = KeyPool.candidates(apiConfig);
+      var candidateIndex = 0;
+      while (response.statusCode == 401 || response.statusCode == 403) {
+        final failedKey = candidates[candidateIndex];
+        KeyPool.markFailed(apiConfig.id, failedKey);
+        candidateIndex++;
+        if (candidateIndex >= candidates.length) break;
+        final nextKey = candidates[candidateIndex];
+        final retry = http.Request('POST', uri)
+          ..headers.addAll(ApiProtocolAdapter.authHeaders(
+            protocolId: protocolId,
+            apiKey: nextKey,
+          ))
+          ..body = jsonEncode(protocolBody);
+        response =
+            await client.send(retry).timeout(const Duration(seconds: 30));
+        if (response.statusCode != 401 && response.statusCode != 403) {
+          KeyPool.markHealthy(apiConfig.id, nextKey);
+        }
+      }
       if (response.statusCode != 200) {
         final errorBody = await response.stream.bytesToString();
         throw ApiException(statusCode: response.statusCode, body: errorBody);
       }
 
       final contentBuffer = StringBuffer();
+      final reasoningBuffer = StringBuffer();
       TokenUsage? usage;
       var rawChunks = 0;
 
       final lines = response.stream
           .transform(const Utf8Decoder())
           .transform(const LineSplitter());
+      // SSE 规范：一个事件可由多行 data: 组成，空行表示事件结束。
+      var dataBuffer = StringBuffer();
+
       await for (final line in lines) {
         final trimmed = line.trim();
-        if (trimmed.isEmpty || trimmed.startsWith(':')) continue;
-        if (!trimmed.startsWith('data:')) continue;
-        final data = trimmed.substring(5).trim();
-        if (data == '[DONE]') break;
-        final frame = jsonDecode(data);
-        if (frame is! Map<String, dynamic>) continue;
-        rawChunks++;
-        final parsed = SseStreamParser.parseFrame(frame, protocolId);
-        if (parsed.deltaText != null && parsed.deltaText!.isNotEmpty) {
-          contentBuffer.write(parsed.deltaText);
-          yield StreamChatEvent.delta(parsed.deltaText!);
+        if (trimmed.isEmpty) {
+          if (dataBuffer.isEmpty) continue;
+        } else if (trimmed.startsWith(':')) {
+          continue;
+        } else if (trimmed.startsWith('data:')) {
+          dataBuffer.write(trimmed.substring(5).trim());
+          continue;
+        } else {
+          continue;
         }
-        if (parsed.usage != null) {
-          usage = parsed.usage;
+
+        final data = dataBuffer.toString();
+        dataBuffer = StringBuffer();
+        if (data.isEmpty || data == '[DONE]') {
+          if (data == '[DONE]') break;
+          continue;
+        }
+
+        try {
+          final decoded = jsonDecode(data);
+          if (decoded is! Map<String, dynamic>) continue;
+          rawChunks++;
+          final parsed = SseStreamParser.parseFrame(decoded, protocolId);
+          final text = parsed.deltaText ?? parsed.reasoningDelta;
+          if (text != null && text.isNotEmpty) {
+            if (parsed.isReasoning) {
+              // 推理文本不进正文，但实时展示（避免长时间空白）。
+              reasoningBuffer.write(text);
+              yield StreamChatEvent.reasoning(text);
+            } else {
+              contentBuffer.write(text);
+              yield StreamChatEvent.delta(text);
+            }
+          }
+          if (parsed.usage != null) {
+            // 字段级合并：Anthropic 的 message_start 带完整 input/output，
+            // 后续 message_delta 只带累计 output——整体覆盖会丢掉 prompt。
+            final incoming = parsed.usage!;
+            usage = TokenUsage(
+              promptTokens: incoming.promptTokens ?? usage?.promptTokens,
+              completionTokens:
+                  incoming.completionTokens ?? usage?.completionTokens,
+              cachedTokens: incoming.cachedTokens ?? usage?.cachedTokens,
+              reasoningTokens:
+                  incoming.reasoningTokens ?? usage?.reasoningTokens,
+            );
+          }
+        } on FormatException catch (e) {
+          // 单帧解析失败只跳过该帧（代理保活行/截断 JSON），不废整条流。
+          debugPrint('[Stream] 坏帧跳过: $e');
         }
       }
       stopwatch.stop();
 
-      final content = contentBuffer.toString();
       final normalized = <String, dynamic>{
         'choices': [
           {
-            'message': {'role': 'assistant', 'content': content},
+            'message': {
+                'role': 'assistant',
+                'content': contentBuffer.toString(),
+              },
             'finish_reason': 'stop',
           }
         ],
@@ -403,21 +494,30 @@ class ApiService {
   }
 }
 
-/// 流式请求的事件：delta 增量或 done 终态。
+/// 流式请求的事件：delta 增量 / reasoning 推理增量 / done 终态。
 class StreamChatEvent {
   final String? delta;
+  final String? reasoning;
   final Map<String, dynamic>? response;
   final int? durationMs;
   final TokenUsage? usage;
 
   const StreamChatEvent.delta(this.delta)
-      : response = null,
+      : reasoning = null,
+        response = null,
+        durationMs = null,
+        usage = null;
+
+  const StreamChatEvent.reasoning(this.reasoning)
+      : delta = null,
+        response = null,
         durationMs = null,
         usage = null;
 
   const StreamChatEvent.done(this.response,
       {required this.durationMs, required this.usage})
-      : delta = null;
+      : delta = null,
+        reasoning = null;
 
   bool get isDone => response != null;
 }
@@ -432,4 +532,39 @@ class ApiException implements Exception {
   @override
   String toString() => 'API 返回 $statusCode: '
       '${body.length > 200 ? '${body.substring(0, 200)}…' : body}';
+}
+
+/// Key 池：每个配置可挂多把备用 Key（metadata.extraKeys）。
+/// 主 Key 401/403 时自动切换；运行时记忆失败过的 Key，优先用健康的。
+class KeyPool {
+  KeyPool._();
+
+  static final Map<String, Set<String>> _failedKeys = {};
+
+  static List<String> extraKeys(ApiConfig config) {
+    final extras = config.metadata?['extraKeys'];
+    if (extras is! List) return const [];
+    return extras
+        .whereType<String>()
+        .where((k) => k.trim().isNotEmpty)
+        .map((k) => k.trim())
+        .toList();
+  }
+
+  static void markFailed(String configId, String key) {
+    _failedKeys.putIfAbsent(configId, () => {}).add(key);
+  }
+
+  static void markHealthy(String configId, String key) {
+    _failedKeys[configId]?.remove(key);
+  }
+
+  /// 返回按健康优先排序的候选 Key（含主 Key），供请求发起前选择。
+  static List<String> candidates(ApiConfig config) {
+    final all = [config.apiKey, ...extraKeys(config)];
+    final failed = _failedKeys[config.id] ?? const {};
+    final healthy = all.where((k) => !failed.contains(k)).toList();
+    final dead = all.where((k) => failed.contains(k)).toList();
+    return [...healthy, ...dead];
+  }
 }

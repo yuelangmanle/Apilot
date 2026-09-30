@@ -15,6 +15,8 @@ class RequestHistory {
   final int? promptTokens;
   final int? completionTokens;
   final int? totalTokens;
+  final int? cachedTokens;
+  final int? reasoningTokens;
   final DateTime createdAt;
 
   RequestHistory({
@@ -29,6 +31,8 @@ class RequestHistory {
     this.promptTokens,
     this.completionTokens,
     this.totalTokens,
+    this.cachedTokens,
+    this.reasoningTokens,
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 

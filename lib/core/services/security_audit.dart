@@ -66,6 +66,32 @@ class SecurityAudit {
       ));
     }
 
+    // 2.5 Key 即将到期（14 天内）或已过期。
+    final now = DateTime.now();
+    final expiringSoon = configs.where((c) =>
+        c.expiresAt != null &&
+        c.expiresAt!.isAfter(now) &&
+        c.expiresAt!.isBefore(now.add(const Duration(days: 14))));
+    final expired = configs
+        .where((c) => c.expiresAt != null && c.expiresAt!.isBefore(now))
+        .toList();
+    if (expired.isNotEmpty) {
+      findings.add(SecurityFinding(
+        level: SecurityFindingLevel.warning,
+        title: 'Key 已过到期日',
+        detail: '以下配置的 Key 已过你设置的到期日，建议尽快更换：',
+        configIds: expired.map((c) => c.id).toList(),
+      ));
+    }
+    if (expiringSoon.isNotEmpty) {
+      findings.add(SecurityFinding(
+        level: SecurityFindingLevel.info,
+        title: 'Key 即将在 14 天内到期',
+        detail: '以下配置的 Key 即将到期，建议提前轮换：',
+        configIds: expiringSoon.map((c) => c.id).toList(),
+      ));
+    }
+
     // 3. 未配置任何加密保护提示。
     if (!appLockEnabled) {
       findings.add(const SecurityFinding(

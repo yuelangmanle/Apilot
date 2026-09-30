@@ -171,7 +171,10 @@ class _ApiListScreenState extends State<ApiListScreen> {
                                 if (result == true && mounted) provider.loadApiConfigs();
                               },
                               onFavoriteToggle: () {
-                                provider.updateApiConfig(api.copyWith(isFavorite: !api.isFavorite));
+                                // bump updatedAt：收藏状态参与同步"新者胜"。
+                                provider.updateApiConfig(api.copyWith(
+                                    isFavorite: !api.isFavorite,
+                                    updatedAt: DateTime.now()));
                                 ScaffoldMessenger.of(context).hideCurrentSnackBar();
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
@@ -506,7 +509,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                     ListTile(
                       leading: const Icon(Icons.auto_awesome, color: AppColors.primary),
                       title: const Text('从模板开始'),
-                      subtitle: const Text('内置 23 个常用 AI API 模板，一键配置'),
+                      subtitle: const Text('内置 28 个常用 AI API 模板，一键配置'),
                       onTap: () => _navigateToTemplate(context),
                       contentPadding: EdgeInsets.zero,
                     ),

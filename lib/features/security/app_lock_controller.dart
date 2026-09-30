@@ -26,11 +26,16 @@ class AppLockController extends ChangeNotifier
   bool _initialized = false;
   bool _wasInBackground = false;
   bool _biometricEnabled = false;
+  bool _loadFailed = false;
 
   bool get enabled => _enabled;
   bool get locked => _locked;
   bool get initialized => _initialized;
   bool get biometricEnabled => _biometricEnabled;
+
+  /// 锁设置读取失败（fail-closed）：保持锁定并提示用户，
+  /// 避免读取异常导致锁静默失效。
+  bool get loadFailed => _loadFailed;
 
   AppLockController() {
     WidgetsBinding.instance.addObserver(this);
@@ -43,9 +48,12 @@ class AppLockController extends ChangeNotifier
       _enabled = prefs.getBool(_enabledKey) ?? false;
       _biometricEnabled = prefs.getBool(_biometricKey) ?? false;
       _locked = _enabled; // 启动即锁
-    } catch (_) {
-      _enabled = false;
-      _locked = false;
+    } catch (e) {
+      // fail-closed：读不到锁设置时保持锁定，绝不静默放行。
+      _enabled = true;
+      _locked = true;
+      _loadFailed = true;
+      debugPrint('[AppLock] 锁设置读取失败，已进入保护态: $e');
     }
     _initialized = true;
     notifyListeners();
@@ -100,9 +108,11 @@ class AppLockController extends ChangeNotifier
     final ok = await BiometricService.authenticate();
     if (!ok) return false;
     _locked = false;
+    _wasInBackground = false;
     notifyListeners();
     return true;
   }
+
 
   /// 校验 PIN。成功即解锁并返回 true；连续失败会触发时间退避。
   Future<bool> unlock(String pin) async {

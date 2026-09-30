@@ -33,6 +33,15 @@ class ApiConfig {
   /// 回收站标记：非空表示已软删除，删除时间为进入回收站的时间。
   final DateTime? deletedAt;
 
+  /// Key 到期日（可选）：临近到期在体检/安全仪表盘提醒。
+  final DateTime? expiresAt;
+
+  /// 余额低水位线（可选，展示用，如 "10"）：体检时余额低于该值提醒。
+  final String? lowBalanceThreshold;
+
+  /// 每月预算上限（可选，USD）：用量统计按估算成本对比告警。
+  final double? monthlyBudget;
+
   ApiConfig({
     required this.id,
     required this.name,
@@ -56,6 +65,9 @@ class ApiConfig {
     this.importSourcePackage,
     this.importTrustLevel,
     this.deletedAt,
+    this.expiresAt,
+    this.lowBalanceThreshold,
+    this.monthlyBudget,
   })  : createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
 

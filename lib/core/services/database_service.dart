@@ -58,7 +58,7 @@ class DatabaseService {
     debugPrint('[DB] 版本降级 $oldVersion -> $newVersion，保留数据不删库');
   }
 
-  static const int _databaseVersion = 5;
+  static const int _databaseVersion = 7;
 
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
@@ -94,7 +94,10 @@ class DatabaseService {
         import_source_name TEXT,
         import_source_package TEXT,
         import_trust_level TEXT,
-        deleted_at TEXT
+        deleted_at TEXT,
+        expires_at TEXT,
+        low_balance TEXT,
+        monthly_budget REAL
       )
     ''');
 
@@ -111,6 +114,8 @@ class DatabaseService {
         prompt_tokens INTEGER,
         completion_tokens INTEGER,
         total_tokens INTEGER,
+        cached_tokens INTEGER,
+        reasoning_tokens INTEGER,
         created_at TEXT NOT NULL,
         FOREIGN KEY (api_config_id) REFERENCES api_configs (id)
       )
@@ -194,6 +199,8 @@ class DatabaseService {
             prompt_tokens INTEGER,
             completion_tokens INTEGER,
             total_tokens INTEGER,
+            cached_tokens INTEGER,
+            reasoning_tokens INTEGER,
             created_at TEXT NOT NULL,
             FOREIGN KEY (api_config_id) REFERENCES api_configs (id)
           )
@@ -232,6 +239,26 @@ class DatabaseService {
     }
     if (oldVersion < 5) {
       await db.execute('ALTER TABLE api_configs ADD COLUMN deleted_at TEXT');
+    }
+    if (oldVersion < 7) {
+      // v1 缺表场景已在上面按完整结构建表，这里按列是否存在幂等补齐。
+      final historyColumns =
+          await db.rawQuery('PRAGMA table_info(request_history)');
+      final names = historyColumns.map((row) => row['name']).toSet();
+      if (!names.contains('cached_tokens')) {
+        await db.execute(
+            'ALTER TABLE request_history ADD COLUMN cached_tokens INTEGER');
+      }
+      if (!names.contains('reasoning_tokens')) {
+        await db.execute(
+            'ALTER TABLE request_history ADD COLUMN reasoning_tokens INTEGER');
+      }
+    }
+    if (oldVersion < 6) {
+      await db.execute('ALTER TABLE api_configs ADD COLUMN expires_at TEXT');
+      await db.execute('ALTER TABLE api_configs ADD COLUMN low_balance TEXT');
+      await db
+          .execute('ALTER TABLE api_configs ADD COLUMN monthly_budget REAL');
     }
   }
 
@@ -277,8 +304,9 @@ class DatabaseService {
   // ==================== API Config operations ====================
   Future<void> insertApiConfig(ApiConfig api) async {
     final db = await database;
-    // 同 id 的已软删行被显式重新写入（第三方导入/模板添加）时视为
-    // 重新启用：清除回收站标记，避免配置重复入库。
+    // 回收站保护：同 id 的已软删行被重新写入时（同步/导入/备份），
+    // 保留回收站标记——任何写入路径都不允许"顺带复活"已删除的配置。
+    // 唯一的恢复途径是回收站页的恢复按钮（restoreApiConfig）。
     final existing = await db.query(
       'api_configs',
       columns: ['deleted_at'],
@@ -289,8 +317,11 @@ class DatabaseService {
     final wasTrashed = existing.isNotEmpty &&
         existing.first['deleted_at'] != null;
     final map = _apiConfigToMap(api);
-    if (wasTrashed && map['deleted_at'] == null) {
-      map['deleted_at'] = null;
+    if (wasTrashed) {
+      final existingDeletedAt = existing.first['deleted_at'] as String?;
+      if (api.deletedAt == null) {
+        map['deleted_at'] = existingDeletedAt;
+      }
     }
     await db.insert(
       'api_configs',
@@ -328,6 +359,9 @@ class DatabaseService {
       'import_source_package': api.importSourcePackage,
       'import_trust_level': api.importTrustLevel,
       'deleted_at': api.deletedAt?.toIso8601String(),
+      'expires_at': api.expiresAt?.toIso8601String(),
+      'low_balance': api.lowBalanceThreshold,
+      'monthly_budget': api.monthlyBudget,
     };
   }
 
@@ -392,7 +426,10 @@ class DatabaseService {
     final db = await database;
     await db.update(
       'api_configs',
-      {'deleted_at': DateTime.now().toIso8601String()},
+      {
+        'deleted_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      },
       where: 'id = ? AND deleted_at IS NULL',
       whereArgs: [id],
     );
@@ -403,7 +440,10 @@ class DatabaseService {
     final db = await database;
     await db.update(
       'api_configs',
-      {'deleted_at': null},
+      {
+        'deleted_at': null,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -484,6 +524,9 @@ class DatabaseService {
         'import_source_name': api.importSourceName,
         'import_source_package': api.importSourcePackage,
         'import_trust_level': api.importTrustLevel,
+        'expires_at': api.expiresAt?.toIso8601String(),
+        'low_balance': api.lowBalanceThreshold,
+        'monthly_budget': api.monthlyBudget,
       },
       where: 'id = ?',
       whereArgs: [api.id],
@@ -592,6 +635,9 @@ class DatabaseService {
       importSourcePackage: map['import_source_package'] as String?,
       importTrustLevel: map['import_trust_level'] as String?,
       deletedAt: _parseDateTime(map['deleted_at']),
+      expiresAt: _parseDateTime(map['expires_at']),
+      lowBalanceThreshold: map['low_balance'] as String?,
+      monthlyBudget: (map['monthly_budget'] as num?)?.toDouble(),
     );
   }
 
@@ -824,6 +870,8 @@ class DatabaseService {
           'prompt_tokens': history.promptTokens,
           'completion_tokens': history.completionTokens,
           'total_tokens': history.totalTokens,
+          'cached_tokens': history.cachedTokens,
+          'reasoning_tokens': history.reasoningTokens,
           'created_at': history.createdAt.toIso8601String(),
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
@@ -891,6 +939,8 @@ class DatabaseService {
       promptTokens: map['prompt_tokens'] as int?,
       completionTokens: map['completion_tokens'] as int?,
       totalTokens: map['total_tokens'] as int?,
+      cachedTokens: map['cached_tokens'] as int?,
+      reasoningTokens: map['reasoning_tokens'] as int?,
       createdAt: createdAtStr != null
           ? DateTime.tryParse(createdAtStr) ?? DateTime.now()
           : DateTime.now(),

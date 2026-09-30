@@ -42,6 +42,11 @@ ApiConfig _$ApiConfigFromJson(Map<String, dynamic> json) => ApiConfig(
       deletedAt: json['deletedAt'] == null
           ? null
           : DateTime.parse(json['deletedAt'] as String),
+      expiresAt: json['expiresAt'] == null
+          ? null
+          : DateTime.parse(json['expiresAt'] as String),
+      lowBalanceThreshold: json['lowBalanceThreshold'] as String?,
+      monthlyBudget: (json['monthlyBudget'] as num?)?.toDouble(),
     );
 
 Map<String, dynamic> _$ApiConfigToJson(ApiConfig instance) => <String, dynamic>{
@@ -67,4 +72,7 @@ Map<String, dynamic> _$ApiConfigToJson(ApiConfig instance) => <String, dynamic>{
       'importSourcePackage': instance.importSourcePackage,
       'importTrustLevel': instance.importTrustLevel,
       'deletedAt': instance.deletedAt?.toIso8601String(),
+      'expiresAt': instance.expiresAt?.toIso8601String(),
+      'lowBalanceThreshold': instance.lowBalanceThreshold,
+      'monthlyBudget': instance.monthlyBudget,
     };

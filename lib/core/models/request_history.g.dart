@@ -19,6 +19,8 @@ RequestHistory _$RequestHistoryFromJson(Map<String, dynamic> json) =>
       promptTokens: (json['promptTokens'] as num?)?.toInt(),
       completionTokens: (json['completionTokens'] as num?)?.toInt(),
       totalTokens: (json['totalTokens'] as num?)?.toInt(),
+      cachedTokens: (json['cachedTokens'] as num?)?.toInt(),
+      reasoningTokens: (json['reasoningTokens'] as num?)?.toInt(),
       createdAt: json['createdAt'] == null
           ? null
           : DateTime.parse(json['createdAt'] as String),
@@ -37,5 +39,7 @@ Map<String, dynamic> _$RequestHistoryToJson(RequestHistory instance) =>
       'promptTokens': instance.promptTokens,
       'completionTokens': instance.completionTokens,
       'totalTokens': instance.totalTokens,
+      'cachedTokens': instance.cachedTokens,
+      'reasoningTokens': instance.reasoningTokens,
       'createdAt': instance.createdAt.toIso8601String(),
     };

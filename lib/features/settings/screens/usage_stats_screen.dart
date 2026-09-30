@@ -18,6 +18,12 @@ class UsageStatsScreen extends StatelessWidget {
     final configs = context.watch<ApiProvider>().allApiConfigs;
     final names = {for (final c in configs) c.id: c.name};
     final usages = UsageAggregator.byConfig(history, names: names);
+    // 预算上限（可选字段）：按估算成本展示进度。
+    final budgets = {
+      for (final c in configs)
+        if (c.monthlyBudget != null && c.monthlyBudget! > 0)
+          c.id: c.monthlyBudget!,
+    };
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final secondary =
@@ -97,44 +103,80 @@ class UsageStatsScreen extends StatelessWidget {
                         : (usage.successCount / usage.requestCount * 100);
                     return Card(
                       margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor:
-                              AppColors.primary.withValues(alpha: 0.1),
-                          child: Text(
-                            usage.configName.isEmpty
-                                ? '?'
-                                : usage.configName.characters.first,
-                            style: const TextStyle(
-                                color: AppColors.primary,
-                                fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                        title: Text(usage.configName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.bold)),
-                        subtitle: Text(
-                          '${usage.requestCount} 次请求'
-                          '${successRate == null ? '' : ' · 成功率 ${successRate.toStringAsFixed(0)}%'}'
-                          ' · 输入 ${_formatTokens(usage.promptTokens)} / 输出 ${_formatTokens(usage.completionTokens)}',
-                          style: TextStyle(fontSize: 12, color: secondary),
-                        ),
-                        trailing: Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          mainAxisSize: MainAxisSize.min,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(_formatTokens(usage.totalTokens),
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.primary)),
-                            if ((costs[usage.configId] ?? 0) > 0)
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              dense: true,
+                              leading: CircleAvatar(
+                                backgroundColor: AppColors.primary
+                                    .withValues(alpha: 0.1),
+                                child: Text(
+                                  usage.configName.isEmpty
+                                      ? '?'
+                                      : usage.configName.characters.first,
+                                  style: const TextStyle(
+                                      color: AppColors.primary,
+                                      fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                              title: Text(usage.configName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold)),
+                              subtitle: Text(
+                                '${usage.requestCount} 次请求'
+                                '${successRate == null ? '' : ' · 成功率 ${successRate.toStringAsFixed(0)}%'}'
+                                ' · 输入 ${_formatTokens(usage.promptTokens)} / 输出 ${_formatTokens(usage.completionTokens)}',
+                                style: TextStyle(
+                                    fontSize: 12, color: secondary),
+                              ),
+                              trailing: Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(_formatTokens(usage.totalTokens),
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary)),
+                                  if ((costs[usage.configId] ?? 0) > 0)
+                                    Text(
+                                        CostEstimator.formatUsd(
+                                            costs[usage.configId] ?? 0),
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: secondary)),
+                                ],
+                              ),
+                            ),
+                            if (budgets[usage.configId] != null) ...[
+                              const SizedBox(height: 4),
+                              LinearProgressIndicator(
+                                value: ((costs[usage.configId] ?? 0) /
+                                            budgets[usage.configId]!)
+                                        .clamp(0.0, 1.0),
+                                backgroundColor:
+                                    secondary.withValues(alpha: 0.15),
+                                color: (costs[usage.configId] ?? 0) >=
+                                        budgets[usage.configId]!
+                                    ? AppColors.error
+                                    : AppColors.primary,
+                                minHeight: 4,
+                              ),
+                              const SizedBox(height: 4),
                               Text(
-                                  CostEstimator.formatUsd(
-                                      costs[usage.configId] ?? 0),
-                                  style: TextStyle(
-                                      fontSize: 11, color: secondary)),
+                                '月预算 ${CostEstimator.formatUsd(budgets[usage.configId]!)}'
+                                '，已用 ${((costs[usage.configId] ?? 0) / budgets[usage.configId]! * 100).toStringAsFixed(0)}%'
+                                '${(costs[usage.configId] ?? 0) >= budgets[usage.configId]! ? '（已超）' : ''}',
+                                style: TextStyle(
+                                    fontSize: 10, color: secondary),
+                              ),
+                            ],
                           ],
                         ),
                       ),

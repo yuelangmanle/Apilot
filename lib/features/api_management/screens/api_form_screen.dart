@@ -39,6 +39,9 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   String? _selectedGroup;
   String _environment = 'development';
   bool _isFavorite = false;
+  DateTime? _expiresAt;
+  final _lowBalanceController = TextEditingController();
+  final _monthlyBudgetController = TextEditingController();
   bool _isLoading = false;
   bool _isFetchingModels = false;
   bool _isValidating = false;
@@ -158,6 +161,8 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _lowBalanceController.dispose();
+    _monthlyBudgetController.dispose();
     _baseUrlController.dispose();
     _apiKeyController.dispose();
     _modelsController.dispose();
@@ -515,6 +520,72 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                         },
                       ),
                       const SizedBox(height: 16),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('生命周期（可选）',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13)),
+                              const SizedBox(height: 8),
+                              ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.event_outlined,
+                                    size: 20),
+                                title: Text(_expiresAt == null
+                                    ? 'Key 到期日'
+                                    : '到期日：${_expiresAt!.year}-${_expiresAt!.month.toString().padLeft(2, '0')}-${_expiresAt!.day.toString().padLeft(2, '0')}'),
+                                trailing: _expiresAt == null
+                                    ? const Icon(Icons.chevron_right)
+                                    : IconButton(
+                                        icon: const Icon(Icons.close,
+                                            size: 18),
+                                        onPressed: () =>
+                                            setState(() => _expiresAt = null),
+                                      ),
+                                onTap: () async {
+                                  final picked = await showDatePicker(
+                                    context: context,
+                                    initialDate:
+                                        _expiresAt ?? DateTime.now(),
+                                    firstDate: DateTime(2020),
+                                    lastDate:
+                                        DateTime.now().add(const Duration(days: 3650)),
+                                  );
+                                  if (picked != null) {
+                                    setState(() => _expiresAt = picked);
+                                  }
+                                },
+                              ),
+                              TextField(
+                                controller: _lowBalanceController,
+                                keyboardType: TextInputType.text,
+                                decoration: const InputDecoration(
+                                  labelText: '余额低水位线（如 10）',
+                                  hintText: '低于该值时体检提醒',
+                                  isDense: true,
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _monthlyBudgetController,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                decoration: const InputDecoration(
+                                  labelText: '每月预算上限（USD，可选）',
+                                  isDense: true,
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
                       SwitchListTile(
                         title: const Text('收藏'),
                         subtitle: const Text('添加到收藏列表'),
@@ -798,6 +869,12 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         importSourceName: original?.importSourceName,
         importSourcePackage: original?.importSourcePackage,
         importTrustLevel: original?.importTrustLevel,
+        expiresAt: _expiresAt,
+        lowBalanceThreshold: _lowBalanceController.text.trim().isEmpty
+            ? null
+            : _lowBalanceController.text.trim(),
+        monthlyBudget: double.tryParse(
+            _monthlyBudgetController.text.trim()),
       );
 
       // 重复检测（基于全量配置，不受当前搜索/筛选影响）

@@ -45,6 +45,7 @@ class _TestScreenState extends State<TestScreen> {
   bool _isLoading = false;
   bool _streaming = false;
   String _streamText = '';
+  String _reasoningText = '';
   Map<String, dynamic>? _response;
   Map<String, String>? _responseHeaders;
   String? _errorMessage;
@@ -71,6 +72,7 @@ class _TestScreenState extends State<TestScreen> {
       _isLoading = true;
       _streaming = stream;
       _streamText = '';
+      _reasoningText = '';
       _errorMessage = null;
       _response = null;
       _responseHeaders = null;
@@ -129,8 +131,8 @@ class _TestScreenState extends State<TestScreen> {
     Map<String, dynamic> body,
     int requestId,
   ) async {
-    final completer = Completer<void>();
-    _streamSub = _apiService.sendRequestStream(
+      final completer = Completer<void>();
+    final sub = _apiService.sendRequestStream(
       apiConfig: api,
       model: model,
       requestBody: body,
@@ -149,6 +151,8 @@ class _TestScreenState extends State<TestScreen> {
           });
           unawaited(_recordHistory(api, model, '/stream', body, response));
           if (!completer.isCompleted) completer.complete();
+        } else if (event.reasoning != null) {
+          setState(() => _reasoningText += event.reasoning!);
         } else {
           setState(() => _streamText += event.delta!);
         }
@@ -164,8 +168,10 @@ class _TestScreenState extends State<TestScreen> {
     try {
       await completer.future;
     } finally {
-      await _streamSub?.cancel();
-      _streamSub = null;
+      await sub.cancel();
+      if (identical(_streamSub, sub)) {
+        _streamSub = null;
+      }
     }
     // 流正常关闭但没收到 done 帧（对端异常断流）时收尾。
     if (!mounted || requestId != _requestId) return;
@@ -229,6 +235,8 @@ class _TestScreenState extends State<TestScreen> {
       promptTokens: _usage?.promptTokens,
       completionTokens: _usage?.completionTokens,
       totalTokens: _usage?.totalTokens,
+      cachedTokens: _usage?.cachedTokens,
+      reasoningTokens: _usage?.reasoningTokens,
     );
     try {
       await context.read<HistoryProvider>().addHistory(history);
@@ -248,8 +256,10 @@ class _TestScreenState extends State<TestScreen> {
   }
 
   void _switchApi(ApiConfig api) {
-    // 作废在途请求，避免旧接口的结果挂到新接口名下。
+    // 作废在途请求：取消旧流并递增序号，旧回包/旧 finally 不影响新请求。
     _requestId++;
+    _streamSub?.cancel();
+    _streamSub = null;
     setState(() {
       _currentApi = api;
       _response = null;
@@ -259,6 +269,7 @@ class _TestScreenState extends State<TestScreen> {
       _duration = null;
       _usage = null;
       _streamText = '';
+      _reasoningText = '';
       _isLoading = false;
       _streaming = false;
     });
@@ -525,7 +536,9 @@ class _TestScreenState extends State<TestScreen> {
                 ),
                 child: Text(
                   '${_usage!.totalTokens} tokens'
-                  '${_usage!.promptTokens != null && _usage!.completionTokens != null ? ' (${_usage!.promptTokens}+${_usage!.completionTokens})' : ''}',
+                  '${_usage!.promptTokens != null && _usage!.completionTokens != null ? ' (${_usage!.promptTokens}+${_usage!.completionTokens})' : ''}'
+                  '${_usage!.cachedTokens != null && _usage!.cachedTokens! > 0 ? ' · 缓存 ${_usage!.cachedTokens}' : ''}'
+                  '${_usage!.reasoningTokens != null && _usage!.reasoningTokens! > 0 ? ' · 推理 ${_usage!.reasoningTokens}' : ''}',
                   style:
                       TextStyle(color: secondaryTextColor, fontSize: 12),
                 ),

@@ -34,13 +34,25 @@ class MainActivity : FlutterFragmentActivity() {
         if (text.isBlank()) return
         pendingShareText = text
         // Flutter 已就绪时直接推送；否则等待 getInitialShareText 拉取。
-        shareChannel?.invokeMethod("onShareReceived", text)
-        intent.removeExtra(Intent.EXTRA_TEXT)
+        // 推送即清除，避免解锁重建 AppShell 时把旧分享再弹一次。
+        shareChannel?.invokeMethod("onShareReceived", text)?.let {
+            pendingShareText = null
+        }
+        try {
+            intent.removeExtra(Intent.EXTRA_TEXT)
+        } catch (_: Exception) {
+        }
     }
 
     // 进入后台/任务切换器时遮蔽内容，防止最近任务缩略图泄露配置与 Key。
     override fun onPause() {
         super.onPause()
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // onStop 兜底：部分机型的最近任务截图发生在 onPause 与 onStop 之间。
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
     }
 
@@ -470,7 +482,6 @@ class MainActivity : FlutterFragmentActivity() {
         private const val API_PROFILE_MIME_TYPE = "application/vnd.apilot.api-profile+json"
         private const val EXTRA_PAYLOAD_THRESHOLD_BYTES = 64 * 1024
         private const val SHARE_CHANNEL_NAME = "com.apilot/share"
-        private const val KEY_PENDING_SHARE_TEXT = "pendingShareText" 
         private const val RESULT_FILE_MAX_AGE_MS = 10 * 60 * 1000L
         private const val RESULT_FILE_LIFETIME_MS = 60 * 1000L
         private const val SOURCE_IDENTITY_CALLING_PACKAGE = "calling_package"

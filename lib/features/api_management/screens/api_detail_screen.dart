@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -8,6 +10,7 @@ import '../../../core/services/health_check_service.dart';
 import '../../../shared/utils/clipboard_privacy.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
+import '../../api_testing/screens/compare_test_screen.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
 import '../providers/api_provider.dart';
@@ -41,6 +44,37 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
       appBar: AppBar(
         title: Text(_apiConfig.name),
         actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (value) {
+              if (value == 'compare') _openCompare();
+              if (value == 'clone') _cloneConfig();
+              if (value == 'export') _showExportFileSheet();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                  value: 'compare',
+                  child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.compare_arrows),
+                      title: Text('对比测试'))),
+              PopupMenuItem(
+                  value: 'clone',
+                  child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.copy_all),
+                      title: Text('创建副本'))),
+              PopupMenuItem(
+                  value: 'export',
+                  child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.ios_share),
+                      title: Text('导出配置文件'))),
+            ],
+          ),
           IconButton(
             icon: Icon(
               _apiConfig.isFavorite ? Icons.star : Icons.star_border,
@@ -573,6 +607,65 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  void _openCompare() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (context) => CompareTestScreen(initialConfig: _apiConfig)),
+    );
+  }
+
+  /// 克隆：以当前配置为模板进入新建表单（保存时生成新 id）。
+  Future<void> _cloneConfig() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ApiFormScreen(apiConfig: _apiConfig),
+      ),
+    );
+  }
+
+  /// 导出单个配置为 JSON 文件：选择含密钥（完整迁移）或脱敏（分享）。
+  Future<void> _showExportFileSheet() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('导出配置文件'),
+        content: const Text(
+            '含密钥版本可用于完整迁移，请妥善保管；'
+            '脱敏版本不含 API Key，适合分享给他人参考。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'sanitized'),
+              child: const Text('脱敏导出')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, 'withKey'),
+              child: const Text('含密钥导出')),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    final includeKey = choice == 'withKey';
+    final json = const JsonEncoder.withIndent('  ').convert({
+      ..._apiConfig.toJson(),
+      'apiKey': includeKey ? _apiConfig.apiKey : '',
+    });
+    ClipboardPrivacy.copySensitive(json);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(includeKey
+            ? '已复制完整配置（含密钥，60秒后自动清空剪贴板）'
+            : '已复制脱敏配置（不含 API Key）'),
+        backgroundColor: AppColors.success,
+        duration: const Duration(seconds: 2),
+      ),
     );
   }
 

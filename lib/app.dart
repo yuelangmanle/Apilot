@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'shared/theme/app_theme.dart';
 import 'shared/widgets/responsive_layout.dart';
 import 'core/services/api_key_cipher.dart';
+import 'core/services/cost_estimator.dart';
 import 'core/services/database_service.dart';
 import 'core/services/secret_store.dart';
 import 'features/api_management/providers/api_provider.dart';
@@ -17,6 +18,7 @@ import 'features/api_testing/screens/history_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_screen.dart';
 import 'features/security/app_lock_controller.dart';
+import 'features/sync/services/sync_service.dart';
 import 'features/security/pin_screen.dart';
 import 'features/api_management/screens/api_form_screen.dart';
 import 'features/api_management/services/api_connection_paste_parser.dart';
@@ -43,6 +45,23 @@ class ApiManagerApp extends StatelessWidget {
         // 密钥子系统故障不阻止应用启动：数据库回退明文行为。
         debugPrint('[Apilot] API Key 加密初始化失败，回退明文存储: $e');
       }
+    }
+  }
+
+  /// 注册同步落库回调：WiFi 接收方在服务器路径收完配置后刷新列表。
+  static void registerSyncCallbacks(BuildContext context) {
+    SyncService.onServerSyncApplied = () async {
+      await context.read<ApiProvider>().loadApiConfigs();
+    };
+  }
+
+  /// 应用启动后静默更新 LiteLLM 远程价格表（失败不影响使用）。
+  static Future<void> refreshPriceTableAfterStartup() async {
+    try {
+      await CostEstimator.warmRemoteCache();
+      await CostEstimator.refreshRemoteTable();
+    } catch (e) {
+      debugPrint('[Apilot] 价格表更新失败: $e');
     }
   }
 
@@ -80,16 +99,24 @@ class ApiManagerApp extends StatelessWidget {
       ],
       child: Consumer2<SettingsProvider, AppLockController>(
         builder: (context, settings, lock, _) {
-          // 应用锁在 MaterialApp 外层：锁定时只渲染 PIN 输入。
-          return LockGate(
-            child: MaterialApp(
-              title: 'Apilot',
-              theme: AppTheme.lightTheme,
-              darkTheme: AppTheme.darkTheme,
-              themeMode: settings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-              home: const AppShell(),
-              debugShowCheckedModeBanner: false,
-            ),
+          // 应用锁通过 home 替换实现（LockGate 内部判断）：锁屏与主界面
+          // 同一导航器，锁屏不可绕过、不可返回。
+          return MaterialApp(
+            title: 'Apilot',
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: switch (settings.themeMode) {
+              ApilotThemeMode.system => ThemeMode.system,
+              ApilotThemeMode.light => ThemeMode.light,
+              ApilotThemeMode.dark => ThemeMode.dark,
+            },
+            home: !lock.initialized
+                ? const Scaffold(
+                    body: Center(child: CircularProgressIndicator()))
+                : lock.enabled && lock.locked
+                    ? const LockGate(child: SizedBox.shrink())
+                    : const AppShell(),
+            debugShowCheckedModeBanner: false,
           );
         },
       ),
@@ -105,7 +132,28 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
+  static const _tabPrefsKey = 'apilot_last_tab';
   int _selectedIndex = 0;
+
+  /// 恢复上次停留的页面：PIN 解锁后回到离开时的位置而非主页。
+  Future<void> _restoreTab() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final last = prefs.getInt(_tabPrefsKey) ?? 0;
+      if (mounted && last >= 0 && last < _screens.length) {
+        setState(() => _selectedIndex = last);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _selectTab(int index) async {
+    setState(() => _selectedIndex = index);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_tabPrefsKey, index);
+    } catch (_) {}
+  }
+
   final ThirdPartyImportChannel _thirdPartyImportChannel =
       ThirdPartyImportChannel.instance;
   final ThirdPartyApiConfigPickChannel _thirdPartyApiConfigPickChannel =
@@ -129,6 +177,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    _restoreTab();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (Platform.isAndroid) {
@@ -143,6 +192,7 @@ class _AppShellState extends State<AppShell> {
                 debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
         _initShareTarget();
       }
+      ApiManagerApp.registerSyncCallbacks(context);
     });
   }
 
@@ -204,9 +254,7 @@ class _AppShellState extends State<AppShell> {
         children: [
           NavigationRail(
             selectedIndex: _selectedIndex,
-            onDestinationSelected: (index) {
-              setState(() => _selectedIndex = index);
-            },
+            onDestinationSelected: _selectTab,
             labelType: NavigationRailLabelType.all,
             leading: const Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
@@ -233,9 +281,7 @@ class _AppShellState extends State<AppShell> {
       body: _screens[_selectedIndex],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() => _selectedIndex = index);
-        },
+        onDestinationSelected: _selectTab,
         destinations: _navItems.map((item) {
           return NavigationDestination(
             icon: Icon(item.icon),

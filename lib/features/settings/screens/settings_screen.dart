@@ -228,12 +228,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
             context: context,
             title: '外观',
             children: [
-              SwitchListTile(
-                title: const Text('暗黑模式'),
-                subtitle: const Text('切换深色主题'),
-                value: settings.isDarkMode,
-                onChanged: (_) => settings.toggleDarkMode(),
-                secondary: const Icon(Icons.dark_mode),
+              ListTile(
+                leading: const Icon(Icons.brightness_6),
+                title: const Text('主题'),
+                subtitle: Text(switch (settings.themeMode) {
+                  ApilotThemeMode.system => '跟随系统',
+                  ApilotThemeMode.light => '亮色',
+                  ApilotThemeMode.dark => '暗色',
+                }),
+                trailing: SegmentedButton<ApilotThemeMode>(
+                  segments: const [
+                    ButtonSegment(
+                        value: ApilotThemeMode.system,
+                        label: Text('系统'),
+                        icon: Icon(Icons.brightness_auto, size: 16)),
+                    ButtonSegment(
+                        value: ApilotThemeMode.light,
+                        label: Text('亮'),
+                        icon: Icon(Icons.light_mode, size: 16)),
+                    ButtonSegment(
+                        value: ApilotThemeMode.dark,
+                        label: Text('暗'),
+                        icon: Icon(Icons.dark_mode, size: 16)),
+                  ],
+                  selected: {settings.themeMode},
+                  onSelectionChanged: (selection) =>
+                      settings.setThemeMode(selection.first),
+                  showSelectedIcon: false,
+                ),
               ),
             ],
           ),

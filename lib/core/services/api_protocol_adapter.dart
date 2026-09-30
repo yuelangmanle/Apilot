@@ -119,11 +119,19 @@ class ApiProtocolAdapter {
       return TokenUsage(
         promptTokens: _asInt(usage['input_tokens']),
         completionTokens: _asInt(usage['output_tokens']),
+        cachedTokens: _asInt(usage['cache_read_input_tokens']),
       );
     }
+    // OpenAI: input_tokens_details.cached_tokens /
+    //         output_tokens_details.reasoning_tokens
+    final inputDetails = usage['input_tokens_details'];
+    final outputDetails = usage['completion_tokens_details'] ?? usage['output_tokens_details'];
     return TokenUsage(
       promptTokens: _asInt(usage['prompt_tokens']),
       completionTokens: _asInt(usage['completion_tokens']),
+      cachedTokens: inputDetails is Map ? _asInt(inputDetails['cached_tokens']) : null,
+      reasoningTokens:
+          outputDetails is Map ? _asInt(outputDetails['reasoning_tokens']) : null,
     );
   }
 
@@ -146,7 +154,18 @@ class TokenUsage {
   final int? promptTokens;
   final int? completionTokens;
 
-  const TokenUsage({this.promptTokens, this.completionTokens});
+  /// 命中缓存的输入 token（OpenAI cached_tokens / Anthropic cache_read）。
+  final int? cachedTokens;
+
+  /// 推理 token（DeepSeek reasoning / OpenAI reasoning_tokens）。
+  final int? reasoningTokens;
+
+  const TokenUsage({
+    this.promptTokens,
+    this.completionTokens,
+    this.cachedTokens,
+    this.reasoningTokens,
+  });
 
   int? get totalTokens {
     final prompt = promptTokens;
@@ -172,18 +191,29 @@ class SseStreamParser {
 
   static StreamParseResult _parseOpenAiFrame(Map<String, dynamic> frame) {
     String? delta;
+    String? reasoningDelta;
     final choices = frame['choices'];
     if (choices is List && choices.isNotEmpty) {
       final first = choices.first;
       if (first is Map) {
         final deltaMap = first['delta'];
-        if (deltaMap is Map && deltaMap['content'] is String) {
-          delta = deltaMap['content'] as String;
+        if (deltaMap is Map) {
+          // DeepSeek-R1 / OpenRouter 等推理模型先输出 reasoning_content，
+          // 丢弃会让流式面板长时间空白。
+          if (deltaMap['reasoning_content'] is String) {
+            reasoningDelta = deltaMap['reasoning_content'] as String;
+          } else if (deltaMap['reasoning'] is String) {
+            reasoningDelta = deltaMap['reasoning'] as String;
+          }
+          if (deltaMap['content'] is String) {
+            delta = deltaMap['content'] as String;
+          }
         }
       }
     }
     return StreamParseResult(
-      deltaText: delta,
+      deltaText: delta ?? reasoningDelta,
+      isReasoning: delta == null && reasoningDelta != null,
       usage: ApiProtocolAdapter.extractUsage(frame, 'openai_compatible'),
     );
   }
@@ -194,8 +224,18 @@ class SseStreamParser {
     TokenUsage? usage;
     if (type == 'content_block_delta') {
       final deltaMap = frame['delta'];
-      if (deltaMap is Map && deltaMap['text'] is String) {
-        delta = deltaMap['text'] as String;
+      if (deltaMap is Map) {
+        // extended thinking 的 thinking delta 单独标记，不计入正文。
+        if (deltaMap['type'] == 'thinking_delta' &&
+            deltaMap['thinking'] is String) {
+          return StreamParseResult(
+            reasoningDelta: deltaMap['thinking'] as String,
+            isReasoning: true,
+          );
+        }
+        if (deltaMap['text'] is String) {
+          delta = deltaMap['text'] as String;
+        }
       }
     } else if (type == 'message_start') {
       final message = frame['message'];
@@ -214,7 +254,14 @@ class SseStreamParser {
 
 class StreamParseResult {
   final String? deltaText;
+  final String? reasoningDelta;
+  final bool isReasoning;
   final TokenUsage? usage;
 
-  const StreamParseResult({this.deltaText, this.usage});
+  const StreamParseResult({
+    this.deltaText,
+    this.reasoningDelta,
+    this.isReasoning = false,
+    this.usage,
+  });
 }

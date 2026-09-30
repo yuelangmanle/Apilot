@@ -5,17 +5,30 @@
       "id": "groq",
       "name": "Groq（极速推理）",
       "baseUrl": "https://api.groq.com/openai/v1",
-      "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+      "models": [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant"
+      ],
       "group": "社区",
-      "tags": ["groq", "llama", "fast"]
+      "tags": [
+        "groq",
+        "llama",
+        "fast"
+      ]
     },
     {
       "id": "xai",
       "name": "xAI Grok",
       "baseUrl": "https://api.x.ai/v1",
-      "models": ["grok-4", "grok-3-mini"],
+      "models": [
+        "grok-4",
+        "grok-3-mini"
+      ],
       "group": "社区",
-      "tags": ["xai", "grok"]
+      "tags": [
+        "xai",
+        "grok"
+      ]
     },
     {
       "id": "mistral",
@@ -23,7 +36,9 @@
       "baseUrl": "https://api.mistral.ai/v1",
       "models": [],
       "group": "社区",
-      "tags": ["mistral"]
+      "tags": [
+        "mistral"
+      ]
     },
     {
       "id": "together",
@@ -31,7 +46,36 @@
       "baseUrl": "https://api.together.xyz/v1",
       "models": [],
       "group": "社区",
-      "tags": ["together", "aggregator"]
+      "tags": [
+        "together",
+        "aggregator"
+      ]
+    },
+    {
+      "id": "opencode_zen",
+      "name": "OpenCode Zen（编码代理）",
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "models": [
+        "code-supernova",
+        "grok-code"
+      ],
+      "group": "编码代理",
+      "tags": [
+        "opencode",
+        "coding"
+      ]
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax",
+      "baseUrl": "https://api.minimaxi.com/v1",
+      "models": [
+        "MiniMax-M2"
+      ],
+      "group": "社区",
+      "tags": [
+        "minimax"
+      ]
     }
   ]
 }
