@@ -133,6 +133,21 @@ class ApiProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// 在表单中就地新建分组并返回名称（重名时抛 StateError）。
+  Future<String> createGroup(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) throw StateError('分组名称不能为空');
+    final group = Group(
+      id: 'group_${DateTime.now().millisecondsSinceEpoch}',
+      name: trimmed,
+      description: null,
+      sortOrder: _managedGroups.length,
+    );
+    await _databaseService.insertGroup(group);
+    await loadGroups();
+    return trimmed;
+  }
+
   Future<void> loadGroups() async {
     try {
       _managedGroups = await _databaseService.getAllGroups();
@@ -257,21 +272,25 @@ class ApiProvider with ChangeNotifier {
 
   void setSelectedGroup(String? group) {
     _selectedGroup = group;
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
   void setSelectedEnvironment(String? env) {
     _selectedEnvironment = env;
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
   void setSelectedTag(String? tag) {
     _selectedTag = tag;
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
   void setSortBy(String sortBy) {
     _sortBy = sortBy;
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
@@ -281,16 +300,19 @@ class ApiProvider with ChangeNotifier {
     _selectedTag = null;
     _showFavoritesOnly = false;
     _searchQuery = '';
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
   void setSearchQuery(String query) {
     _searchQuery = query;
+    _invalidateFilteredCache();
     notifyListeners();
   }
 
   void toggleFavoritesOnly() {
     _showFavoritesOnly = !_showFavoritesOnly;
+    _invalidateFilteredCache();
     notifyListeners();
   }
 

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_service.dart';
+import '../../../core/services/prompt_preset_store.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 class RequestForm extends StatefulWidget {
@@ -12,6 +13,8 @@ class RequestForm extends StatefulWidget {
   final ValueChanged<bool>? onStreamChanged;
   final String? initialModel;
   final Map<String, dynamic>? initialBody;
+  final bool streaming;
+  final VoidCallback? onStop;
 
   const RequestForm({
     super.key,
@@ -22,6 +25,8 @@ class RequestForm extends StatefulWidget {
     this.onStreamChanged,
     this.initialModel,
     this.initialBody,
+    this.streaming = false,
+    this.onStop,
   });
 
   @override
@@ -166,6 +171,22 @@ class _RequestFormState extends State<RequestForm> {
             style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
           ),
           const SizedBox(height: 8),
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: _savePreset,
+                icon: const Icon(Icons.bookmark_add_outlined, size: 16),
+                label: const Text('存为预设', style: TextStyle(fontSize: 12)),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _showPresetPicker,
+                icon: const Icon(Icons.bookmarks_outlined, size: 16),
+                label: const Text('从预设填入', style: TextStyle(fontSize: 12)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('流式输出', style: TextStyle(fontSize: 14)),
@@ -177,22 +198,42 @@ class _RequestFormState extends State<RequestForm> {
             visualDensity: VisualDensity.compact,
           ),
           const SizedBox(height: 8),
-          ElevatedButton.icon(
-            onPressed: widget.isLoading ? null : _submit,
-            icon: widget.isLoading
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white),
-                  )
-                : const Icon(Icons.send),
-            label: Text(widget.isLoading ? '请求中...' : '发送请求'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.isLoading ? null : _submit,
+                  icon: widget.isLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.send),
+                  label:
+                      Text(widget.isLoading ? '请求中...' : '发送请求'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ),
+              if (widget.isLoading && widget.streaming && widget.onStop != null) ...[
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: widget.onStop,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('停止'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ],
+            ],
           ),
         ],
       ),
@@ -205,6 +246,112 @@ class _RequestFormState extends State<RequestForm> {
       body['model'] = model;
       _bodyController.text = const JsonEncoder.withIndent('  ').convert(body);
     } catch (_) {}
+  }
+
+  Future<void> _savePreset() async {
+    Map<String, dynamic> body;
+    try {
+      body = jsonDecode(_bodyController.text) as Map<String, dynamic>;
+    } catch (_) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请求体不是有效 JSON，无法保存')),
+      );
+      return;
+    }
+    final controller = TextEditingController(
+        text: _selectedModel == null || _selectedModel!.isEmpty
+            ? '我的预设'
+            : '预设 · $_selectedModel');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('保存为 Prompt 预设'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+              labelText: '预设名称', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.isEmpty) return;
+    await PromptPresetStore.save(PromptPreset(
+      name: name,
+      model: _selectedModel,
+      body: body,
+    ));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+          content: Text('已保存预设「$name」'),
+          duration: const Duration(seconds: 1)),
+    );
+  }
+
+  Future<void> _showPresetPicker() async {
+    final presets = await PromptPresetStore.loadAll();
+    if (!mounted) return;
+    if (presets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('还没有预设，先点「存为预设」保存一个')),
+      );
+      return;
+    }
+    await showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('选择预设',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            for (final preset in presets)
+              ListTile(
+                title: Text(preset.name, maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                    preset.body['messages'] is List
+                        ? '${(preset.body['messages'] as List).length} 条消息'
+                        : '自定义请求体',
+                    style: const TextStyle(fontSize: 12)),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  onPressed: () async {
+                    await PromptPresetStore.delete(preset.name);
+                    if (sheetContext.mounted) Navigator.pop(sheetContext);
+                  },
+                ),
+                onTap: () {
+                  setState(() {
+                    if (preset.model != null &&
+                        preset.model!.isNotEmpty &&
+                        (widget.apiConfig.models.isEmpty ||
+                            widget.apiConfig.models
+                                .contains(preset.model))) {
+                      _selectedModel = preset.model;
+                    }
+                    _bodyController.text = const JsonEncoder.withIndent('  ')
+                        .convert(preset.body);
+                  });
+                  Navigator.pop(sheetContext);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _submit() {

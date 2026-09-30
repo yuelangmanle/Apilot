@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/device_info.dart';
+import 'package:sqflite/sqflite.dart';
+
 import '../../../core/services/api_config_identity.dart';
 import '../../../core/services/api_key_cipher.dart';
 import '../../../core/services/database_service.dart';
@@ -645,48 +647,76 @@ class SyncService {
   Future<int> storeSyncedConfigs(List<ApiConfig> configs) async {
     final databaseService = _databaseServiceOverride ?? DatabaseService();
     await databaseService.initialize();
-    // 索引包含回收站内容：同步进来的同款不应复活本机已删除的配置，
-    // 而是把较新数据写回回收站内的对应条目（保持隐藏）。
-    final existing =
-        await databaseService.getAllApiConfigs(includeDeleted: true);
-    final byId = {for (final config in existing) config.id: config};
+    final db = await databaseService.database;
+    // 全程单事务：并发推送各自的 read-modify-write 不再互相踩快照。
+    return db.transaction((txn) async {
+      // 索引包含回收站内容：同步进来的同款不应复活本机已删除的配置，
+      // 而是把较新数据写回回收站内的对应条目（保持隐藏）。
+      final existing = await databaseService.getAllApiConfigs(
+        includeDeleted: true,
+        executor: txn,
+      );
+      final byId = {for (final config in existing) config.id: config};
 
-    var inserted = 0;
-    for (final config in configs) {
-      final sameId = byId[config.id];
-      if (sameId != null) {
-        if (!config.updatedAt.isAfter(sameId.updatedAt)) continue;
-        final merged =
-            config.copyWith(id: sameId.id, createdAt: sameId.createdAt);
-        await databaseService.updateApiConfig(merged);
-        byId[sameId.id] = merged;
-        continue;
-      }
-
-      ApiConfig? equivalent;
-      for (final candidate in byId.values) {
-        if (ApiConfigIdentity.matches(candidate, config)) {
-          equivalent = candidate;
-          break;
-        }
-      }
-      if (equivalent != null) {
-        if (config.updatedAt.isAfter(equivalent.updatedAt)) {
-          final merged = config.copyWith(
-            id: equivalent.id,
-            createdAt: equivalent.createdAt,
+      var inserted = 0;
+      for (final config in configs) {
+        final sameId = byId[config.id];
+        if (sameId != null) {
+          if (!config.updatedAt.isAfter(sameId.updatedAt)) continue;
+          final merged =
+              config.copyWith(id: sameId.id, createdAt: sameId.createdAt);
+          await txn.update(
+            'api_configs',
+            _configRow(merged, databaseService),
+            where: 'id = ?',
+            whereArgs: [merged.id],
           );
-          await databaseService.updateApiConfig(merged);
-          byId[equivalent.id] = merged;
+          byId[sameId.id] = merged;
+          continue;
         }
-        continue;
-      }
 
-      await databaseService.insertApiConfig(config);
-      byId[config.id] = config;
-      inserted++;
-    }
-    return inserted;
+        ApiConfig? equivalent;
+        for (final candidate in byId.values) {
+          if (ApiConfigIdentity.matches(candidate, config)) {
+            equivalent = candidate;
+            break;
+          }
+        }
+        if (equivalent != null) {
+          if (config.updatedAt.isAfter(equivalent.updatedAt)) {
+            final merged = config.copyWith(
+              id: equivalent.id,
+              createdAt: equivalent.createdAt,
+            );
+            await txn.update(
+              'api_configs',
+              _configRow(merged, databaseService),
+              where: 'id = ?',
+              whereArgs: [merged.id],
+            );
+            byId[equivalent.id] = merged;
+          }
+          continue;
+        }
+
+        await txn.insert(
+          'api_configs',
+          _configRow(config, databaseService),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        byId[config.id] = config;
+        inserted++;
+      }
+      return inserted;
+    });
+  }
+
+  /// 在事务内生成一行配置（复用 DatabaseService 的加密与列映射）。
+  Map<String, Object?> _configRow(
+    ApiConfig config,
+    DatabaseService databaseService,
+  ) {
+    return databaseService.buildConfigRow(config);
   }
 
   static Map<String, dynamic> createSyncPayload(List<ApiConfig> configs) {

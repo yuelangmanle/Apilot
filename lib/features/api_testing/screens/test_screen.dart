@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -40,6 +41,7 @@ class _TestScreenState extends State<TestScreen> {
   // 请求序号：切换 API 或重复发送后，旧请求的回包直接丢弃。
   int _requestId = 0;
   bool _streamEnabled = true;
+  StreamSubscription<StreamChatEvent>? _streamSub;
   bool _isLoading = false;
   bool _streaming = false;
   String _streamText = '';
@@ -127,26 +129,43 @@ class _TestScreenState extends State<TestScreen> {
     Map<String, dynamic> body,
     int requestId,
   ) async {
-    await for (final event in _apiService.sendRequestStream(
+    final completer = Completer<void>();
+    _streamSub = _apiService.sendRequestStream(
       apiConfig: api,
       model: model,
       requestBody: body,
-    )) {
-      if (!mounted || requestId != _requestId) return;
-      if (event.isDone) {
-        final response = event.response!;
-        setState(() {
-          _response = response;
-          _statusCode = 200;
-          _duration = event.durationMs;
-          _usage = event.usage;
-          _isLoading = false;
-          _streaming = false;
-        });
-        await _recordHistory(api, model, '/stream', body, response);
-      } else {
-        setState(() => _streamText += event.delta!);
-      }
+    ).listen(
+      (event) {
+        if (!mounted || requestId != _requestId) return;
+        if (event.isDone) {
+          final response = event.response!;
+          setState(() {
+            _response = response;
+            _statusCode = 200;
+            _duration = event.durationMs;
+            _usage = event.usage;
+            _isLoading = false;
+            _streaming = false;
+          });
+          unawaited(_recordHistory(api, model, '/stream', body, response));
+          if (!completer.isCompleted) completer.complete();
+        } else {
+          setState(() => _streamText += event.delta!);
+        }
+      },
+      onError: (Object error) {
+        if (!completer.isCompleted) completer.completeError(error);
+      },
+      onDone: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+
+    try {
+      await completer.future;
+    } finally {
+      await _streamSub?.cancel();
+      _streamSub = null;
     }
     // 流正常关闭但没收到 done 帧（对端异常断流）时收尾。
     if (!mounted || requestId != _requestId) return;
@@ -162,6 +181,25 @@ class _TestScreenState extends State<TestScreen> {
         }
       });
     }
+  }
+
+  /// 用户主动停止流式输出：保留已接收内容。
+  void _stopStreaming() {
+    _streamSub?.cancel();
+    _streamSub = null;
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _streaming = false;
+      if (_response == null) {
+        if (_streamText.isEmpty) {
+          _errorMessage = '已停止，未收到任何内容';
+        } else {
+          _response = _assembledStreamFallback();
+          _statusCode = 200;
+        }
+      }
+    });
   }
 
   Map<String, dynamic> _assembledStreamFallback() {
@@ -272,6 +310,8 @@ class _TestScreenState extends State<TestScreen> {
                             setState(() => _streamEnabled = value),
                         initialModel: widget.initialModel,
                         initialBody: widget.initialBody,
+                        streaming: _streaming,
+                        onStop: _stopStreaming,
                       ),
                     ),
                   ),
@@ -293,6 +333,8 @@ class _TestScreenState extends State<TestScreen> {
                           setState(() => _streamEnabled = value),
                       initialModel: widget.initialModel,
                       initialBody: widget.initialBody,
+                      streaming: _streaming,
+                      onStop: _stopStreaming,
                     ),
                   ),
                   const SizedBox(height: 16),

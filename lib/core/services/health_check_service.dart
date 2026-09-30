@@ -105,6 +105,15 @@ class HealthCheckService {
 
   final Map<String, HealthCheckResult> _results = {};
   bool _loaded = false;
+  bool _cancelled = false;
+  bool _running = false;
+
+  bool get isRunning => _running;
+
+  /// 请求中止当前批量体检（在两项之间生效，已完成的单项结果保留）。
+  void cancel() {
+    if (_running) _cancelled = true;
+  }
 
   HealthCheckService() {
     // 构造即异步加载缓存：应用重启后徽标能立即回显，
@@ -155,14 +164,22 @@ class HealthCheckService {
     List<ApiConfig> configs, {
     void Function(int done, int total)? onProgress,
   }) async {
+    if (_running) return Map.unmodifiable(_results);
     await _ensureLoaded();
+    _running = true;
+    _cancelled = false;
     var done = 0;
-    for (final config in configs) {
-      _results[config.id] = await checkOne(config);
-      done++;
-      onProgress?.call(done, configs.length);
+    try {
+      for (final config in configs) {
+        if (_cancelled) break;
+        _results[config.id] = await checkOne(config);
+        done++;
+        onProgress?.call(done, configs.length);
+      }
+      await _persist({for (final c in configs) c.id: c});
+    } finally {
+      _running = false;
     }
-    await _persist({for (final c in configs) c.id: c});
     return Map.unmodifiable(_results);
   }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../core/services/cost_estimator.dart';
 import '../../../core/services/usage_aggregator.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
@@ -25,6 +26,14 @@ class UsageStatsScreen extends StatelessWidget {
     final totalTokens = usages.fold<int>(0, (sum, u) => sum + u.totalTokens);
     final totalRequests =
         usages.fold<int>(0, (sum, u) => sum + u.requestCount);
+    // 成本估算：基于 token 分布 × 本地价格表。
+    final costs = <String, double>{};
+    for (final item in history) {
+      costs[item.apiConfigId] =
+          (costs[item.apiConfigId] ?? 0) + CostEstimator.estimateRecord(item);
+    }
+    final totalCost =
+        costs.values.fold<double>(0, (sum, value) => sum + value);
 
     final content = Column(
       children: [
@@ -46,6 +55,29 @@ class UsageStatsScreen extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Icon(Icons.payments_outlined,
+                  size: 16,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.textSecondary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '按本地价格表估算总消耗 ≈ ${CostEstimator.formatUsd(totalCost)}（仅供参考，未知模型按兜底价）',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? AppColors.darkTextSecondary
+                          : AppColors.textSecondary),
+                ),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -89,11 +121,21 @@ class UsageStatsScreen extends StatelessWidget {
                           ' · 输入 ${_formatTokens(usage.promptTokens)} / 输出 ${_formatTokens(usage.completionTokens)}',
                           style: TextStyle(fontSize: 12, color: secondary),
                         ),
-                        trailing: Text(
-                          _formatTokens(usage.totalTokens),
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.primary),
+                        trailing: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(_formatTokens(usage.totalTokens),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: AppColors.primary)),
+                            if ((costs[usage.configId] ?? 0) > 0)
+                              Text(
+                                  CostEstimator.formatUsd(
+                                      costs[usage.configId] ?? 0),
+                                  style: TextStyle(
+                                      fontSize: 11, color: secondary)),
+                          ],
                         ),
                       ),
                     );

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/request_history.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../settings/screens/usage_stats_screen.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../screens/test_screen.dart';
 import '../../../shared/widgets/responsive_layout.dart';
@@ -66,6 +67,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   _searchQuery = '';
                 }
               });
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.insights),
+            tooltip: '用量统计',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) => const UsageStatsScreen()),
+              );
             },
           ),
           IconButton(

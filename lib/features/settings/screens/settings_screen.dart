@@ -14,6 +14,7 @@ import '../../third_party_import/screens/third_party_import_docs_screen.dart';
 import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
 import 'privacy_screen.dart';
+import 'security_dashboard_screen.dart';
 import 'usage_stats_screen.dart';
 import '../../api_management/screens/recycle_bin_screen.dart';
 import '../../security/app_lock_controller.dart';
@@ -154,6 +155,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: context.watch<AppLockController>().biometricEnabled,
                 onChanged: _lockEnabled ? (_) => _toggleBiometric() : null,
                 secondary: const Icon(Icons.fingerprint),
+              ),
+              ListTile(
+                leading: const Icon(Icons.dashboard_customize_outlined),
+                title: const Text('安全仪表盘'),
+                subtitle: const Text('明文端点、Key 复用等本地规则体检'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) =>
+                            const SecurityDashboardScreen()),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.verified_user_outlined),

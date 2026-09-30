@@ -2,6 +2,7 @@ package com.example.api_manager
 
 import android.content.Intent
 import android.app.Activity
+import android.os.Bundle
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -21,11 +22,40 @@ import java.io.File
 import java.util.UUID
 
 class MainActivity : FlutterFragmentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        handleShareIntent(intent)
+    }
+
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        if (text.isBlank()) return
+        pendingShareText = text
+        // Flutter 已就绪时直接推送；否则等待 getInitialShareText 拉取。
+        shareChannel?.invokeMethod("onShareReceived", text)
+        intent.removeExtra(Intent.EXTRA_TEXT)
+    }
+
+    // 进入后台/任务切换器时遮蔽内容，防止最近任务缩略图泄露配置与 Key。
+    override fun onPause() {
+        super.onPause()
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
     private var methodChannel: MethodChannel? = null
     private var apiConfigPickChannel: MethodChannel? = null
     private var qrScannerChannel: MethodChannel? = null
     private var qrScanResult: MethodChannel.Result? = null
     private var pendingImportRequest: Map<String, Any?>? = null
+    private var pendingShareText: String? = null
+    private var shareChannel: MethodChannel? = null
     private var pendingPickRequest: Map<String, Any?>? = null
     private var initialIntentConsumed = false
     private var initialPickIntentConsumed = false
@@ -53,6 +83,21 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        shareChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            SHARE_CHANNEL_NAME
+        )
+        shareChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getInitialShareText" -> {
+                    val text = pendingShareText
+                    pendingShareText = null
+                    result.success(text)
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         methodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -106,6 +151,8 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        handleShareIntent(intent)
+
         setIntent(intent)
 
         val pickRequest = buildPickRequest(intent)
@@ -422,6 +469,8 @@ class MainActivity : FlutterFragmentActivity() {
         private const val RETURN_TRANSPORT_CONTENT_URI = "content_uri"
         private const val API_PROFILE_MIME_TYPE = "application/vnd.apilot.api-profile+json"
         private const val EXTRA_PAYLOAD_THRESHOLD_BYTES = 64 * 1024
+        private const val SHARE_CHANNEL_NAME = "com.apilot/share"
+        private const val KEY_PENDING_SHARE_TEXT = "pendingShareText" 
         private const val RESULT_FILE_MAX_AGE_MS = 10 * 60 * 1000L
         private const val RESULT_FILE_LIFETIME_MS = 60 * 1000L
         private const val SOURCE_IDENTITY_CALLING_PACKAGE = "calling_package"

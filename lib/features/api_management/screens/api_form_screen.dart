@@ -15,7 +15,15 @@ class ApiFormScreen extends StatefulWidget {
   final ApiConfig? apiConfig;
   final bool isEditing;
 
-  const ApiFormScreen({super.key, this.apiConfig, this.isEditing = false});
+  /// FAB"从剪贴板识别"路径携带的预填结果。
+  final ApiConnectionPasteResult? initialConnection;
+
+  const ApiFormScreen({
+    super.key,
+    this.apiConfig,
+    this.isEditing = false,
+    this.initialConnection,
+  });
 
   @override
   State<ApiFormScreen> createState() => _ApiFormScreenState();
@@ -57,6 +65,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       _environment = api.environment;
       _isFavorite = api.isFavorite;
     }
+    // 预填在快照之后：预填内容算作"未保存修改"，返回时有保护。
+    if (widget.initialConnection != null && widget.apiConfig == null) {
+      _baseUrlController.text = widget.initialConnection!.baseUrl;
+      _apiKeyController.text = widget.initialConnection!.apiKey;
+    }
     _initialTextValues = {
       'name': _nameController.text,
       'baseUrl': _baseUrlController.text,
@@ -85,6 +98,47 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       setState(() => _clipboardSuggestion = parsed);
     } catch (_) {
       // 剪贴板不可读不影响表单使用。
+    }
+  }
+
+  /// 就地新建分组：免去"放弃表单 → 设置 → 建组 → 重填"的断点。
+  Future<void> _createGroupInline(ApiProvider provider) async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('新建分组'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+              labelText: '分组名称', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, controller.text.trim()),
+              child: const Text('创建')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || name == null || name.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final created = await provider.createGroup(name);
+      if (!mounted) return;
+      setState(() => _selectedGroup = created);
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst('StateError: ', '')),
+          backgroundColor: AppColors.warning,
+        ),
+      );
     }
   }
 
@@ -395,11 +449,11 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                             initialValue: groups.contains(_selectedGroup)
                                 ? _selectedGroup
                                 : null,
-                            decoration: InputDecoration(
+                            decoration: const InputDecoration(
                               labelText: '分组',
-                              hintText: groups.isEmpty ? '请先在设置中创建分组' : '选择分组',
-                              border: const OutlineInputBorder(),
-                              prefixIcon: const Icon(Icons.folder),
+                              hintText: '选择分组或就地新建',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.folder),
                             ),
                             items: [
                               const DropdownMenuItem<String?>(
@@ -412,8 +466,16 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                                   child: Text(group),
                                 ),
                               ),
+                              const DropdownMenuItem<String?>(
+                                value: '__create_new__',
+                                child: Text('＋ 新建分组…'),
+                              ),
                             ],
-                            onChanged: (value) {
+                            onChanged: (value) async {
+                              if (value == '__create_new__') {
+                                await _createGroupInline(provider);
+                                return;
+                              }
                               setState(() => _selectedGroup = value);
                             },
                           );

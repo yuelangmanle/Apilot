@@ -299,6 +299,9 @@ class DatabaseService {
     );
   }
 
+  /// 供同步事务复用的行映射（含 api_key 加密）。
+  Map<String, Object?> buildConfigRow(ApiConfig api) => _apiConfigToMap(api);
+
   Map<String, Object?> _apiConfigToMap(ApiConfig api) {
     final cipher = _cipher;
     final apiKey = cipher == null ? api.apiKey : cipher.encrypt(api.apiKey);
@@ -342,10 +345,14 @@ class DatabaseService {
   }
 
   /// 默认只返回存活配置（回收站中的除外）。
-  Future<List<ApiConfig>> getAllApiConfigs({bool includeDeleted = false}) async {
+  /// [executor] 允许在外层事务内执行同一批读取（同步合并使用）。
+  Future<List<ApiConfig>> getAllApiConfigs({
+    bool includeDeleted = false,
+    DatabaseExecutor? executor,
+  }) async {
     // 整表查询失败时向上抛出：调用方（列表页/备份/同步服务）需要感知数据库
     // 异常，避免把故障误显示为"没有任何配置"而诱导用户执行清空恢复。
-    final db = await database;
+    final db = executor ?? await database;
     final maps = await db.query('api_configs', orderBy: 'name ASC');
 
     final List<ApiConfig> results = [];

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/health_check_service.dart';
 import '../../../shared/utils/friendly_error.dart';
+import '../services/api_connection_paste_parser.dart';
 import '../providers/api_provider.dart';
 import '../widgets/api_card.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -108,7 +110,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
                     ],
                   ),
                   tooltip: _isHealthChecking
-                      ? '正在体检 $_healthDone/$_healthTotal，点击可查看'
+                      ? '正在体检 $_healthDone/$_healthTotal，点击停止'
                       : '一键体检全部 Key',
                   onPressed: _runHealthCheck,
                 ),
@@ -332,12 +334,13 @@ class _ApiListScreenState extends State<ApiListScreen> {
   }
 
   Future<void> _runHealthCheck() async {
-    // 体检进行中再点：只汇报进度，不并发重跑。
+    // 体检进行中再点：停止剩余项（已完成的结果保留）。
     if (_isHealthChecking) {
+      _healthService.cancel();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('体检进行中：$_healthDone/$_healthTotal'),
-          duration: const Duration(seconds: 1),
+        const SnackBar(
+          content: Text('已停止体检，已完成的结果保留'),
+          duration: Duration(seconds: 2),
         ),
       );
       return;
@@ -535,6 +538,16 @@ class _ApiListScreenState extends State<ApiListScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.content_paste_search,
+                  color: AppColors.primary),
+              title: const Text('从剪贴板识别'),
+              subtitle: const Text('复制过含地址和 Key 的文本？一键识别'),
+              onTap: () {
+                Navigator.pop(context);
+                _addFromClipboard(context);
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.edit, color: AppColors.primary),
               title: const Text('手动添加'),
               subtitle: const Text('填写完整的API信息'),
@@ -550,6 +563,45 @@ class _ApiListScreenState extends State<ApiListScreen> {
         ),
       ),
     );
+  }
+
+  /// 主路径激活优化：FAB 直达剪贴板识别，识别结果直接预填进表单。
+  Future<void> _addFromClipboard(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final apiProvider = context.read<ApiProvider>();
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text ?? '';
+      final parsed = text.trim().isEmpty
+          ? null
+          : ApiConnectionPasteParser.parse(text);
+      if (parsed != null) {
+        await navigator.push(
+          MaterialPageRoute(
+            builder: (context) => ApiFormScreen(initialConnection: parsed),
+          ),
+        );
+        await apiProvider.loadApiConfigs();
+        return;
+      }
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('剪贴板里没有识别到成对的地址和 Key，已打开手动添加'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      await navigator.push(
+        MaterialPageRoute(builder: (context) => const ApiFormScreen()),
+      );
+      await apiProvider.loadApiConfigs();
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+            content: Text(friendlyError(e)),
+            backgroundColor: AppColors.error),
+      );
+    }
   }
 
   Future<void> _navigateToForm(BuildContext context, [dynamic apiConfig]) async {

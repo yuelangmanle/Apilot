@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,7 +18,10 @@ import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_screen.dart';
 import 'features/security/app_lock_controller.dart';
 import 'features/security/pin_screen.dart';
+import 'features/api_management/screens/api_form_screen.dart';
+import 'features/api_management/services/api_connection_paste_parser.dart';
 import 'features/third_party_import/models/third_party_import_models.dart';
+import 'features/third_party_import/services/share_channel.dart';
 import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
 import 'features/third_party_import/screens/third_party_api_config_pick_screen.dart';
 import 'features/third_party_import/screens/third_party_import_source_screen.dart';
@@ -106,6 +110,7 @@ class _AppShellState extends State<AppShell> {
       ThirdPartyImportChannel.instance;
   final ThirdPartyApiConfigPickChannel _thirdPartyApiConfigPickChannel =
       ThirdPartyApiConfigPickChannel.instance;
+  StreamSubscription<String>? _shareSubscription;
 
   static const List<Widget> _screens = [
     ApiListScreen(),
@@ -125,17 +130,62 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !Platform.isAndroid) return;
-      // 初始化失败（如平台通道不可用）不应成为未捕获异常。
-      _thirdPartyImportChannel
-          .initialize(onRequest: _handleThirdPartyImportRequest)
-          .catchError((Object e) =>
-              debugPrint('[Apilot] 第三方导入通道初始化失败: $e'));
-      _thirdPartyApiConfigPickChannel
-          .initialize(onRequest: _handleThirdPartyApiConfigPickRequest)
-          .catchError((Object e) =>
-              debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
+      if (!mounted) return;
+      if (Platform.isAndroid) {
+        // 初始化失败（如平台通道不可用）不应成为未捕获异常。
+        _thirdPartyImportChannel
+            .initialize(onRequest: _handleThirdPartyImportRequest)
+            .catchError((Object e) =>
+                debugPrint('[Apilot] 第三方导入通道初始化失败: $e'));
+        _thirdPartyApiConfigPickChannel
+            .initialize(onRequest: _handleThirdPartyApiConfigPickRequest)
+            .catchError((Object e) =>
+                debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
+        _initShareTarget();
+      }
     });
+  }
+
+  /// 系统分享目标：其他 App 分享文本进来 → 识别 → 表单预填。
+  Future<void> _initShareTarget() async {
+    ShareChannel.initialize();
+    _shareSubscription = ShareChannel.shareTextStream.listen(
+        (text) => unawaited(_handleSharedText(text)));
+    try {
+      final initial = await ShareChannel.getInitialShareText();
+      if (initial != null && initial.trim().isNotEmpty && mounted) {
+        await _handleSharedText(initial);
+      }
+    } catch (e) {
+      debugPrint('[Apilot] 分享文本拉取失败: $e');
+    }
+  }
+
+  Future<void> _handleSharedText(String text) async {
+    if (!mounted) return;
+    final parsed = ApiConnectionPasteParser.parse(text);
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    if (parsed == null) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('分享的文本中没有识别到成对的地址和 Key'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    await navigator.push(
+      MaterialPageRoute(
+        builder: (context) => ApiFormScreen(initialConnection: parsed),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _shareSubscription?.cancel();
+    super.dispose();
   }
 
   @override
