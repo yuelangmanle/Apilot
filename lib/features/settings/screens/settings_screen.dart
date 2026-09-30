@@ -13,6 +13,7 @@ import '../../api_management/screens/group_manage_screen.dart';
 import '../../third_party_import/screens/third_party_import_docs_screen.dart';
 import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
+import 'gateway_screen.dart';
 import 'privacy_screen.dart';
 import 'security_dashboard_screen.dart';
 import 'usage_stats_screen.dart';
@@ -155,6 +156,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: context.watch<AppLockController>().biometricEnabled,
                 onChanged: _lockEnabled ? (_) => _toggleBiometric() : null,
                 secondary: const Icon(Icons.fingerprint),
+              ),
+              ListTile(
+                leading: const Icon(Icons.settings_ethernet),
+                title: const Text('本地网关'),
+                subtitle: const Text('把 Apilot 配置暴露为 127.0.0.1 的 OpenAI 兼容端点'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const GatewayScreen()),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.dashboard_customize_outlined),
@@ -434,6 +448,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 导出：可选口令加密备份文件。返回 null 表示不加密。
+  Future<String?> _askBackupPassword(BuildContext context) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('备份口令（可选）'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('设置口令后备份文件将整包加密，'
+                '恢复时必须输入同一口令。留空则不加密。'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: '口令（留空不加密）',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, ''),
+              child: const Text('不加密')),
+          FilledButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, controller.text),
+              child: const Text('加密并保存')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || result.isEmpty) return null;
+    return result;
+  }
+
+  /// 导入加密备份时索要口令。
+  Future<String?> _askDecryptionPassword(BuildContext context) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('加密备份'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: '备份口令',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, controller.text),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+    controller.dispose();
+    return (result == null || result.isEmpty) ? null : result;
+  }
+
   Future<void> _checkForUpdate() async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() {
@@ -598,7 +682,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final groups = await databaseService.getAllGroups();
 
       final importExportService = ImportExportService();
-      final json = await importExportService.exportConfigs(configs, groups);
+      if (!context.mounted) return;
+      final password = await _askBackupPassword(context);
+      if (!context.mounted) return;
+      final json = await importExportService.exportConfigs(configs, groups,
+          password: password);
       final timestamp = DateTime.now()
           .toString()
           .substring(0, 19)
@@ -650,7 +738,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (jsonString.isEmpty) throw const FormatException('备份文件为空');
 
       final importExportService = ImportExportService();
-      final result = await importExportService.importConfigs(jsonString);
+      // 自动识别加密包：首次尝试无口令，失败提示输入口令重试。
+      Map<String, dynamic> result;
+      try {
+        result = await importExportService.importConfigs(jsonString);
+      } catch (e) {
+        if (!e.toString().contains('加密')) rethrow;
+        if (!context.mounted) return;
+        final password = await _askDecryptionPassword(context);
+        if (password == null) return;
+        result = await importExportService.importConfigs(jsonString,
+            password: password);
+      }
       final configs = result['apiConfigs'] as List<ApiConfig>;
       final groups = result['groups'] as List<Group>;
       final exportedAt = result['exportedAt'] as DateTime?;

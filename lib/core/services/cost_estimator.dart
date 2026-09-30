@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -72,7 +73,8 @@ class CostEstimator {
             const Duration(seconds: 20),
           );
       if (response.statusCode != 200) return;
-      final decoded = jsonDecode(response.body);
+      // 数 MB 的 JSON 放 isolate 解析，避免主线程首卡。
+      final decoded = await Isolate.run(() => jsonDecode(response.body));
       if (decoded is! Map) return;
       final table = <String, ModelPrice>{};
       decoded.forEach((key, value) {

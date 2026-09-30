@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -35,15 +37,22 @@ class PinScreen extends StatefulWidget {
 
 enum PinScreenMode { unlock, setFirst, setConfirm }
 
-class _PinScreenState extends State<PinScreen> {
+class _PinScreenState extends State<PinScreen>
+    with SingleTickerProviderStateMixin {
   String _pin = '';
   String? _error;
   String _firstPin = '';
   late PinScreenMode _mode = widget.mode;
   bool _biometricAvailable = false;
   bool _biometricPrompted = false;
+  late final AnimationController _shakeController = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 400));
 
   static const _length = 4;
+
+  void _shake() {
+    _shakeController.forward(from: 0);
+  }
 
   late final _LifecycleHook _lifecycleHook = _LifecycleHook(_onResumed);
 
@@ -68,6 +77,7 @@ class _PinScreenState extends State<PinScreen> {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(_lifecycleHook);
+    _shakeController.dispose();
     super.dispose();
   }
 
@@ -119,6 +129,7 @@ class _PinScreenState extends State<PinScreen> {
             _error = 'PIN 不正确';
           });
           HapticFeedback.vibrate();
+          _shake();
         } else {
           // 锁屏态是 LockGate 的唯一路由（不能 pop）；从设置页进入时
           // 则返回设置页并告知验证成功。
@@ -169,67 +180,80 @@ class _PinScreenState extends State<PinScreen> {
       // 锁屏是唯一的路由：返回键不允许离开。
       canPop: false,
       child: Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (lock.loadFailed)
-              Container(
-                width: double.infinity,
-                color: AppColors.error,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: const Text(
-                  '锁设置读取失败，已进入保护态。请输入 PIN；若遗忘请清除应用数据重置。',
-                  style: TextStyle(color: Colors.white, fontSize: 12),
+        body: SafeArea(
+          child: Column(
+            children: [
+              if (lock.loadFailed)
+                Container(
+                  width: double.infinity,
+                  color: AppColors.error,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: const Text(
+                    '锁设置读取失败，已进入保护态。请输入 PIN；若遗忘请清除应用数据重置。',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              const Spacer(flex: 2),
+              const Icon(Icons.lock_outline,
+                  size: 44, color: AppColors.primary),
+              const SizedBox(height: 12),
+              Text(title, style: const TextStyle(fontSize: 18)),
+              if (_mode == PinScreenMode.unlock && _biometricAvailable) ...[
+                const SizedBox(height: 16),
+                IconButton.filledTonal(
+                  onPressed: _authenticateWithBiometrics,
+                  icon: const Icon(Icons.fingerprint, size: 32),
+                  iconSize: 32,
+                  tooltip: '使用指纹或面容解锁',
+                ),
+                const SizedBox(height: 4),
+                const Text('或使用下方 PIN 解锁',
+                    style: TextStyle(
+                        fontSize: 11, color: AppColors.textSecondary)),
+              ],
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_error!,
+                      style: const TextStyle(color: AppColors.error)),
+                ),
+              const SizedBox(height: 24),
+              AnimatedBuilder(
+                animation: _shakeController,
+                builder: (context, child) {
+                  final offset = _shakeController.isAnimating
+                      ? math.sin(_shakeController.value * math.pi * 4) * 8
+                      : 0.0;
+                  return Transform.translate(
+                    offset: Offset(offset, 0),
+                    child: child,
+                  );
+                },
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(_length, (index) {
+                    final filled = index < _pin.length;
+                    return Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 8),
+                      width: 16,
+                      height: 16,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: filled
+                            ? AppColors.primary
+                            : AppColors.primary.withValues(alpha: 0.15),
+                      ),
+                    );
+                  }),
                 ),
               ),
-            const Spacer(flex: 2),
-            const Icon(Icons.lock_outline, size: 44, color: AppColors.primary),
-            const SizedBox(height: 12),
-            Text(title, style: const TextStyle(fontSize: 18)),
-            if (_mode == PinScreenMode.unlock && _biometricAvailable) ...[
-              const SizedBox(height: 16),
-              IconButton.filledTonal(
-                onPressed: _authenticateWithBiometrics,
-                icon: const Icon(Icons.fingerprint, size: 32),
-                iconSize: 32,
-                tooltip: '使用指纹或面容解锁',
-              ),
-              const SizedBox(height: 4),
-              const Text('或使用下方 PIN 解锁',
-                  style: TextStyle(
-                      fontSize: 11, color: AppColors.textSecondary)),
+              const Spacer(flex: 2),
+              _buildPad(context),
+              const SizedBox(height: 24),
             ],
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(_error!,
-                    style: const TextStyle(color: AppColors.error)),
-              ),
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(_length, (index) {
-                final filled = index < _pin.length;
-                return Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 8),
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: filled
-                        ? AppColors.primary
-                        : AppColors.primary.withValues(alpha: 0.15),
-                  ),
-                );
-              }),
-            ),
-            const Spacer(flex: 2),
-            _buildPad(context),
-            const SizedBox(height: 24),
-          ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -248,17 +272,23 @@ class _PinScreenState extends State<PinScreen> {
             .map((row) => Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: row.map((key) {
-                    if (key.isEmpty) return const SizedBox(width: 72, height: 64);
+                    if (key.isEmpty) {
+                      return const SizedBox(width: 72, height: 64);
+                    }
                     if (key == '⌫') {
-                      return _padButton(
-                        const Icon(Icons.backspace_outlined,
-                            size: 22, color: AppColors.textSecondary),
-                        onTap: () {
-                          if (_pin.isNotEmpty) {
-                            setState(
-                                () => _pin = _pin.substring(0, _pin.length - 1));
-                          }
-                        },
+                      return Semantics(
+                        label: '删除一位',
+                        button: true,
+                        child: _padButton(
+                          const Icon(Icons.backspace_outlined,
+                              size: 22, color: AppColors.textSecondary),
+                          onTap: () {
+                            if (_pin.isNotEmpty) {
+                              setState(() =>
+                                  _pin = _pin.substring(0, _pin.length - 1));
+                            }
+                          },
+                        ),
                       );
                     }
                     return _padButton(

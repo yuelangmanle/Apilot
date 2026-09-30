@@ -21,6 +21,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _isSearching = false;
   final _searchController = TextEditingController();
   String _searchQuery = '';
+  final Set<String> _expandedIds = {};
+  final Map<String, String> _prettyCache = {};
 
   @override
   void initState() {
@@ -163,6 +165,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: ExpansionTile(
+        onExpansionChanged: (expanded) {
+          setState(() {
+            if (expanded) {
+              _expandedIds.add(item.id);
+            } else {
+              _expandedIds.remove(item.id);
+              _prettyCache.remove(item.id);
+              _prettyCache.remove('\${item.id}:resp');
+            }
+          });
+        },
         leading: Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
@@ -221,10 +234,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildSection('请求体', _prettyJson(item.requestBody), context),
+                _buildLazySection('请求体', item.id, () => _prettyJson(item.requestBody), context),
                 const SizedBox(height: 16),
                 if (item.responseBody != null)
-                  _buildSection('响应体', _prettyJson(item.responseBody!), context),
+                  _buildLazySection(
+                      '响应体',
+                      '\${item.id}:resp',
+                      () => _prettyJson(item.responseBody!),
+                      context),
                 if (item.statusCode != null) ...[
                   const SizedBox(height: 16),
                   Row(
@@ -351,6 +368,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ),
       ],
     );
+  }
+
+  /// 展开后才构建大 JSON 文本（未展开的行零开销），结果按 id 缓存。
+  Widget _buildLazySection(
+      String title, String cacheKey, String Function() build, BuildContext context) {
+    final text = _prettyCache.putIfAbsent(cacheKey, build);
+    return _buildSection(title, text, context);
   }
 
   String _prettyJson(Map<String, dynamic> json) {

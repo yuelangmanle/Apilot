@@ -136,11 +136,14 @@ class ApiCard extends StatelessWidget {
                         ),
                       ),
                     Expanded(
-                        child: Text(api.name,
-                            style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: textColor))),
+                        child: Hero(
+                          tag: 'api-name-\${api.id}',
+                          child: Text(api.name,
+                              style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: textColor)),
+                        )),
                     IconButton(
                       icon: Icon(
                           api.isFavorite ? Icons.star : Icons.star_border,

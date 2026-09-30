@@ -38,6 +38,8 @@ class ModelListFetchResult {
 }
 
 class ApiService {
+  /// 模块级共享连接池：体检 N 个 Key 复用 TLS 连接而非 N 次握手。
+  static final http.Client _sharedClient = http.Client();
   /// 智能拼接 URL，避免重复路径段
   static String buildUrl(String baseUrl, String endpoint) {
     String base = baseUrl.trim();
@@ -154,13 +156,15 @@ class ApiService {
       for (final modelsUrl in urlsToTry) {
         try {
           final uri = Uri.parse(modelsUrl);
-          final response = await http.get(
+          final response = await _sharedClient
+          .get(
             uri,
             headers: ApiProtocolAdapter.authHeaders(
               protocolId: apiConfig.protocolId,
               apiKey: apiConfig.apiKey,
             ),
-          ).timeout(const Duration(seconds: 15));
+          )
+          .timeout(const Duration(seconds: 15));
 
           if (response.statusCode != 200) {
             lastError = '$modelsUrl 返回状态码 ${response.statusCode}';

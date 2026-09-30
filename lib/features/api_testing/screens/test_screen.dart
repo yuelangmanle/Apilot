@@ -42,6 +42,9 @@ class _TestScreenState extends State<TestScreen> {
   int _requestId = 0;
   bool _streamEnabled = true;
   StreamSubscription<StreamChatEvent>? _streamSub;
+  final StringBuffer _pendingDelta = StringBuffer();
+  final StringBuffer _pendingReasoning = StringBuffer();
+  Timer? _flushTimer;
   bool _isLoading = false;
   bool _streaming = false;
   String _streamText = '';
@@ -141,6 +144,10 @@ class _TestScreenState extends State<TestScreen> {
         if (!mounted || requestId != _requestId) return;
         if (event.isDone) {
           final response = event.response!;
+          _reasoningText += _pendingReasoning.toString();
+          _streamText += _pendingDelta.toString();
+          _pendingDelta.clear();
+          _pendingReasoning.clear();
           setState(() {
             _response = response;
             _statusCode = 200;
@@ -152,9 +159,11 @@ class _TestScreenState extends State<TestScreen> {
           unawaited(_recordHistory(api, model, '/stream', body, response));
           if (!completer.isCompleted) completer.complete();
         } else if (event.reasoning != null) {
-          setState(() => _reasoningText += event.reasoning!);
+          _pendingReasoning.write(event.reasoning!);
+          _scheduleStreamFlush();
         } else {
-          setState(() => _streamText += event.delta!);
+          _pendingDelta.write(event.delta!);
+          _scheduleStreamFlush();
         }
       },
       onError: (Object error) {
@@ -190,11 +199,34 @@ class _TestScreenState extends State<TestScreen> {
     }
   }
 
+  /// 16ms 合帧：每个增量都 setState 会让渲染成本随文本长度 O(n²)。
+  void _scheduleStreamFlush() {
+    if (_flushTimer != null) return;
+    _flushTimer = Timer(const Duration(milliseconds: 50), () {
+      _flushTimer = null;
+      if (!mounted || _pendingDelta.isEmpty && _pendingReasoning.isEmpty) {
+        return;
+      }
+      setState(() {
+        _reasoningText += _pendingReasoning.toString();
+        _streamText += _pendingDelta.toString();
+        _pendingDelta.clear();
+        _pendingReasoning.clear();
+      });
+    });
+  }
+
   /// 用户主动停止流式输出：保留已接收内容。
   void _stopStreaming() {
     _streamSub?.cancel();
     _streamSub = null;
+    _flushTimer?.cancel();
+    _flushTimer = null;
     if (!mounted) return;
+    _reasoningText += _pendingReasoning.toString();
+    _streamText += _pendingDelta.toString();
+    _pendingDelta.clear();
+    _pendingReasoning.clear();
     setState(() {
       _isLoading = false;
       _streaming = false;
@@ -261,6 +293,10 @@ class _TestScreenState extends State<TestScreen> {
     _requestId++;
     _streamSub?.cancel();
     _streamSub = null;
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _pendingDelta.clear();
+    _pendingReasoning.clear();
     setState(() {
       _currentApi = api;
       _response = null;
@@ -436,10 +472,38 @@ class _TestScreenState extends State<TestScreen> {
               ),
               child: SingleChildScrollView(
                 reverse: true,
-                child: SelectableText(
-                  _streamText.isEmpty ? '等待第一个数据帧...' : _streamText,
-                  style: const TextStyle(
-                      fontFamily: 'monospace', fontSize: 13, height: 1.4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_reasoningText.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: SelectableText(
+                          '思考中：\n$_reasoningText',
+                          style: TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 11,
+                              height: 1.4,
+                              color: secondaryTextColor),
+                        ),
+                      ),
+                    if (_streamText.isNotEmpty)
+                      SelectableText(
+                        _streamText,
+                        style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                            height: 1.4),
+                      )
+                    else if (_reasoningText.isEmpty)
+                      const Text('等待第一个数据帧...',
+                          style: TextStyle(color: AppColors.textSecondary)),
+                  ],
                 ),
               ),
             ),

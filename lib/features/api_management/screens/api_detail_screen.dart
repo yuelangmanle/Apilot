@@ -146,11 +146,14 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                 const Icon(Icons.api, color: AppColors.primary),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    _apiConfig.name,
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
+                  child: Hero(
+                    tag: 'api-name-\${_apiConfig.id}',
+                    child: Text(
+                      _apiConfig.name,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ),

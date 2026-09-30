@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as path;
 import 'package:flutter/foundation.dart';
@@ -58,17 +59,38 @@ class DatabaseService {
     debugPrint('[DB] 版本降级 $oldVersion -> $newVersion，保留数据不删库');
   }
 
-  static const int _databaseVersion = 7;
+  static const int _databaseVersion = 8;
 
   Future<Database> _initializeDatabase() async {
     final dbPath = await getDatabasesPath();
-    return await openDatabase(
-      path.join(dbPath, 'api_manager.db'),
-      version: _databaseVersion,
-      onCreate: _createDatabase,
-      onUpgrade: _upgradeDatabase,
-      onDowngrade: _onDowngrade,
-    );
+    final filePath = path.join(dbPath, 'api_manager.db');
+    try {
+      return await openDatabase(
+        filePath,
+        version: _databaseVersion,
+        onCreate: _createDatabase,
+        onUpgrade: _upgradeDatabase,
+        onDowngrade: _onDowngrade,
+      );
+    } on DatabaseException catch (e) {
+      // 损坏自愈：把坏文件改名保留（供人工恢复），重建空库让应用可用。
+      final code = e.getResultCode();
+      final corrupt = code == 11 || code == 26;
+      if (!corrupt) rethrow;
+      final corruptFile = File('$filePath.corrupt-${DateTime.now().millisecondsSinceEpoch}');
+      final source = File(filePath);
+      if (source.existsSync()) {
+        debugPrint('[DB] 数据库损坏，已备份到 ${corruptFile.path}');
+        source.renameSync(corruptFile.path);
+      }
+      return await openDatabase(
+        filePath,
+        version: _databaseVersion,
+        onCreate: _createDatabase,
+        onUpgrade: _upgradeDatabase,
+        onDowngrade: _onDowngrade,
+      );
+    }
   }
 
   Future<void> _createDatabase(Database db, int version) async {
@@ -121,6 +143,11 @@ class DatabaseService {
         FOREIGN KEY (api_config_id) REFERENCES api_configs (id)
       )
     ''');
+
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_history_created ON request_history (created_at DESC)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_history_config ON request_history (api_config_id)');
 
     await db.execute('''
       CREATE TABLE IF NOT EXISTS groups (
@@ -240,6 +267,12 @@ class DatabaseService {
     }
     if (oldVersion < 5) {
       await db.execute('ALTER TABLE api_configs ADD COLUMN deleted_at TEXT');
+    }
+    if (oldVersion < 8) {
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_history_created ON request_history (created_at DESC)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_history_config ON request_history (api_config_id)');
     }
     if (oldVersion < 7) {
       // v1 缺表场景已在上面按完整结构建表，这里按列是否存在幂等补齐。
@@ -876,11 +909,13 @@ class DatabaseService {
           'created_at': history.createdAt.toIso8601String(),
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
+    // 保留窗口写法：索引覆盖 created_at，代价远低于 NOT IN 子查询。
     await db.execute(
-      'DELETE FROM request_history WHERE id NOT IN ('
-      'SELECT id FROM request_history ORDER BY created_at DESC LIMIT ?'
+      'DELETE FROM request_history WHERE created_at < ('
+      'SELECT created_at FROM request_history '
+      'ORDER BY created_at DESC LIMIT 1 OFFSET ?'
       ')',
-      [_maxHistoryRows],
+      [_maxHistoryRows - 1],
     );
   }
 
@@ -956,6 +991,24 @@ class DatabaseService {
   Future<void> clearRequestHistory() async {
     final db = await database;
     await db.delete('request_history');
+  }
+
+  /// 用量聚合行（SQL 下推：不读 body，历史再多也恒定开销）。
+  Future<List<Map<String, Object?>>> getUsageSummary() async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT api_config_id,
+             COUNT(*) AS request_count,
+             SUM(CASE WHEN status_code >= 200 AND status_code < 300
+                 THEN 1 ELSE 0 END) AS success_count,
+             SUM(COALESCE(prompt_tokens, 0)) AS prompt_tokens,
+             SUM(COALESCE(completion_tokens, 0)) AS completion_tokens,
+             SUM(COALESCE(total_tokens, 0)) AS total_tokens,
+             MAX(created_at) AS last_used_at
+      FROM request_history
+      GROUP BY api_config_id
+      ORDER BY total_tokens DESC
+    ''');
   }
 
   // ==================== Third-party interoperability audits ====================

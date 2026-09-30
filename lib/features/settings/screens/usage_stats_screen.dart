@@ -204,11 +204,22 @@ class UsageStatsScreen extends StatelessWidget {
   Widget _bigNumber(String value, String label) {
     return Column(
       children: [
-        Text(value,
-            style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: AppColors.primary)),
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0, end: 1),
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOutCubic,
+          builder: (context, t, child) => Opacity(
+            opacity: t,
+            child: Transform.translate(
+              offset: Offset(0, 8 * (1 - t)),
+              child: child,
+            ),
+          ),
+          child: Text(value,
+              style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary))),
         const SizedBox(height: 4),
         Text(label,
             style: const TextStyle(

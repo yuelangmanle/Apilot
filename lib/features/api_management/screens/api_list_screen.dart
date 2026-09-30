@@ -1,8 +1,12 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/health_check_service.dart';
 import '../../../shared/utils/friendly_error.dart';
+import '../../sync/screens/qr_scanner_screen.dart';
 import '../services/api_connection_paste_parser.dart';
 import '../providers/api_provider.dart';
 import '../widgets/api_card.dart';
@@ -26,6 +30,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
   bool _isHealthChecking = false;
   int _healthDone = 0;
   int _healthTotal = 0;
+  Timer? _searchDebounce;
   bool _selectMode = false;
   final Set<String> _selectedIds = {};
 
@@ -39,6 +44,7 @@ class _ApiListScreenState extends State<ApiListScreen> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -62,7 +68,13 @@ class _ApiListScreenState extends State<ApiListScreen> {
                   hintStyle: TextStyle(color: isDark ? AppColors.darkTextSecondary : Colors.white70),
                 ),
                 style: TextStyle(color: isDark ? AppColors.darkTextPrimary : Colors.white),
-                onChanged: (value) => context.read<ApiProvider>().setSearchQuery(value),
+                onChanged: (value) {
+                  // 300ms 防抖：避免每个键击整页重建。
+                  _searchDebounce?.cancel();
+                  _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+                    context.read<ApiProvider>().setSearchQuery(value);
+                  });
+                },
               )
             : const Text('Apilot'),
         actions: _selectMode
@@ -551,6 +563,16 @@ class _ApiListScreenState extends State<ApiListScreen> {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.qr_code_scanner,
+                  color: AppColors.primary),
+              title: const Text('扫二维码导入'),
+              subtitle: const Text('扫描其他设备上的 Apilot 配置码'),
+              onTap: () {
+                Navigator.pop(context);
+                _scanImportConfig();
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.edit, color: AppColors.primary),
               title: const Text('手动添加'),
               subtitle: const Text('填写完整的API信息'),
@@ -566,6 +588,50 @@ class _ApiListScreenState extends State<ApiListScreen> {
         ),
       ),
     );
+  }
+
+  /// 扫码导入单配置：识别 Apilot 配置码（JSON）并预填表单。
+  Future<void> _scanImportConfig() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final apiProvider = context.read<ApiProvider>();
+    try {
+      final scanned = await navigator.push<String>(
+        MaterialPageRoute(builder: (context) => const QrScannerScreen()),
+      );
+      if (scanned == null || scanned.isEmpty) return;
+      Map<String, dynamic>? configJson;
+      try {
+        final decoded = jsonDecode(scanned);
+        if (decoded is Map<String, dynamic> &&
+            decoded['apilotConfig'] is Map) {
+          configJson =
+              Map<String, dynamic>.from(decoded['apilotConfig'] as Map);
+        }
+      } catch (_) {}
+      if (configJson == null) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text('二维码不是 Apilot 配置码'),
+            backgroundColor: AppColors.warning));
+        return;
+      }
+      final cfg = configJson;
+      final parsed = ApiConnectionPasteParser.parse(
+          '地址：${cfg['baseUrl'] ?? ''} Key：${cfg['apiKey'] ?? ''}');
+      await navigator.push(
+        MaterialPageRoute(
+          builder: (context) => ApiFormScreen(
+            initialConnection: parsed,
+            initialName: cfg['name']?.toString(),
+          ),
+        ),
+      );
+      await apiProvider.loadApiConfigs();
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(friendlyError(e)), backgroundColor: AppColors.error),
+      );
+    }
   }
 
   /// 主路径激活优化：FAB 直达剪贴板识别，识别结果直接预填进表单。

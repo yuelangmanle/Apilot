@@ -18,11 +18,15 @@ class ApiFormScreen extends StatefulWidget {
   /// FAB"从剪贴板识别"路径携带的预填结果。
   final ApiConnectionPasteResult? initialConnection;
 
+  /// 扫码导入路径携带的名称预填。
+  final String? initialName;
+
   const ApiFormScreen({
     super.key,
     this.apiConfig,
     this.isEditing = false,
     this.initialConnection,
+    this.initialName,
   });
 
   @override
@@ -42,6 +46,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   DateTime? _expiresAt;
   final _lowBalanceController = TextEditingController();
   final _monthlyBudgetController = TextEditingController();
+  final _extraKeysController = TextEditingController();
   bool _isLoading = false;
   bool _isFetchingModels = false;
   bool _isValidating = false;
@@ -67,6 +72,9 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
       _tagsController.text = api.tags.join(', ');
       _environment = api.environment;
       _isFavorite = api.isFavorite;
+    }
+    if (widget.initialName != null && widget.apiConfig == null) {
+      _nameController.text = widget.initialName!;
     }
     // 预填在快照之后：预填内容算作"未保存修改"，返回时有保护。
     if (widget.initialConnection != null && widget.apiConfig == null) {
@@ -102,6 +110,22 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     } catch (_) {
       // 剪贴板不可读不影响表单使用。
     }
+  }
+
+  /// 备用 Key 池：一行一把，写入 metadata.extraKeys（KeyPool 故障转移读取）。
+  Map<String, dynamic>? _mergeExtraKeys(Map<String, dynamic>? original) {
+    final lines = _extraKeysController.text
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList();
+    final merged = Map<String, dynamic>.from(original ?? <String, dynamic>{});
+    if (lines.isEmpty) {
+      merged.remove('extraKeys');
+    } else {
+      merged['extraKeys'] = lines;
+    }
+    return merged.isEmpty ? null : merged;
   }
 
   /// 就地新建分组：免去"放弃表单 → 设置 → 建组 → 重填"的断点。
@@ -161,6 +185,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _extraKeysController.dispose();
     _lowBalanceController.dispose();
     _monthlyBudgetController.dispose();
     _baseUrlController.dispose();
@@ -581,6 +606,19 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
                                   border: OutlineInputBorder(),
                                 ),
                               ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _extraKeysController,
+                                minLines: 2,
+                                maxLines: 5,
+                                obscureText: true,
+                                decoration: const InputDecoration(
+                                  labelText: '备用 Key 池（可选）',
+                                  hintText: '每行一把 Key；主 Key 失效时自动切换',
+                                  isDense: true,
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -859,7 +897,7 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
         tags: tags,
         isFavorite: _isFavorite,
         createdAt: widget.isEditing ? original!.createdAt : null,
-        metadata: original?.metadata,
+        metadata: _mergeExtraKeys(original?.metadata),
         providerId: original?.providerId ?? ApiProviderIds.custom,
         protocolId: original?.protocolId ?? ApiProtocolIds.openAiCompatible,
         selectedModel: original?.selectedModel,

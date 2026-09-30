@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_manager/window_manager.dart';
 import 'shared/theme/app_theme.dart';
+import 'shared/widgets/lazy_indexed_stack.dart';
 import 'shared/widgets/responsive_layout.dart';
 import 'core/services/api_key_cipher.dart';
 import 'core/services/cost_estimator.dart';
@@ -110,6 +112,7 @@ class ApiManagerApp extends StatelessWidget {
               ApilotThemeMode.light => ThemeMode.light,
               ApilotThemeMode.dark => ThemeMode.dark,
             },
+            themeAnimationDuration: const Duration(milliseconds: 300),
             home: !lock.initialized
                 ? const Scaffold(
                     body: Center(child: CircularProgressIndicator()))
@@ -117,6 +120,10 @@ class ApiManagerApp extends StatelessWidget {
                     ? const LockGate(child: SizedBox.shrink())
                     : const AppShell(),
             debugShowCheckedModeBanner: false,
+            builder: (context, child) {
+              // 损坏 widget 构建的兜底展示（记录日志在 AppLogger）。
+              return child ?? const SizedBox.shrink();
+            },
           );
         },
       ),
@@ -131,7 +138,8 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell>
+    with WidgetsBindingObserver {
   static const _tabPrefsKey = 'apilot_last_tab';
   int _selectedIndex = 0;
 
@@ -177,6 +185,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _restoreTab();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -233,7 +242,27 @@ class _AppShellState extends State<AppShell> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached ||
+        state == AppLifecycleState.paused) {
+      _saveWindowGeometry();
+    }
+  }
+
+  /// 桌面端记忆窗口几何。
+  Future<void> _saveWindowGeometry() async {
+    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) return;
+    try {
+      final size = await windowManager.getSize();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('window_width', size.width);
+      await prefs.setDouble('window_height', size.height);
+    } catch (_) {}
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _shareSubscription?.cancel();
     super.dispose();
   }
@@ -269,7 +298,11 @@ class _AppShellState extends State<AppShell> {
           ),
           const VerticalDivider(thickness: 1, width: 1),
           Expanded(
-            child: _screens[_selectedIndex],
+            // 懒加载保活：首次进入才构建，之后零重建且状态保留。
+            child: LazyIndexedStack(
+              index: _selectedIndex,
+              children: _screens,
+            ),
           ),
         ],
       ),
@@ -278,7 +311,10 @@ class _AppShellState extends State<AppShell> {
 
   Widget _buildPhoneLayout() {
     return Scaffold(
-      body: _screens[_selectedIndex],
+      body: LazyIndexedStack(
+        index: _selectedIndex,
+        children: _screens,
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: _selectTab,
