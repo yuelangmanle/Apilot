@@ -1,4 +1,5 @@
 import 'package:api_manager/core/models/api_config.dart';
+import 'package:flutter/foundation.dart';
 import 'package:api_manager/core/services/database_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -40,20 +41,19 @@ void main() {
     final binAfterRestart = await second.getDeletedApiConfigs();
     final liveAfterRestart = await second.getAllApiConfigs();
 
-    print('=== 诊断 ===');
-    print('删除后回收站: ${binAfterDelete.length} 条');
-    print('删除后活列表: ${liveAfterDelete.length} 条');
-    print('重启后回收站: ${binAfterRestart.length} 条');
-    print('重启后活列表: ${liveAfterRestart.length} 条');
+    debugPrint('=== 诊断 ===');
+    debugPrint('删除后回收站: ${binAfterDelete.length} 条');
+    debugPrint('删除后活列表: ${liveAfterDelete.length} 条');
+    debugPrint('重启后回收站: ${binAfterRestart.length} 条');
+    debugPrint('重启后活列表: ${liveAfterRestart.length} 条');
     if (binAfterRestart.isEmpty && liveAfterRestart.isNotEmpty) {
       final raw = await (await second.database)
           .query('api_configs', where: "id = 'restart-1'");
-      print('原始行 deleted_at = ${raw.first['deleted_at']}');
+      debugPrint('原始行 deleted_at = ${raw.first['deleted_at']}');
     }
     expect(binAfterDelete, hasLength(1));
     expect(liveAfterDelete, isEmpty);
-    expect(binAfterRestart, hasLength(1),
-        reason: '重启后回收站不应为空');
+    expect(binAfterRestart, hasLength(1), reason: '重启后回收站不应为空');
     expect(liveAfterRestart, isEmpty, reason: '重启后不应复活到主列表');
     await second.forceClose();
     await deleteDatabase(dbPath);

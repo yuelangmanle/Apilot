@@ -1,7 +1,6 @@
 import 'package:api_manager/core/models/api_config.dart';
 import 'package:api_manager/core/services/api_key_cipher.dart';
 import 'package:api_manager/core/services/database_service.dart';
-import 'package:api_manager/core/services/secret_store.dart';
 import 'package:api_manager/features/sync/services/sync_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,7 +18,8 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  test('FULL RESTART FLOW: trash survives cipher-reconfigure, reopen and sync merge',
+  test(
+      'FULL RESTART FLOW: trash survives cipher-reconfigure, reopen and sync merge',
       () async {
     final dbPath = '.dart_tool/sqflite_common_ffi/databases/'
         'fullflow_${DateTime.now().microsecondsSinceEpoch}.db';
