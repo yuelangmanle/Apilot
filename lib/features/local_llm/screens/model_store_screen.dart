@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../core/services/local_llm/model_catalog.dart';
+import '../../../core/services/local_llm/model_url_parser.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 
@@ -69,7 +70,12 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       }
       await _refreshDownloaded();
     } on DownloadCancelledException {
-      // 用户取消
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('下载已暂停，可重新点击继续'),
+              duration: Duration(seconds: 2)),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -187,6 +193,27 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                         style: TextStyle(
                             fontSize: 10, color: AppColors.success)),
                   ),
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    QuantizationRecommender.recommend(
+                            [model.quantization], ramMb: 8000) != null
+                        ? '适合你的设备'
+                        : '可能内存不足',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: QuantizationRecommender.recommend(
+                                [model.quantization], ramMb: 8000) != null
+                            ? AppColors.primary
+                            : AppColors.error),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 4),
@@ -202,11 +229,23 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 backgroundColor: AppColors.primary.withValues(alpha: 0.1),
               ),
               const SizedBox(height: 4),
-              Text(
-                download.totalBytes > 0
-                    ? '${(download.receivedBytes / (1024 * 1024)).toStringAsFixed(0)} / ${(download.totalBytes / (1024 * 1024)).toStringAsFixed(0)} MB'
-                    : '连接中...',
-                style: const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      download.totalBytes > 0
+                          ? '${(download.receivedBytes / (1024 * 1024)).toStringAsFixed(0)} / ${(download.totalBytes / (1024 * 1024)).toStringAsFixed(0)} MB'
+                          : '连接中...',
+                      style: const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+                    ),
+                  ),
+                  // 暂停/继续按钮
+                  IconButton(
+                    icon: const Icon(Icons.cancel_outlined, size: 20),
+                    tooltip: '取消下载',
+                    onPressed: () => _downloader.cancel(model.id),
+                  ),
+                ],
               ),
             ] else
               SizedBox(
