@@ -67,12 +67,9 @@ class _PinScreenState extends State<PinScreen>
   /// 从后台返回时：只要还处于锁定，就重新弹出生物识别。
   /// 修复"取消指纹→切桌面→回来不再验证"的漏洞。
   void _onResumed() {
-    if (!mounted) return;
-    final lock = context.read<AppLockController>();
-    if (lock.enabled && lock.locked) {
-      _biometricPrompted = false;
-      _prepareBiometric();
-    }
+    // 指纹弹窗自身的关闭也会触发一次 resumed——
+    // 此处若自动重弹会形成"弹窗→关闭→再弹"死循环，PIN 永远无法输入。
+    // 自动弹窗只在锁屏首次挂载时发生一次；重试走指纹按钮或 PIN。
   }
 
   @override

@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,6 +29,7 @@ class AppLockController extends ChangeNotifier
   bool _wasInBackground = false;
   bool _biometricEnabled = false;
   bool _loadFailed = false;
+  DateTime? _lastUnlockAt;
 
   bool get enabled => _enabled;
   bool get locked => _locked;
@@ -60,11 +63,17 @@ class AppLockController extends ChangeNotifier
   }
 
   /// PIN 派生：PBKDF2-HMAC-SHA256，高迭代次数抵御离线爆破。
+  /// 纯 Dart 实现在主 isolate 跑会冻结 UI 数秒——用 [hashPinAsync]。
   static String hashPin(String pin, String salt) {
     final derivator = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64))
       ..init(pc.Pbkdf2Parameters(
-          utf8.encode(salt), _pbkdf2Iterations, 32));
+          Uint8List.fromList(utf8.encode(salt)), _pbkdf2Iterations, 32));
     return base64.encode(derivator.process(utf8.encode(pin)));
+  }
+
+  /// 在独立 isolate 中执行派生，主线程不冻结。
+  static Future<String> hashPinAsync(String pin, String salt) {
+    return Isolate.run(() => hashPin(pin, salt));
   }
 
   static String _randomSalt() {
@@ -83,8 +92,8 @@ class AppLockController extends ChangeNotifier
     if (pin.length < 4) throw StateError('PIN 至少 4 位');
     final prefs = await SharedPreferences.getInstance();
     final salt = _randomSalt();
-    await prefs.setString(_pinHashKey,
-        'pbkdf2:$salt:${hashPin(pin, salt)}');
+    final hash = await hashPinAsync(pin, salt);
+    await prefs.setString(_pinHashKey, 'pbkdf2:$salt:$hash');
     await prefs.setBool(_enabledKey, true);
     await prefs.setInt(_failCountKey, 0);
     _enabled = true;
@@ -109,6 +118,7 @@ class AppLockController extends ChangeNotifier
     if (!ok) return false;
     _locked = false;
     _wasInBackground = false;
+    _lastUnlockAt = DateTime.now();
     notifyListeners();
     return true;
   }
@@ -133,7 +143,7 @@ class AppLockController extends ChangeNotifier
       if (index > 0) {
         final salt = rest.substring(0, index);
         final expected = rest.substring(index + 1);
-        ok = hashPin(pin, salt) == expected;
+        ok = await hashPinAsync(pin, salt) == expected;
       }
     } else {
       // 旧格式（v1.25.0 前）：<salt>:<sha256>，兼容校验一次。
@@ -157,12 +167,13 @@ class AppLockController extends ChangeNotifier
     }
 
     // 成功：清除退避计数；旧格式哈希顺手升级为 PBKDF2。
+    _lastUnlockAt = DateTime.now();
     await prefs.setInt(_failCountKey, 0);
     await prefs.setInt(_failLockUntilKey, 0);
     if (!stored.startsWith('pbkdf2:')) {
       final salt = _randomSalt();
-      await prefs.setString(_pinHashKey,
-          'pbkdf2:$salt:${hashPin(pin, salt)}');
+      final hash = await hashPinAsync(pin, salt);
+      await prefs.setString(_pinHashKey, 'pbkdf2:$salt:$hash');
     }
     _locked = false;
     notifyListeners();
@@ -200,6 +211,15 @@ class AppLockController extends ChangeNotifier
       _wasInBackground = true;
     } else if (state == AppLifecycleState.resumed && _wasInBackground) {
       _wasInBackground = false;
+      // 刚完成解锁的 10 秒宽限期内不重新上锁：
+      // PBKDF2 冻结/指纹弹窗期间产生的 paused→resumed 事件序列
+      // 不能覆盖刚成功的解锁结果。
+      if (_locked) return;
+      if (_lastUnlockAt != null &&
+          DateTime.now().difference(_lastUnlockAt!) <
+              const Duration(seconds: 10)) {
+        return;
+      }
       _locked = true;
       notifyListeners();
     }

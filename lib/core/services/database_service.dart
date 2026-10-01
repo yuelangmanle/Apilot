@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as path;
 import 'package:flutter/foundation.dart';
@@ -434,11 +435,68 @@ class DatabaseService {
     return _mapToApiConfig(maps.first);
   }
 
+  /// 删除墓碑的 SharedPreferences 镜像。
+  ///
+  /// 墓碑表存在于数据库文件内——换机克隆/系统回滚等外部覆盖会把整个
+  /// DB 文件（含墓碑）替换为旧版本，删除记录随之丢失。镜像存在
+  /// SharedPreferences（独立文件）中，启动读取时与 DB 做并集聚合：
+  /// 只要任一侧记录了删除，该配置就不会复活。
+  static const String _mirrorPrefsKey = 'apilot_deleted_config_mirror';
+
+  static Future<Map<String, String>> _readDeletionMirror() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_mirrorPrefsKey);
+      if (raw == null || raw.isEmpty) return {};
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+    } catch (e) {
+      debugPrint('[DB] 删除镜像读取失败: $e');
+      return {};
+    }
+  }
+
+  static Future<void> _mirrorSet(String id, String deletedAt) async {
+    final mirror = await _readDeletionMirror();
+    mirror[id] = deletedAt;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_mirrorPrefsKey, jsonEncode(mirror));
+    } catch (e) {
+      debugPrint('[DB] 删除镜像写入失败: $e');
+    }
+  }
+
+  static Future<void> _mirrorRemove(String id) async {
+    final mirror = await _readDeletionMirror();
+    if (!mirror.containsKey(id)) return;
+    mirror.remove(id);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_mirrorPrefsKey, jsonEncode(mirror));
+    } catch (_) {}
+  }
+
+  static Future<void> _mirrorRemoveAll(Iterable<String> ids) async {
+    final mirror = await _readDeletionMirror();
+    var changed = false;
+    for (final id in ids) {
+      if (mirror.remove(id) != null) changed = true;
+    }
+    if (!changed) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_mirrorPrefsKey, jsonEncode(mirror));
+    } catch (_) {}
+  }
+
   /// 默认只返回存活配置（回收站中的除外）。
   /// [executor] 允许在外层事务内执行同一批读取（同步合并使用）。
   ///
-  /// 删除状态以墓碑表 `deleted_config_ids` 为权威来源：即使 api_configs
-  /// 行的 deleted_at 被任何写入路径覆盖，墓碑仍将其排除在活列表之外。
+  /// 删除状态以墓碑表 + prefs 镜像的**并集**为权威来源：即使 api_configs
+  /// 行或 DB 文件被外部覆盖，镜像仍会把被删配置排除在活列表之外，
+  /// 并就地修复（重新打上行标记）。
   Future<List<ApiConfig>> getAllApiConfigs({
     bool includeDeleted = false,
     DatabaseExecutor? executor,
@@ -453,42 +511,78 @@ class DatabaseService {
       ORDER BY a.name ASC
     ''');
 
+    // prefs 镜像并集（DB 被外部覆盖时的最后防线）。
+    final mirror = await _readDeletionMirror();
+
     final List<ApiConfig> results = [];
+    final repairs = <String, String>{};
     for (final map in maps) {
+      final id = map['id'] as String?;
       try {
+        final rowDeleted = map['deleted_at'] as String?;
+        final mirrorDeleted = id == null ? null : mirror[id];
         final effectiveDeletedAt =
-            map['effective_deleted_at'] as String?;
-        if (!includeDeleted && effectiveDeletedAt != null) continue;
+            mirrorDeleted ?? (map['effective_deleted_at'] as String?);
+        if (!includeDeleted && effectiveDeletedAt != null) {
+          // 行标记丢失但镜像/墓碑仍在（外部覆盖场景）：就地修复。
+          if (executor == null && rowDeleted == null && id != null) {
+            repairs[id] = mirrorDeleted ?? effectiveDeletedAt;
+          }
+          continue;
+        }
         final row = Map<String, Object?>.from(map);
         row['deleted_at'] = effectiveDeletedAt;
         results.add(_mapToApiConfig(row));
       } catch (e) {
-        debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
+        debugPrint('跳过损坏的API记录 id=$id: $e');
+      }
+    }
+
+    // 就地修复复活行（仅在非事务路径执行写操作）。
+    if (executor == null) {
+      for (final entry in repairs.entries) {
+        try {
+          await db.update('api_configs',
+              {'deleted_at': entry.value}, where: 'id = ?', whereArgs: [entry.key]);
+          debugPrint('[DB] 检测到复活行，已重新回收: ${entry.key}');
+        } catch (e) {
+          debugPrint('[DB] 修复失败 id=${entry.key}: $e');
+        }
       }
     }
     return results;
   }
 
-  /// 回收站内容，按删除时间倒序。以墓碑表为准（行标记被覆盖也能找回）。
+  /// 回收站内容，按删除时间倒序。以墓碑表 + prefs 镜像的并集为准
+  /// （行标记被覆盖也能找回）。
   Future<List<ApiConfig>> getDeletedApiConfigs() async {
     final db = await database;
     final maps = await db.rawQuery('''
       SELECT a.*,
              COALESCE(t.deleted_at, a.deleted_at) AS effective_deleted_at
       FROM api_configs a
-      JOIN deleted_config_ids t ON t.id = a.id
-      ORDER BY effective_deleted_at DESC
+      LEFT JOIN deleted_config_ids t ON t.id = a.id
+      ORDER BY COALESCE(t.deleted_at, a.deleted_at) DESC
     ''');
+    final mirror = await _readDeletionMirror();
+
     final List<ApiConfig> results = [];
+    final seen = <String>{};
     for (final map in maps) {
+      final id = map['id'] as String?;
       try {
+        final effective =
+            mirror[id] ?? (map['effective_deleted_at'] as String?);
+        if (effective == null) continue;
+        if (!seen.add(id!)) continue;
         final row = Map<String, Object?>.from(map);
-        row['deleted_at'] = map['effective_deleted_at'];
+        row['deleted_at'] = effective;
         results.add(_mapToApiConfig(row));
       } catch (e) {
-        debugPrint('跳过损坏的API记录 id=${map['id']}: $e');
+        debugPrint('跳过损坏的API记录 id=$id: $e');
       }
     }
+    // 镜像里有但 DB JOIN 没命中的（行被外部整体清除的情况极罕见，忽略）。
     return results;
   }
 
@@ -508,6 +602,8 @@ class DatabaseService {
       {'id': id, 'deleted_at': now},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    // prefs 镜像：DB 文件被外部覆盖（换机克隆/系统回滚）后的最后防线。
+    await _mirrorSet(id, now);
   }
 
   /// 从回收站恢复。
@@ -523,12 +619,14 @@ class DatabaseService {
       whereArgs: [id],
     );
     await db.delete('deleted_config_ids', where: 'id = ?', whereArgs: [id]);
+    await _mirrorRemove(id);
   }
 
   /// 彻底删除（连同请求历史）。返回是否确实删除了一行。
   Future<bool> purgeApiConfig(String id) async {
     final db = await database;
     await db.delete('deleted_config_ids', where: 'id = ?', whereArgs: [id]);
+    await _mirrorRemove(id);
     await db
         .delete('request_history', where: 'api_config_id = ?', whereArgs: [id]);
     final count = await db
@@ -572,6 +670,7 @@ class DatabaseService {
           where: 'id IN ($placeholders)', whereArgs: ids);
       await txn.delete('deleted_config_ids',
           where: 'id IN ($placeholders)', whereArgs: ids);
+      await _mirrorRemoveAll(ids);
       return ids.length;
     });
   }

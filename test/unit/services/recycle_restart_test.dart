@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:api_manager/core/services/database_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// 模拟用户报告：软删除 → 重启（关闭再重开数据库）→ 回收站为空、配置复活。
@@ -88,5 +89,44 @@ void main() {
 
     await database.forceClose();
     await deleteDatabase(dbPath2);
+  });
+
+
+  test('external DB overwrite resurrection is repaired via prefs mirror',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final mirrorDbPath =
+        '.dart_tool/sqflite_common_ffi/databases/mirror_${DateTime.now().microsecondsSinceEpoch}.db';
+    final database = DatabaseService(dbPath: mirrorDbPath);
+    await database.initialize();
+    // 场景：换机克隆/系统回滚把 DB 文件覆盖为旧版本——
+    // 行的 deleted_at 与墓碑表全部丢失，但 prefs 镜像仍在。
+    final config = ApiConfig(
+      id: 'fixed-id',
+      name: 'Trashed',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-1',
+      models: const ['m'],
+      environment: 'development',
+    );
+    await database.insertApiConfig(config);
+    await database.softDeleteApiConfig('fixed-id');
+
+    // 模拟外部覆盖：行标记与墓碑全部清空（等于 DB 回到删除前的状态）。
+    final db = await database.database;
+    await db.update('api_configs',
+        {'deleted_at': null}, where: "id = 'fixed-id'");
+    await db.delete('deleted_config_ids');
+
+    // 读取即自愈：镜像检测到复活行，重新打上删除标记。
+    final live = await database.getAllApiConfigs();
+    expect(live, isEmpty, reason: '镜像存在时复活行应被立即回收');
+
+    final bin = await database.getDeletedApiConfigs();
+    expect(bin, hasLength(1));
+    expect(bin.single.id, 'fixed-id');
+
+    await database.forceClose();
+    await deleteDatabase(mirrorDbPath);
   });
 }
