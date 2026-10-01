@@ -7,21 +7,22 @@ import '../../../shared/theme/color_scheme.dart';
 import 'app_lock_controller.dart';
 import 'biometric_service.dart';
 
-/// 锁屏门：锁定时直接替换应用首页（同一 MaterialApp 内 home swap）。
-/// 锁屏是唯一路由且禁止返回键离开——不存在被"点空白"绕过、看到或
-/// 操作内页的可能；生物识别弹窗只是浮在锁屏之上的系统 UI。
+/// 锁屏覆盖层：盖在导航器之上（MaterialApp.builder 包裹）。
+/// 导航栈（含二级页面）全程保留但被不透明锁屏完全遮挡、
+/// 指针事件全部被锁屏吸收——不存在操作或看到内页的可能。
+/// 解锁后覆盖层移除，原位恢复到离开时的页面。
 class LockGate extends StatelessWidget {
-  final Widget child;
+  final Widget? lockChild;
 
-  const LockGate({super.key, required this.child});
+  const LockGate({super.key, this.lockChild});
 
   @override
   Widget build(BuildContext context) {
     final lock = context.watch<AppLockController>();
     if (lock.enabled && lock.locked) {
-      return const PinScreen();
+      return const SizedBox.expand(child: PinScreen());
     }
-    return child;
+    return lockChild ?? const SizedBox.shrink();
   }
 }
 

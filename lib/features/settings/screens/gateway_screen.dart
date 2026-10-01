@@ -175,11 +175,37 @@ class _GatewayScreenState extends State<GatewayScreen> {
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text(
-                    '说明：网关在 127.0.0.1 上起一个 OpenAI 兼容反代，'
-                    '把请求转发到所选配置的真实端点并自动注入鉴权。'
-                    '流量只在本机回环，不经外网；流式响应原样透传。',
-                    style: TextStyle(fontSize: 12, height: 1.6, color: secondary),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('怎么用（本机内使用）',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13)),
+                      const SizedBox(height: 6),
+                      Text(
+                        '1. 启动网关，复制上面的地址；\n'
+                        '2. 在本机其他支持自定义 API 的 App 里，'
+                        '把 API 地址改为该地址，API Key 随便填；\n'
+                        '3. 正常对话——请求会经网关转发到所选配置。',
+                        style: TextStyle(
+                            fontSize: 12, height: 1.6, color: secondary),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text('注意事项',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13)),
+                      const SizedBox(height: 6),
+                      Text(
+                        '· 网关只监听 127.0.0.1（本机回环），同一台手机上的'
+                        '其他 App 可以连，其他设备连不了——这是有意设计，防止 Key 暴露到局域网；\n'
+                        '· Apilot 切到后台后可能被安卓冻结导致连不上：'
+                        '使用时请保持 Apilot 在前台或分屏，或在系统设置里'
+                        '关闭对 Apilot 的电池优化；\n'
+                        '· 流式响应原样透传；请求只在本机回环流动，不经外网。',
+                        style: TextStyle(
+                            fontSize: 12, height: 1.6, color: secondary),
+                      ),
+                    ],
                   ),
                 ),
               ),

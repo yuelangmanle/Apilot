@@ -113,16 +113,13 @@ class ApiManagerApp extends StatelessWidget {
               ApilotThemeMode.dark => ThemeMode.dark,
             },
             themeAnimationDuration: const Duration(milliseconds: 300),
-            home: !lock.initialized
-                ? const Scaffold(
-                    body: Center(child: CircularProgressIndicator()))
-                : lock.enabled && lock.locked
-                    ? const LockGate(child: SizedBox.shrink())
-                    : const AppShell(),
+            home: const AppShell(),
             debugShowCheckedModeBanner: false,
-            builder: (context, child) {
-              // 损坏 widget 构建的兜底展示（记录日志在 AppLogger）。
-              return child ?? const SizedBox.shrink();
+            builder: (context, lockChild) {
+              // 应用锁作为不透明覆盖层盖在导航器之上：
+              // 导航栈（含二级页面）全程保留，解锁后原位恢复；
+              // 锁屏期间覆盖层挡住全部交互与内容。
+              return LockGate(lockChild: lockChild);
             },
           );
         },
