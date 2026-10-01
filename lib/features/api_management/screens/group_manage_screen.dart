@@ -4,6 +4,7 @@ import '../../../core/models/group.dart';
 import '../../../core/services/database_service.dart';
 import '../providers/api_provider.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/persisted_route.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 
 class GroupManageScreen extends StatefulWidget {
@@ -21,6 +22,7 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
   @override
   void initState() {
     super.initState();
+    PersistedRoute.save('groups');
     _loadGroups();
   }
 
@@ -35,6 +37,12 @@ class _GroupManageScreenState extends State<GroupManageScreen> {
     await _loadGroups();
     if (!mounted) return;
     await context.read<ApiProvider>().loadApiConfigs();
+  }
+
+  @override
+  void dispose() {
+    PersistedRoute.clearIfCurrent('groups');
+    super.dispose();
   }
 
   @override

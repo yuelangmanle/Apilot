@@ -7,9 +7,9 @@ import 'package:flutter/foundation.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_protocol_adapter.dart';
 
-/// 本地网关：在 127.0.0.1 起一个 OpenAI 兼容反代。
-/// 任意 SDK/工具把 base_url 指向 http://127.0.0.1:<port>/v1 即可
-/// 使用 Apilot 所选配置的 Key 与端点，请求/响应只在本机回环流动。
+/// 本地网关：起一个 OpenAI 兼容反代。
+/// 默认仅监听 127.0.0.1（本机回环）；开启局域网模式后监听所有网卡，
+/// 局域网设备需携带 X-Gateway-Token 才能使用（防止 Key 暴露）。
 class LocalGatewayService {
   LocalGatewayService._();
 
@@ -18,19 +18,29 @@ class LocalGatewayService {
   static HttpServer? _server;
   static ApiConfig? _target;
   static int _port = defaultPort;
+  static String? _token;
+  static bool _lanEnabled = false;
 
   static bool get isRunning => _server != null;
   static int get port => _port;
   static ApiConfig? get target => _target;
+  static String? get token => _token;
+  static bool get lanEnabled => _lanEnabled;
 
   /// 启动网关并指向一个配置。
-  static Future<void> start(ApiConfig config, {int? port}) async {
+  ///
+  /// [lanEnabled] 为 true 时监听所有网卡（供同一局域网内其他设备使用，
+  /// 必须携带 [token]）；默认仅监听 127.0.0.1（本机回环）。
+  static Future<void> start(ApiConfig config,
+      {int? port, bool lanEnabled = false, String? token}) async {
     await stop();
     _target = config;
     _port = port ?? defaultPort;
+    _lanEnabled = lanEnabled;
+    _token = (lanEnabled && token != null && token.isNotEmpty) ? token : null;
     try {
       _server = await HttpServer.bind(
-        InternetAddress.loopbackIPv4,
+        lanEnabled ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4,
         _port,
       );
       _server!.listen(
@@ -55,6 +65,18 @@ class LocalGatewayService {
       request.response.statusCode = HttpStatus.serviceUnavailable;
       await request.response.close();
       return;
+    }
+    // 局域网模式：非回环来源必须携带 X-Gateway-Token（防 Key 暴露）。
+    final remote = request.connectionInfo?.remoteAddress.address ?? '';
+    final fromLoopback = remote == '127.0.0.1' || remote == '::1';
+    if (!fromLoopback && _token != null) {
+      final provided = request.headers.value('X-Gateway-Token');
+      if (provided != _token) {
+        request.response.statusCode = HttpStatus.unauthorized;
+        request.response.write(jsonEncode({'error': '缺少或错误的网关 Token'}));
+        await request.response.close();
+        return;
+      }
     }
     try {
       final upstreamUri = _upstreamUri(target, request.uri);

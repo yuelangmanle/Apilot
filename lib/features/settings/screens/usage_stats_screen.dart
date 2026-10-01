@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/cost_estimator.dart';
+import '../../../shared/utils/persisted_route.dart';
 import '../../../core/services/usage_aggregator.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/widgets/responsive_layout.dart';
@@ -8,8 +9,30 @@ import '../../api_testing/providers/history_provider.dart';
 import '../../api_management/providers/api_provider.dart';
 
 /// 聚合用量：按配置汇总 token 消耗与请求数（基于本地请求历史）。
-class UsageStatsScreen extends StatelessWidget {
+class UsageStatsScreen extends StatefulWidget {
   const UsageStatsScreen({super.key});
+
+  @override
+  State<UsageStatsScreen> createState() => _UsageStatsScreenState();
+}
+
+class _UsageStatsScreenState extends State<UsageStatsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    PersistedRoute.save('usage');
+    // 重启后直接进入本页时，历史可能尚未加载——主动加载一次，
+    // 避免"用量统计看起来被清空"。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<HistoryProvider>().loadHistory();
+    });
+  }
+
+  @override
+  void dispose() {
+    PersistedRoute.clearIfCurrent('usage');
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

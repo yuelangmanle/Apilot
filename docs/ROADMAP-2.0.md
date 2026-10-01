@@ -96,3 +96,43 @@
 ---
 
 *本文档由架构审读（依赖图谱/巨石清单/扩展性 7 处触点）、性能专项（3 个 P0/6 个 P1）、竞品调研（多 Key 池空白/生命周期提醒空档）与生态调研（LiteLLM 价格源/MCP/Responses API）综合而成。*
+
+
+---
+
+## 2.1 附录：本地大模型方案调研（2026-10）
+
+目标设备：小米 15 Ultra（骁龙 8 Elite，Hexagon NPU v79 + Adreno 830）、红米 K80 至尊版（天玑 9400+，Immortalis-G925 + APU 890）。
+
+### 结论
+
+**首选：llamadart（llama.cpp 的 Flutter 封装）**——目前唯一"自带 Vulkan 预编译原生库 + 全平台（Android/桌面）+ 活跃维护（MIT）+ 可平滑升级 LiteRT-LM NPU"的方案，零 C++ 工具链依赖。CPU 基线即可用（3-4B Q4 模型 10-18 tok/s），GPU 作为灰度增强。
+
+### 分层加速路线
+
+| 层 | 方案 | 覆盖 | 状态 |
+|---|---|---|---|
+| L0 CPU 基线 | llama.cpp CPU（NEON） | 全平台 | 稳定，3-4B Q4 约 10-18 tok/s |
+| L1 Vulkan | llamadart 内置开关 | 骁龙 Adreno + 天玑 Mali 均可 | 可用：prefill 提速 3-4 倍，TG 看机型（8E 上生成或降 17%） |
+| L2 NPU（远期） | llama.cpp Hexagon 后端（实验性）/ ExecuTorch QNN | 仅骁龙 8E（v79 在支持列表） | 1-2B 可达 47-52 tok/s，但需专用工具链；天玑 APU 对第三方开发者 2026 年仍是黑盒 |
+
+### 模型推荐（Q4 量化）
+
+- 首选 **Qwen3-1.7B / 4B**：中文最强、支持 thinking budget 开关
+- **Gemma 3n E2B/E4B**：走 LiteRT-LM 路线时首选，多模态
+- **Llama 3.2 1B/3B**：英文基线，基准数据最全
+- 不推荐 DeepSeek-R1-Distill 做默认：思考链 token 太多，手机生成速度下延迟感差
+
+### 已知坑
+
+- llama.cpp Vulkan 在部分机型上 prefill 反而更慢、或输出乱码——必须做运行时基准+自动回退 CPU
+- 天玑侧 NPU 对第三方开发者封闭（NeuroPilot 面向大客户定制）
+- MLC-LLM 无 Flutter 绑定、维护放缓，性价比低于 llamadart
+
+### 数据来源
+
+- llama.cpp Vulkan 基准: github.com/ggml-org/llama.cpp/discussions/10879
+- 骁龙 8E Vulkan 实测: github.com/ggml-org/llama.cpp/discussions/23736
+- Hexagon 后端文档: github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/README.md
+- llamadart: pub.dev/packages/llamadart（0.9.0，3 天前更新）
+- LiteRT-LM: github.com/google-ai-edge/LiteRT-LM

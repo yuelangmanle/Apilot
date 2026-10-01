@@ -10,6 +10,7 @@ import '../../../core/services/health_check_service.dart';
 import '../../../shared/utils/clipboard_privacy.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
+import '../../../shared/utils/persisted_route.dart';
 import '../../api_testing/screens/compare_test_screen.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
@@ -35,6 +36,7 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
   @override
   void initState() {
     super.initState();
+    PersistedRoute.save('api-detail', _apiConfig.id);
     _apiConfig = widget.apiConfig;
   }
 

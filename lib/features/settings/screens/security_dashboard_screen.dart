@@ -2,13 +2,32 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/security_audit.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/persisted_route.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../security/app_lock_controller.dart';
 
 /// 安全仪表盘：本地规则体检（明文端点/Key 复用/应用锁），无网络请求。
-class SecurityDashboardScreen extends StatelessWidget {
+class SecurityDashboardScreen extends StatefulWidget {
   const SecurityDashboardScreen({super.key});
+
+  @override
+  State<SecurityDashboardScreen> createState() =>
+      _SecurityDashboardScreenState();
+}
+
+class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
+  @override
+  void initState() {
+    super.initState();
+    PersistedRoute.save('security-dashboard');
+  }
+
+  @override
+  void dispose() {
+    PersistedRoute.clearIfCurrent('security');
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

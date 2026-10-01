@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/services/database_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/persisted_route.dart';
 import '../../../shared/utils/friendly_error.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_testing/providers/history_provider.dart';
@@ -34,6 +35,7 @@ class _RecycleBinScreenState extends State<RecycleBinScreen> {
   @override
   void initState() {
     super.initState();
+    PersistedRoute.save('recycle');
     _load();
   }
 
@@ -218,6 +220,12 @@ class _RecycleBinScreenState extends State<RecycleBinScreen> {
         if (mounted) setState(() => _busy = false);
       }
     }
+  }
+
+  @override
+  void dispose() {
+    PersistedRoute.clearIfCurrent('recycle');
+    super.dispose();
   }
 
   @override

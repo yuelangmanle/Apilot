@@ -1,9 +1,15 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/models/api_config.dart';
 import '../../../shared/theme/color_scheme.dart';
+import 'package:flutter/services.dart';
+
+import '../../../shared/utils/persisted_route.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../sync/services/local_gateway_service.dart';
@@ -21,11 +27,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
   static const _portPrefsKey = 'apilot_gateway_port';
   ApiConfig? _selected;
   int _port = LocalGatewayService.defaultPort;
+  bool _lanEnabled = false;
+  String _gatewayToken = '';
+  final String _lanIp = '';
   bool _loading = true;
 
   @override
   void initState() {
     super.initState();
+    PersistedRoute.save('gateway');
     _restore();
   }
 
@@ -33,13 +43,34 @@ class _GatewayScreenState extends State<GatewayScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       _port = prefs.getInt(_portPrefsKey) ?? LocalGatewayService.defaultPort;
+      _lanEnabled = prefs.getBool('apilot_gateway_lan') ?? false;
+      _gatewayToken = prefs.getString('apilot_gateway_token') ?? '';
     } catch (_) {}
+    _detectLanIp();
     if (!mounted) return;
     final configs = context.read<ApiProvider>().allApiConfigs;
     setState(() {
       if (configs.isNotEmpty) _selected = configs.first;
       _loading = false;
     });
+  }
+
+  /// 异步获取本机局域网 IPv4（非回环）。
+  Future<String> _detectLanIp() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          if (!addr.isLoopback) {
+            return addr.address;
+          }
+        }
+      }
+    } catch (_) {}
+    return '';
   }
 
   Future<void> _toggle() async {
@@ -56,12 +87,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_portPrefsKey, _port);
-      await LocalGatewayService.start(selected, port: _port);
+      await prefs.setBool('apilot_gateway_lan', _lanEnabled);
+      if (_lanEnabled && _gatewayToken.isEmpty) {
+        _gatewayToken = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+        await prefs.setString('apilot_gateway_token', _gatewayToken);
+      }
+      await LocalGatewayService.start(selected,
+          port: _port, lanEnabled: _lanEnabled, token: _gatewayToken);
       if (mounted) setState(() {});
     } catch (e) {
       messenger.showSnackBar(SnackBar(
           content: Text('启动失败：$e'), backgroundColor: AppColors.error));
     }
+  }
+
+  @override
+  void dispose() {
+    PersistedRoute.clearIfCurrent('gateway');
+    super.dispose();
   }
 
   @override
@@ -134,6 +177,55 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         onChanged: (value) =>
                             _port = int.tryParse(value) ?? _port,
                       ),
+                      const SizedBox(height: 8),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('允许局域网设备访问',
+                            style: TextStyle(fontSize: 14)),
+                        subtitle: const Text(
+                            '其他设备连你的热点/同一 WiFi 后可使用（需带 Token）',
+                            style: TextStyle(fontSize: 12)),
+                        value: _lanEnabled,
+                        onChanged: running
+                            ? null
+                            : (value) => setState(() {
+                                  _lanEnabled = value;
+                                  if (value && _gatewayToken.isEmpty) {
+                                    _gatewayToken = DateTime.now()
+                                        .microsecondsSinceEpoch
+                                        .toRadixString(36);
+                                  }
+                                }),
+                      ),
+                      if (_lanEnabled) ...[
+                        const SizedBox(height: 4),
+                        TextField(
+                          enabled: !running,
+                          controller: TextEditingController(
+                              text: _gatewayToken),
+                          obscureText: true,
+                          decoration: InputDecoration(
+                            labelText: '网关 Token',
+                            helperText: '其他设备请求时需携带 X-Gateway-Token 头',
+                            border: const OutlineInputBorder(),
+                            isDense: true,
+                            suffixIcon: IconButton(
+                              icon: const Icon(Icons.copy, size: 18),
+                              onPressed: () {
+                                Clipboard.setData(ClipboardData(
+                                    text: _gatewayToken));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('Token 已复制'),
+                                      duration: Duration(seconds: 1)),
+                                );
+                              },
+                            ),
+                          ),
+                          onChanged: (value) =>
+                              setState(() => _gatewayToken = value),
+                        ),
+                      ],
                       const SizedBox(height: 12),
                       if (running) ...[
                         Container(
@@ -143,11 +235,25 @@ class _GatewayScreenState extends State<GatewayScreen> {
                             color: AppColors.primary.withValues(alpha: 0.08),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: SelectableText(
-                            'http://127.0.0.1:$_port/v1',
-                            style: const TextStyle(
-                                fontFamily: 'monospace',
-                                fontWeight: FontWeight.bold),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SelectableText(
+                                'http://127.0.0.1:$_port/v1',
+                                style: const TextStyle(
+                                    fontFamily: 'monospace',
+                                    fontWeight: FontWeight.bold),
+                              ),
+                              if (_lanEnabled) ...[
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  'http://$_lanIp:$_port/v1',
+                                  style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 12),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
                         const SizedBox(height: 8),

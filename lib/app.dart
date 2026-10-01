@@ -23,6 +23,7 @@ import 'features/security/app_lock_controller.dart';
 import 'features/sync/services/sync_service.dart';
 import 'features/security/pin_screen.dart';
 import 'features/api_management/screens/api_form_screen.dart';
+import 'features/api_management/screens/api_detail_screen.dart';
 import 'features/api_management/services/api_connection_paste_parser.dart';
 import 'features/third_party_import/models/third_party_import_models.dart';
 import 'features/third_party_import/services/share_channel.dart';
@@ -31,6 +32,12 @@ import 'features/third_party_import/screens/third_party_api_config_pick_screen.d
 import 'features/third_party_import/screens/third_party_import_source_screen.dart';
 import 'features/third_party_import/services/third_party_api_config_pick_channel.dart';
 import 'features/third_party_import/services/third_party_import_channel.dart';
+import 'shared/utils/persisted_route.dart';
+import 'features/settings/screens/gateway_screen.dart';
+import 'features/settings/screens/usage_stats_screen.dart';
+import 'features/settings/screens/security_dashboard_screen.dart';
+import 'features/api_management/screens/recycle_bin_screen.dart';
+import 'features/api_management/screens/group_manage_screen.dart';
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
@@ -151,6 +158,57 @@ class _AppShellState extends State<AppShell>
     } catch (_) {}
   }
 
+  /// 恢复上次停留的二级页面：进程被杀导致路由栈丢失后重建。
+  /// 锁屏覆盖层会盖在恢复出的页面上，解锁后即可看到原页面。
+  Future<void> _restoreRoute() async {
+    final saved = await PersistedRoute.load();
+    if (!mounted || saved == null) return;
+    try {
+      final provider = context.read<ApiProvider>();
+      await provider.loadApiConfigs();
+      if (!mounted) return;
+      Widget? screen;
+      switch (saved.key) {
+        case 'gateway':
+          screen = const GatewayScreen();
+          break;
+        case 'recycle':
+          screen = const RecycleBinScreen();
+          break;
+        case 'usage':
+          screen = const UsageStatsScreen();
+          break;
+        case 'security-dashboard':
+          screen = const SecurityDashboardScreen();
+          break;
+        case 'groups':
+          screen = const GroupManageScreen();
+          break;
+        case 'api-detail':
+          final matches = provider.allApiConfigs
+              .where((c) => c.id == saved.value)
+              .toList();
+          if (matches.isEmpty) {
+            await PersistedRoute.clear();
+            return;
+          }
+          screen = ApiDetailScreen(apiConfig: matches.first);
+          break;
+        default:
+          await PersistedRoute.clear();
+          return;
+      }
+      await PersistedRoute.clear();
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (context) => screen!),
+      );
+    } catch (e) {
+      debugPrint('[Apilot] 二级页面恢复失败: $e');
+      await PersistedRoute.clear();
+    }
+  }
+
   Future<void> _selectTab(int index) async {
     setState(() => _selectedIndex = index);
     try {
@@ -184,6 +242,9 @@ class _AppShellState extends State<AppShell>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _restoreTab();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _restoreRoute();
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (Platform.isAndroid) {
