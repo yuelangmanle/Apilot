@@ -202,7 +202,10 @@ class _ApiListScreenState extends State<ApiListScreen> {
                                 // 确认已在 confirmDismiss 中完成，这里直接移入回收站。
                                 try {
                                   await provider.deleteApiConfig(api.id);
-                                  messenger.showSnackBar(
+                                  // 带"撤销"的提示条在无障碍导航开启的设备上
+                                  // （Flutter 的既定行为）不会自动消失，这里显式
+                                  // 定时关闭，避免"绿色弹窗一直挂着"。
+                                  final controller = messenger.showSnackBar(
                                     SnackBar(
                                       content: Text('已移入回收站：${api.name}'),
                                       backgroundColor: AppColors.success,
@@ -216,6 +219,11 @@ class _ApiListScreenState extends State<ApiListScreen> {
                                       ),
                                     ),
                                   );
+                                  Timer(const Duration(seconds: 6), () {
+                                    try {
+                                      controller.close();
+                                    } catch (_) {}
+                                  });
                                 } catch (e) {
                                   messenger.showSnackBar(
                                     SnackBar(

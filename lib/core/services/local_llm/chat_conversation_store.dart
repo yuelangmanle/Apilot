@@ -12,11 +12,15 @@ class ChatMessageRecord {
   final String? thinking; // 模型的思考过程（可折叠展示）
   final List<ChatAttachment> attachments;
 
+  /// 工具调用过程（每条形如"web_search(query=…)：结果摘要"，可折叠展示）。
+  final List<String> toolSteps;
+
   const ChatMessageRecord({
     required this.role,
     required this.text,
     this.thinking,
     this.attachments = const [],
+    this.toolSteps = const [],
   });
 
   Map<String, dynamic> toJson() => {
@@ -25,6 +29,7 @@ class ChatMessageRecord {
         if (thinking != null && thinking!.isNotEmpty) 'thinking': thinking,
         if (attachments.isNotEmpty)
           'attachments': attachments.map((a) => a.toJson()).toList(),
+        if (toolSteps.isNotEmpty) 'toolSteps': toolSteps,
       };
 
   static ChatMessageRecord fromJson(Map<String, dynamic> json) =>
@@ -36,6 +41,10 @@ class ChatMessageRecord {
                 ?.whereType<Map>()
                 .map((a) =>
                     ChatAttachment.fromJson(Map<String, dynamic>.from(a)))
+                .toList() ??
+            const [],
+        toolSteps: (json['toolSteps'] as List?)
+                ?.whereType<String>()
                 .toList() ??
             const [],
       );

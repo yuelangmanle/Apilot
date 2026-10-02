@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
@@ -29,6 +30,17 @@ import 'features/third_party_import/models/third_party_import_models.dart';
 import 'features/third_party_import/services/share_channel.dart';
 import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
 import 'features/third_party_import/screens/third_party_api_config_pick_screen.dart';
+import 'dart:ui' as ui;
+
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+
+import 'core/services/ai/app_tools.dart';
+import 'core/services/local_llm/community_model_service.dart';
+import 'core/services/local_llm/model_repo_importer.dart';
+import 'core/services/ai/tool_registry.dart';
+import 'core/services/usage_aggregator.dart';
+import 'features/local_llm/screens/html_editor_screen.dart';
 import 'features/third_party_import/screens/third_party_gateway_grant_screen.dart';
 import 'features/third_party_import/services/third_party_gateway_grant_channel.dart';
 import 'features/third_party_import/screens/third_party_import_source_screen.dart';
@@ -41,6 +53,9 @@ import 'features/settings/screens/security_dashboard_screen.dart';
 import 'features/api_management/screens/recycle_bin_screen.dart';
 import 'features/api_management/screens/group_manage_screen.dart';
 import 'features/local_llm/screens/model_store_screen.dart';
+
+/// AI 截屏工具抓取整棵 App 树的锚点。
+final GlobalKey _rootBoundaryKey = GlobalKey();
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
@@ -129,7 +144,11 @@ class ApiManagerApp extends StatelessWidget {
               // 应用锁作为不透明覆盖层盖在导航器之上：
               // 导航栈（含二级页面）全程保留，解锁后原位恢复；
               // 锁屏期间覆盖层挡住全部交互与内容。
-              return LockGate(lockChild: lockChild);
+              // RepaintBoundary：供 AI 截屏工具抓取当前画面。
+              return RepaintBoundary(
+                key: _rootBoundaryKey,
+                child: LockGate(lockChild: lockChild),
+              );
             },
           );
         },
@@ -268,6 +287,7 @@ class _AppShellState extends State<AppShell>
             .initialize(onRequest: _handleGatewayGrantRequest)
             .catchError((Object e) =>
                 debugPrint('[Apilot] 网关授权通道初始化失败: $e'));
+        _initAiTools();
         _initShareTarget();
       }
       ApiManagerApp.registerSyncCallbacks(context);
@@ -419,6 +439,111 @@ class _AppShellState extends State<AppShell>
 
     if (imported == true && mounted) {
       await context.read<ApiProvider>().loadApiConfigs();
+    }
+  }
+
+  /// 注册内置 AI 工具（联网搜索/抓网页/算术/存 HTML/App 查询）并注入宿主能力。
+  void _initAiTools() {
+    ToolRegistry.registerBuiltins();
+    registerAppTools();
+    // 插件开关持久化（用户逐项控制）。
+    unawaited(ToolRegistry.loadEnabledFromPrefs());
+    ToolHost.visionEnabled = false;
+    ToolHost.screenshot = _captureScreenForTools;
+    AppToolHost.listApis = () async {
+      final configs = context.read<ApiProvider>().allApiConfigs;
+      if (configs.isEmpty) return '用户还没有保存任何 API 方案。';
+      final buffer = StringBuffer('共 ${configs.length} 个 API 方案：\n');
+      for (final config in configs) {
+        buffer.writeln('- ${config.name}｜${config.baseUrl}｜'
+            '${config.models.length} 个模型｜'
+            '默认 ${config.selectedModel ?? '未设置'}');
+      }
+      return buffer.toString();
+    };
+    AppToolHost.usageSummary = () async {
+      final history = context.read<HistoryProvider>().history;
+      final configs = context.read<ApiProvider>().allApiConfigs;
+      final names = {for (final c in configs) c.id: c.name};
+      final usages = UsageAggregator.byConfig(history, names: names);
+      if (usages.isEmpty) return '还没有请求历史。';
+      final totalTokens =
+          usages.fold<int>(0, (sum, u) => sum + u.totalTokens);
+      final buffer = StringBuffer(
+          '共 ${usages.length} 个配置有记录，累计 $totalTokens tokens：\n');
+      for (final usage in usages.take(10)) {
+        buffer.writeln('- ${usage.configName}：${usage.requestCount} 次请求，'
+            '成功 ${usage.successCount}，${usage.totalTokens} tokens');
+      }
+      return buffer.toString();
+    };
+    ToolHost.searchModels = (query) async {
+      final results = await Future.wait([
+        CommunityModelService.fetchHuggingFaceModels(query: query, limit: 6),
+        CommunityModelService.fetchModelScopeModels(query: query, limit: 6),
+      ]);
+      final models = [...results[0], ...results[1]];
+      if (models.isEmpty) {
+        return '没有搜到「$query」的 GGUF 模型（可换关键词，或确认网络可访问 HuggingFace/魔搭）';
+      }
+      final buffer = StringBuffer('搜索「$query」的候选（真实体积）：\n');
+      for (final model in models.take(10)) {
+        buffer.writeln('- ${model.id}｜${model.name}｜${model.sizeMb}｜'
+            '${model.quantization}'
+            '${model.tags.contains('多模态') ? '｜多模态' : ''}');
+      }
+      buffer.writeln('用 model_save 把选中的仓库写入「我的社区模型」（可同时下载）。');
+      return buffer.toString();
+    };
+    ToolHost.saveModel = (repo, download) async {
+      final saved = await ModelRepoImporter.importRepo(
+        repo,
+        deviceRamMb: null,
+        download: download,
+      );
+      return saved;
+    };
+    AppToolHost.openPage = (page) async {
+      if (!mounted) return 'App 未就绪';
+      switch (page) {
+        case 'html':
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (context) => const HtmlEditorScreen()),
+          );
+          break;
+        case 'recycle':
+          setState(() => _selectedIndex = 2);
+          break;
+        default:
+          setState(() {
+            _selectedIndex = switch (page) {
+              'usage' || 'gateway' || 'settings' => 4,
+              'models' => 2,
+              _ => _selectedIndex,
+            };
+          });
+      }
+      return '已打开 $page 页面';
+    };
+  }
+
+  /// 供 AI 截屏工具调用：抓取 App 画面并存成 PNG。
+  Future<String?> _captureScreenForTools() async {
+    try {
+      final boundary = _rootBoundaryKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) return null;
+      final image = await boundary.toImage(pixelRatio: 1.0);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) return null;
+      final dir = await getTemporaryDirectory();
+      final file = File(
+          p.join(dir.path, 'screenshot_${DateTime.now().millisecondsSinceEpoch}.png'));
+      await file.writeAsBytes(data.buffer.asUint8List(), flush: true);
+      return file.path;
+    } catch (e) {
+      debugPrint('[Apilot] 截屏失败: $e');
+      return null;
     }
   }
 

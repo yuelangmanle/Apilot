@@ -157,6 +157,34 @@ class LocalModelCatalog {
       license: 'Apache-2.0',
     ),
     LocalModelInfo(
+      id: 'spark-x2.5-1.7b-q4km',
+      name: 'Spark-X2.5 1.7B (Q4_K_M)',
+      description: '芯火端侧智能体模型（1.03GB，Apache-2.0）。'
+          '专为手机端"会调用工具、多步执行"调优，配合本应用件系统效果最好。',
+      downloadUrl:
+          'https://huggingface.co/XHToken/Spark-X2.5-1.7B-GGUF/resolve/main/Spark-X2.5-1.7B-Q4_K_M.gguf',
+      sizeBytes: 1105734656,
+      quantization: 'Q4_K_M',
+      ramRequired: '~1.6 GB',
+      tags: ['中文', '智能体', '端侧', '推荐'],
+      recommended: true,
+      license: 'Apache-2.0',
+    ),
+    LocalModelInfo(
+      id: 'spark-x2.5-4b-q4km',
+      name: 'Spark-X2.5 4B (Q4_K_M)',
+      description: '芯火端侧智能体模型 4B（2.42GB，Apache-2.0）。'
+          '端侧智能体能力更强，工具调用/多步任务更稳，适合主力机。',
+      downloadUrl:
+          'https://huggingface.co/XHToken/Spark-X2.5-4B-GGUF/resolve/main/Spark-X2.5-4B-Q4_K_M.gguf',
+      sizeBytes: 2598119424,
+      quantization: 'Q4_K_M',
+      ramRequired: '~3.5 GB',
+      tags: ['中文', '智能体', '端侧'],
+      recommended: true,
+      license: 'Apache-2.0',
+    ),
+    LocalModelInfo(
       id: 'qwen3-4b-thinking-q4km',
       name: 'Qwen3-4B-Thinking-2507 (Q4_K_M)',
       description: '专为"深度思考"调优的 Qwen3 4B（2.33GB）。'

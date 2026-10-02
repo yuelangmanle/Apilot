@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/services/local_llm/local_llm_engine.dart';
+import '../../../core/services/local_llm/download_task_store.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../core/services/storage_cleanup_service.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -22,6 +23,7 @@ class DownloadManagerScreen extends StatefulWidget {
 class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
   final Map<String, DownloadProgress> _active = {};
   List<PartialDownload> _partials = [];
+  List<DownloadTask> _tasks = [];
   List<DownloadedModel> _downloaded = [];
   StorageReport? _storage;
   bool _loading = true;
@@ -48,11 +50,13 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
 
   Future<void> _refresh() async {
     final partials = await ModelDownloadService.listPartialDownloads();
+    final tasks = await DownloadTaskStore.list();
     final files = await ModelDownloadService.listDownloadedModels();
     final storage = await StorageCleanupService.scan();
     if (!mounted) return;
     setState(() {
       _partials = partials;
+      _tasks = tasks;
       _downloaded = files.map((f) => DownloadedModel.fromFile(f)).toList()
         ..sort((a, b) => a.name.compareTo(b.name));
       _storage = storage;
@@ -139,6 +143,111 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
   void dispose() {
     _subscription?.cancel();
     super.dispose();
+  }
+
+  /// 失败/中断的任务（排除正在下载的与已完成的）。
+  List<DownloadTask> get _failedTasks => _tasks
+      .where((t) =>
+          !t.isCompleted && !_active.containsKey(t.id) && !t.isActive)
+      .toList();
+
+  /// 失败卡片：说明原因 + 已占空间 + 重试/删除。
+  Widget _buildFailedCard(DownloadTask task, Color secondary) {
+    final partialExists =
+        _partials.any((p) => p.fileName == task.fileName);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.error_outline,
+                    size: 18, color: AppColors.error),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(task.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.bold)),
+                ),
+                if (task.url.isNotEmpty)
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('重试', style: TextStyle(fontSize: 12)),
+                    onPressed: () => _resumeTask(task),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline,
+                      size: 20, color: AppColors.error),
+                  tooltip: '删除记录与已下载的部分',
+                  onPressed: () => _deleteTask(task),
+                ),
+              ],
+            ),
+            Text(
+              '${task.isFailed ? '下载失败' : '上次中断'}'
+              '${task.error != null ? '：${_shortError(task.error!)}' : ''}',
+              style: const TextStyle(fontSize: 11, color: AppColors.error),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '已下载 ${task.receivedLabel}'
+              '${task.totalBytes > 0 ? ' / ${task.totalLabel}' : ''}'
+              '${partialExists ? ' · 占用中，可续传' : ' · 未占用空间'}',
+              style: TextStyle(fontSize: 11, color: secondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _shortError(String error) =>
+      error.length > 120 ? '${error.substring(0, 120)}…' : error;
+
+  Future<void> _resumeTask(DownloadTask task) async {
+    if (task.url.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _active[task.id] = DownloadProgress(
+        taskId: task.id,
+        url: task.url,
+        filePath: '',
+        receivedBytes: task.receivedBytes,
+        totalBytes: task.totalBytes,
+        status: DownloadStatus.downloading,
+      );
+    });
+    try {
+      await widget.downloader
+          .download(task.url, task.id, expectedFileName: task.fileName);
+      messenger.showSnackBar(SnackBar(
+          content: Text('「${task.fileName}」下载完成'),
+          backgroundColor: AppColors.success));
+    } on DownloadCancelledException {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('已暂停，可回来继续'), duration: Duration(seconds: 2)));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(
+          content: Text('下载失败：${_shortError('$e')}'),
+          backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 4)));
+    }
+    await _refresh();
+  }
+
+  Future<void> _deleteTask(DownloadTask task) async {
+    await DownloadTaskStore.remove(task.id);
+    // 连带清掉磁盘上的半成品（如果存在）。
+    final partial = _partials.where((p) => p.fileName == task.fileName);
+    for (final item in partial) {
+      await ModelDownloadService.deleteModelFile(item.partialPath);
+    }
+    await _refresh();
   }
 
   @override
@@ -234,6 +343,19 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                   const SizedBox(height: 8),
                   for (final entry in _active.entries)
                     _buildActiveCard(entry.key, entry.value, secondary),
+                ],
+
+                // ── 失败 / 上次中断（持久化记录，可重试） ───────────────
+                if (_failedTasks.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text('失败 / 中断的下载',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          color: secondary)),
+                  const SizedBox(height: 8),
+                  for (final task in _failedTasks)
+                    _buildFailedCard(task, secondary),
                 ],
 
                 // ── 未完成（可续传） ────────────────────────────────────

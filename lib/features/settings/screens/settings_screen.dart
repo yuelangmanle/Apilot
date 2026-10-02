@@ -16,6 +16,7 @@ import 'release_history_screen.dart';
 import 'ai_settings_screen.dart';
 import 'gateway_screen.dart';
 import '../../local_llm/screens/model_store_screen.dart';
+import 'toolbox_screen.dart';
 import 'privacy_screen.dart';
 import 'security_dashboard_screen.dart';
 import 'usage_stats_screen.dart';
@@ -169,6 +170,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     context,
                     MaterialPageRoute(
                         builder: (context) => const ModelStoreScreen()),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.extension),
+                title: const Text('工具箱（AI 插件）'),
+                subtitle: const Text(
+                    'HTML 编辑器 + 联网搜索/抓网页/算术等内置工具说明'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const ToolboxScreen()),
                   );
                 },
               ),

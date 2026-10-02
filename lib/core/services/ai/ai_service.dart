@@ -33,6 +33,16 @@ class AiService {
   static LocalLlmEngine? get sharedLocalEngine =>
       (_sharedEngine?.isLoaded ?? false) ? _sharedEngine : null;
 
+  /// 当前来源是否选择了本地模型（AgentRunner 决定推理路径用）。
+  static Future<bool> isLocalSourceSelected() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_useLocalKey) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// AI 功能是否启用。
   static Future<bool> isEnabled() async {
     try {

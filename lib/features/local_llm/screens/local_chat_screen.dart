@@ -6,11 +6,17 @@ import 'package:flutter/material.dart';
 import 'package:llamadart/llamadart.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:provider/provider.dart';
+import '../../../core/services/ai/agent_runner.dart' as agent;
 import '../../../core/services/ai/ai_service.dart';
+import '../../../core/services/ai/memory_store.dart';
+import '../../../core/services/ai/tool_registry.dart';
+import '../../api_management/providers/api_provider.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../core/services/local_llm/model_capabilities.dart';
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../widgets/tool_panel.dart';
 import 'conversation_list_screen.dart';
 
 /// 本地对话：多轮对话 + 参数调节 + 思考过程折叠 + 附件 + 持久化。
@@ -44,6 +50,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   bool _isGenerating = false;
   bool _modelReady = false;
   bool _stopRequested = false;
+  bool _enablingVision = false;
+  bool _toolsEnabled = false;
+  final List<agent.AgentStep> _pendingSteps = [];
   String _streamText = '';
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
@@ -88,29 +97,61 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     if (mounted) {
       // 注册为共享引擎：AI 诊断/分析等其他 AI 功能直接复用，无需重复加载。
       AiService.registerLocalEngine(_engine);
+      // 截屏工具是否"能被看见"取决于当前模型有没有视觉能力。
+      ToolHost.visionEnabled = _engine.supportsVision;
       setState(() => _modelReady = true);
       _scrollToBottom();
     }
   }
 
   Future<void> _send() async {
+    // 在第一个 await 之前取出依赖（避免 async gap 里用 context）。
+    final configs = context.read<ApiProvider>().allApiConfigs;
     var text = _controller.text.trim();
     if ((text.isEmpty && _pendingAttachments.isEmpty) || _isGenerating) return;
 
-    // 纯文本模型发图：先讲清楚再决定，不要让引擎抛错（用户看不懂）。
+    debugPrint('[CHAT-DIAG] send: text="${text.length > 20 ? '${text.substring(0, 20)}…' : text}" '
+        'attachments=${_pendingAttachments.length} tools=$_toolsEnabled '
+        'engineLoaded=${_engine.isLoaded}');
+    // 图片处理：模型能看图就直接发；有投影候选就先按需启用；
+    // 都没有则讲清楚让用户决定，绝不让引擎抛错（用户看不懂）。
     final hasImage =
         _pendingAttachments.any((a) => a.type == 'image');
     if (hasImage && !_engine.supportsVision) {
-      final useTextOnly = await _confirmTextOnly();
-      if (useTextOnly != true) return;
-      setState(() => _pendingAttachments.removeWhere((a) => a.type == 'image'));
-      text = _controller.text.trim();
-      if (text.isEmpty && _pendingAttachments.isEmpty) {
-        if (mounted) {
+      var enabled = false;
+      if (_engine.hasVisionCandidate) {
+        setState(() => _enablingVision = true);
+        enabled = await _engine.ensureVision();
+        if (mounted) setState(() => _enablingVision = false);
+        if (enabled && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('图片已移除，请输入文字后再发送')));
+              content: Text('视觉投影已启用，现在可以看图了'),
+              backgroundColor: AppColors.success,
+              duration: Duration(seconds: 2)));
         }
-        return;
+      }
+      if (!enabled) {
+        final useTextOnly = await _confirmTextOnly();
+        if (useTextOnly != true) return;
+        setState(
+            () => _pendingAttachments.removeWhere((a) => a.type == 'image'));
+        text = _controller.text.trim();
+        if (text.isEmpty && _pendingAttachments.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('图片已移除，请输入文字后再发送')));
+          }
+          return;
+        }
+      }
+    }
+
+    // 长期记忆：① 用户明确说"记住…"就自动入库；
+    // ② 开了记忆插件时，把相关记忆注入系统提示词。
+    if (ToolRegistry.isCategoryEnabled('memory')) {
+      final explicit = MemoryStore.extractExplicitMemory(text);
+      if (explicit != null) {
+        await MemoryStore.save(explicit);
       }
     }
 
@@ -130,10 +171,59 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     });
     _scrollToBottom();
 
+    // 工具模式：走 Agent 循环（搜索/抓网页/算术/存 HTML/查 App）。
+    if (_toolsEnabled) {
+      _pendingSteps.clear();
+      final history = <agent.ChatTurn>[
+        for (final record in _conversation.messages
+            .where((m) => m.role == 'user' || m.role == 'assistant')
+            .toList()
+            .take(_conversation.messages.length - 1))
+          agent.ChatTurn(isUser: record.role == 'user', text: record.text),
+      ];
+      final result = await agent.AgentRunner.run(
+        userPrompt: text,
+        configs: configs,
+        localEngine: _engine,
+        history: history.length > 6
+            ? history.sublist(history.length - 6)
+            : history,
+        onStep: (step) {
+          if (mounted) setState(() => _pendingSteps.add(step));
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _conversation.messages.add(ChatMessageRecord(
+            role: 'assistant',
+            text: result.text.isEmpty
+                ? (result.error ?? '（没有返回内容）')
+                : result.text,
+            toolSteps: [
+              for (final step in result.steps)
+                '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+            ],
+          ));
+          _isGenerating = false;
+        });
+        await _store.save(_conversation);
+      }
+      _scrollToBottom();
+      return;
+    }
+
     try {
-      final messages = _buildEngineMessages();
+      // 相关记忆注入（仅在记忆插件开启时）。
+      var memorySection = '';
+      if (ToolRegistry.isCategoryEnabled('memory')) {
+        memorySection = await MemoryStore.buildPromptSection(text);
+      }
+      final messages = _buildEngineMessages(memorySection: memorySection);
+      debugPrint('[CHAT-DIAG] messages=${messages.length} roles='
+          '${messages.map((m) => m.role).toList()}');
       final buffer = StringBuffer();
       final thinking = StringBuffer();
+      var chunkCount = 0;
 
       await for (final chunk in _engine.generateStream(
         messages,
@@ -142,6 +232,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         topP: _conversation.settings.topP,
         thinkingEnabled: _conversation.settings.thinkingEnabled &&
             ModelCapabilities.supportsThinking(widget.modelName),
+        // 关闭思考时对 Qwen3 系追加 /no_think，避免预算全被思考吃掉。
+        suppressThinking: !_conversation.settings.thinkingEnabled,
       )) {
         if (!mounted) return;
         if (_stopRequested) break;
@@ -151,6 +243,12 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         if (chunk.content != null && chunk.content!.isNotEmpty) {
           buffer.write(chunk.content);
         }
+        chunkCount++;
+        if (chunkCount == 1) {
+          debugPrint('[CHAT-DIAG] first chunk: '
+              'content=${chunk.content?.length ?? 0} '
+              'thinking=${chunk.thinking?.length ?? 0}');
+        }
         setState(() {
           _streamText = buffer.toString();
           _streamThinking = thinking.toString();
@@ -158,12 +256,24 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         _scrollToBottom();
       }
 
+      debugPrint('[CHAT-DIAG] stream done: chunks=$chunkCount '
+          'buffer=${buffer.length} stopped=$_stopRequested mounted=$mounted');
       if (mounted) {
         final stopped = _stopRequested;
+        // 正文为空但有思考内容 = 模型把预算花在思考上了：给出可操作的说明，
+        // 而不是留一个空气泡让用户以为"没回复"。
+        final emptyWithThinking =
+            buffer.isEmpty && thinking.isNotEmpty && !stopped;
         setState(() {
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
-            text: buffer.isEmpty && stopped ? '（已停止生成）' : buffer.toString(),
+            text: emptyWithThinking
+                ? '（模型把本次预算都用在了思考上，没有输出正文）\n'
+                    '可以：① 在参数面板里把「最大生成长度」调大；'
+                    '② 或换更小的模型/稍后重试。'
+                : (buffer.isEmpty && stopped
+                    ? '（已停止生成）'
+                    : buffer.toString()),
             thinking: thinking.toString(),
           ));
           _streamText = '';
@@ -173,7 +283,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         });
         await _store.save(_conversation);
       }
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('[CHAT-DIAG] send threw: $e\n$st');
       if (mounted) {
         setState(() {
           _isGenerating = false;
@@ -185,18 +296,30 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     _scrollToBottom();
   }
 
-  /// 纯文本模型收到图片时的说明与分流。
+  String _shorten(String text) =>
+      text.length > 160 ? '${text.substring(0, 160)}…' : text;
+
+  /// 不能看图时的说明与分流。
   Future<bool?> _confirmTextOnly() {
+    final isVisionFamily =
+        ModelCapabilities.isVisionFamily(widget.modelName);
+    final reason = _engine.projectorError != null
+        ? '视觉投影加载失败（可能是投影与模型不匹配或文件损坏）：'
+            '${_engine.projectorError}'
+        : isVisionFamily
+            ? '这个模型属于多模态家族，但同目录没有找到与它匹配的视觉投影文件'
+                '（mmproj-*.gguf）。投影是模型专用的，不能拿别的模型的来用。'
+            : '这个模型是纯文本模型，本身没有视觉能力。';
     return showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('当前模型不支持图片'),
+        title: const Text('这个模型现在看不了图'),
         content: Text(
-          '「${widget.modelName}」是纯文本模型'
-          '${ModelCapabilities.isVisionFamily(widget.modelName) ? '（同目录缺少视觉投影文件 mmproj-*.gguf）' : ''}，'
-          '识别不了图片内容。\n\n'
-          '要换成多模态模型（如 Gemma 3 / Qwen2.5-VL 系列）请到「模型」页下载；'
-          '也可以先移除图片，只发文字。',
+          '「${widget.modelName}」：$reason\n\n'
+          '怎么办：\n'
+          '· 想看图 → 到「模型」页下载多模态模型（Gemma 3 4B / Qwen2.5-VL 等），'
+          '下载它会一起带上匹配的视觉投影；\n'
+          '· 只是想继续聊 → 移除图片，只发文字（文本能力完全不受影响）。',
         ),
         actions: [
           TextButton(
@@ -213,12 +336,17 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   }
 
   /// 把对话记录转成引擎消息（附件按类型处理）。
-  List<LlamaChatMessage> _buildEngineMessages() {
+  List<LlamaChatMessage> _buildEngineMessages({String memorySection = ''}) {
     final messages = <LlamaChatMessage>[];
-    if (_conversation.settings.systemPrompt.trim().isNotEmpty) {
+    final systemText = [
+      if (_conversation.settings.systemPrompt.trim().isNotEmpty)
+        _conversation.settings.systemPrompt.trim(),
+      if (memorySection.isNotEmpty) memorySection,
+    ].join('\n\n');
+    if (systemText.isNotEmpty) {
       messages.add(LlamaChatMessage.fromText(
         role: LlamaChatRole.system,
-        text: _conversation.settings.systemPrompt.trim(),
+        text: systemText,
       ));
     }
     for (final record in _conversation.messages) {
@@ -352,6 +480,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       display: '${settings.maxTokens} tokens',
                       onChanged: (v) => update(
                           settings.copyWith(maxTokens: v.round())),
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('使用工具（插件）'),
+                      subtitle: const Text('联网搜索 / 抓网页 / 算术 / 存 HTML / 查 App 数据'),
+                      value: _toolsEnabled,
+                      onChanged: (v) => setState(() => _toolsEnabled = v),
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -524,6 +659,17 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             onPressed: _openConversationList,
           ),
           IconButton(
+            icon: Icon(_toolsEnabled ? Icons.extension : Icons.extension_off,
+                color: _toolsEnabled ? AppColors.primary : null),
+            tooltip: _toolsEnabled ? '插件已开启（点击逐项设置）' : '插件已关闭',
+            onPressed: () => showToolPanel(
+              context,
+              toolsEnabled: _toolsEnabled,
+              onToolsChanged: (v) => setState(() => _toolsEnabled = v),
+              visionAvailable: _engine.supportsVision,
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.tune),
             tooltip: '生成参数',
             onPressed: _showSettingsSheet,
@@ -543,10 +689,14 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                               Icon(Icons.chat_bubble_outline,
                                   size: 48, color: secondary),
                               const SizedBox(height: 12),
-                              Text('与 ${widget.modelName} 开始对话',
+                              Text('与 $modelName 开始对话',
                                   style: TextStyle(color: secondary)),
                               const SizedBox(height: 4),
-                              Text('支持附加图片和文本文件',
+                              Text(
+                                  _engine.supportsVision
+                                      ? '多模态模型：支持附加图片和文本文件'
+                                      : '纯文本模型：支持附加文本文件'
+                                          '（txt / md / json / csv…）',
                                   style: TextStyle(
                                       fontSize: 11, color: secondary)),
                             ],
@@ -566,6 +716,24 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           },
                         ),
                 ),
+                if (_enablingVision)
+                  Container(
+                    width: double.infinity,
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    child: const Row(
+                      children: [
+                        SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 8),
+                        Text('正在启用视觉投影（首次需几秒）…',
+                            style: TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
                 if (_pendingAttachments.isNotEmpty)
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -658,6 +826,16 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_pendingSteps.isNotEmpty)
+              _thinkingPanel(
+                [
+                  for (final step in _pendingSteps)
+                    '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+                ].join('\n\n'),
+                -2,
+                isDark,
+                title: '工具调用中（${_pendingSteps.length} 步）',
+              ),
             if (_streamThinking.isNotEmpty) _thinkingPanel(_streamThinking, -1, isDark),
             Text(_streamText.isEmpty && _streamThinking.isNotEmpty
                 ? '（思考中…）'
@@ -727,6 +905,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                   ],
                 ),
               ),
+            // 工具调用过程（默认折叠，可点开）
+            if (!isUser && record.toolSteps.isNotEmpty)
+              _thinkingPanel(record.toolSteps.join('\n\n'), index + 100000,
+                  isDark, title: '查看工具调用（${record.toolSteps.length} 步）'),
             // 思考过程（默认折叠，可点开）
             if (!isUser &&
                 record.thinking != null &&
@@ -752,7 +934,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   }
 
   /// 思考过程面板：默认折叠，点击展开/收起。
-  Widget _thinkingPanel(String thinking, int index, bool isDark) {
+  Widget _thinkingPanel(String thinking, int index, bool isDark,
+      {String? title}) {
     final expanded = _expandedThinking.contains(index);
     final color =
         isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
@@ -781,7 +964,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 children: [
                   const Icon(Icons.psychology, size: 14, color: AppColors.primary),
                   const SizedBox(width: 6),
-                  Text(expanded ? '收起思考过程' : '查看思考过程',
+                  Text(
+                      expanded
+                          ? '收起'
+                          : (title ??
+                              '查看思考过程'),
                       style: const TextStyle(
                           fontSize: 11, color: AppColors.primary)),
                   Icon(expanded ? Icons.expand_less : Icons.expand_more,

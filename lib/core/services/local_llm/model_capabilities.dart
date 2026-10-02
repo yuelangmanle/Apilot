@@ -53,6 +53,17 @@ class ModelCapabilities {
         .any((family) => name.contains(_normalize(family)));
   }
 
+  /// 取模型名的"核心词"：去掉 .gguf 与量化后缀。
+  /// 例：`gemma-3-4b-it-Q4_K_M.gguf` → `gemma-3-4b-it`。
+  /// 用于判断视觉投影是否与主模型同系列（mmproj 不通用，必须配对）。
+  static String coreToken(String fileName) {
+    var name = fileName.replaceAll(RegExp(r'\.gguf$', caseSensitive: false), '');
+    // 从第一个量化标记处截断（-Q4_K_M / -IQ4_XS / -q8_0 / -f16 ...）。
+    name = name.split(RegExp(r'-(?=(?:[Ii]?Q\d|[Ff](?:16|32)|[Bb][Ff]16))')).first;
+    name = name.replaceAll(RegExp(r'[-_.]+$'), '');
+    return name.toLowerCase();
+  }
+
   static String _baseName(String path) {
     final segments = path.split(RegExp(r'[/\\]'));
     return segments.isEmpty ? path : segments.last;

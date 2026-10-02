@@ -2,9 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/models/api_config.dart';
+import 'package:provider/provider.dart';
+import '../../../core/services/ai/agent_runner.dart' as agent;
+import '../../../core/services/ai/memory_store.dart';
+import '../../../core/services/ai/tool_registry.dart';
 import '../../../core/services/api_service.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../widgets/tool_panel.dart';
+import '../../api_management/providers/api_provider.dart';
 import 'conversation_list_screen.dart';
 
 /// 云端 API 多轮对话：直接对着某个 API 配置聊天。
@@ -44,6 +50,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
   int _requestId = 0;
+  bool _toolsEnabled = false;
+  final List<agent.AgentStep> _pendingSteps = [];
 
   @override
   void initState() {
@@ -87,13 +95,71 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
     });
     _scrollToBottom();
 
+    // 工具模式：走 Agent 循环（搜索/抓网页/算术/存 HTML/查 App）。
+    if (_toolsEnabled) {
+      _pendingSteps.clear();
+      try {
+        final history = <agent.ChatTurn>[
+          for (final record in _conversation.messages
+              .where((m) => m.role == 'user' || m.role == 'assistant')
+              .toList()
+              .take(_conversation.messages.length - 1))
+            agent.ChatTurn(isUser: record.role == 'user', text: record.text),
+        ];
+        final configs = context.read<ApiProvider>().allApiConfigs;
+        final result = await agent.AgentRunner.run(
+          userPrompt: text,
+          configs: configs,
+          history: history.length > 6
+              ? history.sublist(history.length - 6)
+              : history,
+          onStep: (step) {
+            if (mounted) setState(() => _pendingSteps.add(step));
+          },
+        );
+        if (!mounted || requestId != _requestId) return;
+        setState(() {
+          _conversation.messages.add(ChatMessageRecord(
+            role: 'assistant',
+            text: result.text.isEmpty
+                ? (result.error ?? '（没有返回内容）')
+                : result.text,
+            toolSteps: [
+              for (final step in result.steps)
+                '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+            ],
+          ));
+          _isGenerating = false;
+        });
+        await _store.save(_conversation);
+      } catch (e) {
+        if (mounted && requestId == _requestId) {
+          setState(() {
+            _isGenerating = false;
+            _conversation.messages.add(ChatMessageRecord(
+                role: 'assistant', text: '工具调用失败：$e'));
+          });
+        }
+      }
+      _scrollToBottom();
+      return;
+    }
+
     final buffer = StringBuffer();
     final thinking = StringBuffer();
     String? errorText;
 
     try {
+      // 记忆：用户说"记住…"自动入库；开了记忆插件则注入相关记忆。
+      if (ToolRegistry.isCategoryEnabled('memory')) {
+        final explicit = MemoryStore.extractExplicitMemory(text);
+        if (explicit != null) await MemoryStore.save(explicit);
+      }
+      final memorySection = ToolRegistry.isCategoryEnabled('memory')
+          ? await MemoryStore.buildPromptSection(text)
+          : '';
       final body = <String, dynamic>{
-        'messages': _buildMessages(),
+        'messages': _buildMessages(memorySection: memorySection),
         'temperature': _conversation.settings.temp,
         'max_tokens': _conversation.settings.maxTokens,
       };
@@ -148,17 +214,19 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
     _scrollToBottom();
   }
 
-  String _shorten(String body) =>
-      body.length > 300 ? '${body.substring(0, 300)}…' : body;
+  String _shorten(String text) =>
+      text.length > 160 ? '${text.substring(0, 160)}…' : text;
 
-  /// 构造发给云端的 messages（系统提示词 + 历史）。
-  List<Map<String, dynamic>> _buildMessages() {
+  /// 构造发给云端的 messages（系统提示词 + 长期记忆 + 历史）。
+  List<Map<String, dynamic>> _buildMessages({String memorySection = ''}) {
     final messages = <Map<String, dynamic>>[];
-    if (_conversation.settings.systemPrompt.trim().isNotEmpty) {
-      messages.add({
-        'role': 'system',
-        'content': _conversation.settings.systemPrompt.trim(),
-      });
+    final systemText = [
+      if (_conversation.settings.systemPrompt.trim().isNotEmpty)
+        _conversation.settings.systemPrompt.trim(),
+      if (memorySection.isNotEmpty) memorySection,
+    ].join('\n\n');
+    if (systemText.isNotEmpty) {
+      messages.add({'role': 'system', 'content': systemText});
     }
     for (final record in _conversation.messages) {
       if (record.role == 'assistant' && record.text.startsWith('请求失败：')) {
@@ -220,6 +288,13 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                       ),
                       const SizedBox(height: 12),
                     ],
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('使用工具（插件）'),
+                      subtitle: const Text('联网搜索 / 抓网页 / 算术 / 存 HTML / 查 App 数据'),
+                      value: _toolsEnabled,
+                      onChanged: (v) => setState(() => _toolsEnabled = v),
+                    ),
                     _sliderRow(
                       label: '温度（越高越随机）',
                       value: settings.temp,
@@ -384,6 +459,17 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
             onPressed: _openConversationList,
           ),
           IconButton(
+            icon: Icon(_toolsEnabled ? Icons.extension : Icons.extension_off,
+                color: _toolsEnabled ? AppColors.primary : null),
+            tooltip: _toolsEnabled ? '插件已开启（点击逐项设置）' : '插件已关闭',
+            onPressed: () => showToolPanel(
+              context,
+              toolsEnabled: _toolsEnabled,
+              onToolsChanged: (v) => setState(() => _toolsEnabled = v),
+              visionAvailable: false,
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.tune),
             tooltip: '生成参数',
             onPressed: _showSettingsSheet,
@@ -503,6 +589,16 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_pendingSteps.isNotEmpty)
+              _thinkingPanel(
+                [
+                  for (final step in _pendingSteps)
+                    '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+                ].join('\n\n'),
+                -2,
+                isDark,
+                title: '工具调用中（${_pendingSteps.length} 步）',
+              ),
             if (_streamThinking.isNotEmpty)
               _thinkingPanel(_streamThinking, -1, isDark),
             Text(_streamText.isEmpty ? '…' : _streamText),
@@ -530,6 +626,9 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (!isUser && record.toolSteps.isNotEmpty)
+              _thinkingPanel(record.toolSteps.join('\n\n'), index + 100000,
+                  isDark, title: '查看工具调用（${record.toolSteps.length} 步）'),
             if (!isUser &&
                 record.thinking != null &&
                 record.thinking!.isNotEmpty)
@@ -553,7 +652,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   }
 
   /// 思考过程（推理模型）：默认折叠，点击展开。
-  Widget _thinkingPanel(String thinking, int index, bool isDark) {
+  Widget _thinkingPanel(String thinking, int index, bool isDark,
+      {String? title}) {
     final expanded = _expandedThinking.contains(index);
     final color = isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
     return Container(
@@ -581,7 +681,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                   const Icon(Icons.psychology,
                       size: 14, color: AppColors.primary),
                   const SizedBox(width: 6),
-                  Text(expanded ? '收起思考过程' : '查看思考过程',
+                  Text(expanded ? '收起' : (title ?? '查看思考过程'),
                       style: const TextStyle(
                           fontSize: 11, color: AppColors.primary)),
                   Icon(expanded ? Icons.expand_less : Icons.expand_more,

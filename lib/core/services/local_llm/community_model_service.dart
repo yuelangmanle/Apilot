@@ -282,6 +282,85 @@ class CommunityModelService {
     return _fetchModelScopeFiles(normalized);
   }
 
+  /// 解析 GitHub 仓库里的 GGUF：先看 Releases 资产，再看仓库文件树。
+  /// 这样"内置列表/GitHub 仓库"这条路也能走通（如 XHToken/Spark-X2.5）。
+  static Future<List<ModelFileVariant>> resolveGitHubRepo(
+      String owner, String repo) async {
+    final variants = <ModelFileVariant>[];
+
+    // 1) Releases 资产（发行版通常带转换好的 GGUF）。
+    final releases = await _githubJson(
+        'https://api.github.com/repos/$owner/$repo/releases?per_page=5');
+    if (releases is List) {
+      for (final release in releases.whereType<Map>()) {
+        for (final asset in (release['assets'] as List? ?? const [])) {
+          if (asset is! Map) continue;
+          final name = asset['name']?.toString() ?? '';
+          final url = asset['browser_download_url']?.toString() ?? '';
+          final quant = quantizationFromFileName(name);
+          if (quant == null || url.isEmpty) continue;
+          variants.add(ModelFileVariant(
+            fileName: name,
+            downloadUrl: url,
+            sizeBytes: (asset['size'] as num?)?.toInt() ?? 0,
+            quantization: quant,
+          ));
+        }
+        if (variants.isNotEmpty) break;
+      }
+    }
+
+    // 2) 仓库文件树（有些人直接把 .gguf 放进仓库，或给 mmproj）。
+    if (variants.isEmpty) {
+      final info = await _githubJson(
+          'https://api.github.com/repos/$owner/$repo');
+      final branch = (info is Map ? info['default_branch']?.toString() : null) ??
+          'main';
+      final tree = await _githubJson(
+          'https://api.github.com/repos/$owner/$repo/git/trees/$branch?recursive=1');
+      if (tree is Map) {
+        for (final node in (tree['tree'] as List? ?? const [])) {
+          if (node is! Map) continue;
+          final path = node['path']?.toString() ?? '';
+          if (!path.toLowerCase().endsWith('.gguf')) continue;
+          final quant = quantizationFromFileName(path);
+          if (quant == null) continue;
+          variants.add(ModelFileVariant(
+            fileName: path.split('/').last,
+            downloadUrl:
+                'https://github.com/$owner/$repo/raw/$branch/${Uri.encodeComponent(path)}',
+            sizeBytes: (node['size'] as num?)?.toInt() ?? 0,
+            quantization: quant,
+          ));
+        }
+      }
+    }
+
+    variants.sort((a, b) => a.sizeBytes.compareTo(b.sizeBytes));
+    return variants;
+  }
+
+  static Future<dynamic> _githubJson(String url) async {
+    try {
+      final client = HttpClient();
+      client.connectionTimeout = _timeout;
+      final request = await client.getUrl(Uri.parse(url));
+      request.headers.set('Accept', 'application/vnd.github+json');
+      request.headers.set('User-Agent', 'Apilot/2.6');
+      final response = await request.close().timeout(_timeout);
+      if (response.statusCode != 200) {
+        client.close();
+        return null;
+      }
+      final body = await response.transform(utf8.decoder).join();
+      client.close();
+      return jsonDecode(body);
+    } catch (e) {
+      debugPrint('[CommunityModels] GitHub 接口失败 $url: $e');
+      return null;
+    }
+  }
+
   /// 从文件名识别量化等级；识别不出（fp16/分片/非 gguf）返回 null。
   static String? quantizationFromFileName(String fileName) {
     final lower = fileName.toLowerCase();

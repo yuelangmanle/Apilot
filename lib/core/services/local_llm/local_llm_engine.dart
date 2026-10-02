@@ -14,6 +14,8 @@ class LocalLlmEngine {
   String? _loadedModelPath;
   bool _visionAvailable = false;
   String? _projectorPath;
+  String? _pendingProjectorPath;
+  String? _projectorError;
   bool _disposed = false;
 
   String? get loadedModelPath => _loadedModelPath;
@@ -28,8 +30,10 @@ class LocalLlmEngine {
 
   /// 从本地文件路径加载 GGUF 模型。
   ///
-  /// [mmProjPath] 显式指定视觉投影文件；不传时自动在同目录查找
-  /// `mmproj*.gguf`——多模态模型靠它才能看图，缺了它就是纯文本行为。
+  /// **不在加载时自动挂载视觉投影**：mmproj 是模型专用的，挂错会把引擎带进
+  /// 不匹配的多模态路径，连文本对话一起报错（上一版就是这么坏掉的）。
+  /// 这里只"记账"（找到同系列候选投影并记下来），真正启用走 [ensureVision]，
+  /// 由用户在发图片时按需触发；文本对话永远不受影响。
   Future<void> loadModel(
     String filePath, {
     int contextSize = 4096,
@@ -44,35 +48,87 @@ class LocalLlmEngine {
     );
     _engine = engine;
     _loadedModelPath = filePath;
-
-    // 视觉投影：失败不影响文本能力，只是没有看图能力。
-    final projector = mmProjPath ?? _findSiblingProjector(filePath);
-    if (projector != null) {
-      try {
-        await engine.loadMultimodalProjector(projector);
-        _projectorPath = projector;
-        _visionAvailable = await engine.supportsVision;
-        debugPrint('[LocalLlm] 视觉投影已加载: $projector '
-            '(supportsVision=$_visionAvailable)');
-      } catch (e) {
-        debugPrint('[LocalLlm] 视觉投影加载失败（按纯文本处理）: $e');
-        _projectorPath = null;
-        _visionAvailable = false;
-      }
+    _visionAvailable = false;
+    _projectorError = null;
+    _pendingProjectorPath = mmProjPath ?? _matchingProjector(filePath);
+    if (_pendingProjectorPath != null) {
+      debugPrint('[LocalLlm] 发现匹配的视觉投影（待启用）: $_pendingProjectorPath');
     }
   }
 
-  /// 在同目录查找视觉投影文件（mmproj*.gguf）。
-  static String? _findSiblingProjector(String modelPath) {
+  /// 是否存在可用的视觉投影候选（界面据此提示"可启用看图"）。
+  bool get hasVisionCandidate => _pendingProjectorPath != null;
+
+  /// 视觉投影启用失败的原因（界面向用户解释用）。
+  String? get projectorError => _projectorError;
+
+  /// 按需启用视觉投影（用户要发图片时调用）。
+  ///
+  /// 失败一律回退纯文本：先确保卸载残留投影，再返回 false——绝不允许
+  /// "投影坏了导致连文本都不能用"。
+  Future<bool> ensureVision() async {
+    if (_visionAvailable) return true;
+    final engine = _engine;
+    final projector = _pendingProjectorPath;
+    if (engine == null || projector == null) return false;
+    try {
+      await engine
+          .loadMultimodalProjector(projector)
+          .timeout(const Duration(seconds: 45));
+      _projectorPath = projector;
+      _visionAvailable = await engine.supportsVision;
+      _projectorError = null;
+      debugPrint('[LocalLlm] 视觉投影已启用: $projector '
+          '(supportsVision=$_visionAvailable)');
+      return _visionAvailable;
+    } catch (e) {
+      debugPrint('[LocalLlm] 视觉投影启用失败，回退纯文本: $e');
+      _projectorError = '$e';
+      _visionAvailable = false;
+      _projectorPath = null;
+      // 关键：无论失败原因是什么，都把投影彻底卸掉，保证之后的文本生成
+      // 走纯文本路径（不匹配的 mtmd context 会让所有生成都失败）。
+      try {
+        await engine.unloadMultimodalProjector();
+      } catch (_) {}
+      return false;
+    }
+  }
+
+  /// 在同目录查找**与主模型匹配**的视觉投影。
+  ///
+  /// mmproj 不通用（投影层维度必须与主模型隐藏维度一致），所以：
+  /// 1) 优先文件名包含主模型核心名（如 `mmproj-gemma-3-4b-it-f16.gguf` 配
+  ///    `gemma-3-4b-it-Q4_K_M.gguf`）；
+  /// 2) 通用名（`mmproj-F16.gguf`）只在目录里只有这一个主模型时接受；
+  /// 3) 匹配不上的投影一律忽略（绝不猜）。
+  static String? _matchingProjector(String modelPath) {
     try {
       final file = File(modelPath);
       final dir = file.parent;
       if (!dir.existsSync()) return null;
+      final projectors = <File>[];
+      final mainModels = <File>[];
       for (final entity in dir.listSync()) {
         if (entity is! File) continue;
         final name = entity.uri.pathSegments.last;
-        if (ModelCapabilities.isProjectorFile(name)) return entity.path;
+        if (ModelCapabilities.isProjectorFile(name)) {
+          projectors.add(entity);
+        } else if (name.toLowerCase().endsWith('.gguf')) {
+          mainModels.add(entity);
+        }
       }
+      if (projectors.isEmpty) return null;
+      final core = ModelCapabilities.coreToken(
+          file.uri.pathSegments.last);
+      for (final projector in projectors) {
+        final name = projector.uri.pathSegments.last.toLowerCase();
+        if (name.contains(core)) return projector.path;
+      }
+      if (projectors.length == 1 && mainModels.length == 1) {
+        return projectors.first.path;
+      }
+      return null;
     } catch (_) {}
     return null;
   }
@@ -107,11 +163,16 @@ class LocalLlmEngine {
     double temp = 0.8,
     double topP = 0.9,
     bool thinkingEnabled = false,
+    bool suppressThinking = false,
   }) async* {
     final engine = _engine;
     if (engine == null) throw StateError('模型未加载');
+    // "默认就思考"的模型（Qwen3 系）在关闭思考时要在提示里追加 /no_think，
+    // 否则它会把整个 token 预算花在思考上、正文为空——用户看到的就是"没回复"。
+    final effectiveMessages =
+        (suppressThinking && !thinkingEnabled) ? _withNoThink(messages) : messages;
     await for (final chunk in engine.create(
-      messages,
+      effectiveMessages,
       params: GenerationParams(
         maxTokens: maxTokens,
         temp: temp,
@@ -131,6 +192,26 @@ class LocalLlmEngine {
     }
   }
 
+  /// 给最后一条用户消息追加 `/no_think`（Qwen3 系用于关闭思考的指令）。
+  /// 只处理纯文本消息；已有该指令时不重复添加。
+  static List<LlamaChatMessage> _withNoThink(List<LlamaChatMessage> messages) {
+    if (messages.isEmpty) return messages;
+    final result = List<LlamaChatMessage>.from(messages);
+    final last = result.last;
+    // 只处理纯文本消息（有图片等多模态内容时不动，避免破坏结构）。
+    if (last.parts.length != 1 ||
+        last.parts.first is! LlamaTextContent) {
+      return result;
+    }
+    final text = last.content;
+    if (text.isEmpty || text.contains('/no_think')) return result;
+    result[result.length - 1] = LlamaChatMessage.fromText(
+      role: last.role,
+      text: '$text\n/no_think',
+    );
+    return result;
+  }
+
   /// 卸载当前模型（释放内存）。
   Future<void> unload() async {
     final engine = _engine;
@@ -140,6 +221,8 @@ class LocalLlmEngine {
       _loadedModelPath = null;
       _visionAvailable = false;
       _projectorPath = null;
+      _pendingProjectorPath = null;
+      _projectorError = null;
     }
   }
 

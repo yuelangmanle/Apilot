@@ -283,10 +283,16 @@ class LocalGatewayService {
       if (stream) {
         request.response.headers.contentType =
             ContentType('text', 'event-stream', charset: 'utf-8');
+        final thinkingFallback = StringBuffer();
+        var sawContent = false;
         await for (final chunk in engine.generateStream(messages,
-            maxTokens: maxTokens, temp: temp)) {
+            maxTokens: maxTokens, temp: temp, suppressThinking: true)) {
+          if (chunk.thinking != null && chunk.thinking!.isNotEmpty) {
+            thinkingFallback.write(chunk.thinking);
+          }
           final delta = chunk.content;
           if (delta == null || delta.isEmpty) continue;
+          sawContent = true;
           request.response.write('data: ${jsonEncode({
                 'id': id,
                 'object': 'chat.completion.chunk',
@@ -302,12 +308,33 @@ class LocalGatewayService {
               })}\n\n');
           await request.response.flush();
         }
+        // 全是思考、没有正文时，把思考内容当结果返回（否则客户端拿到空回复）。
+        if (!sawContent && thinkingFallback.isNotEmpty) {
+          request.response.write('data: ${jsonEncode({
+                'id': id,
+                'object': 'chat.completion.chunk',
+                'created': created,
+                'model': model.id,
+                'choices': [
+                  {
+                    'index': 0,
+                    'delta': {'content': thinkingFallback.toString()},
+                    'finish_reason': null,
+                  }
+                ],
+              })}\n\n');
+        }
         request.response.write('data: [DONE]\n\n');
       } else {
         final buffer = StringBuffer();
+        final thinking = StringBuffer();
         await for (final chunk in engine.generateStream(messages,
-            maxTokens: maxTokens, temp: temp)) {
+            maxTokens: maxTokens, temp: temp, suppressThinking: true)) {
           if (chunk.content != null) buffer.write(chunk.content);
+          if (chunk.thinking != null) thinking.write(chunk.thinking);
+        }
+        if (buffer.isEmpty && thinking.isNotEmpty) {
+          buffer.write(thinking.toString());
         }
         request.response.headers.contentType = ContentType.json;
         request.response.write(jsonEncode({

@@ -9,6 +9,7 @@ import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/community_model_service.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
 import '../../../core/services/local_llm/model_catalog_store.dart';
+import '../../../core/services/local_llm/model_repo_importer.dart';
 import '../services/model_curator_service.dart';
 import '../../../core/services/local_llm/device_capabilities.dart';
 import '../../../core/services/ai/ai_service.dart';
@@ -16,6 +17,7 @@ import '../../api_management/providers/api_provider.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import 'download_manager_screen.dart';
+import 'model_plaza_screen.dart';
 import 'local_chat_screen.dart';
 
 /// 模型商店：浏览内置模型 + 从 URL 导入 + 管理已下载模型。
@@ -58,6 +60,15 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     });
     _refreshDownloaded();
     _loadDeviceAndCommunity();
+    // AI 通过插件找到的模型也在本页下载（同一条进度/续传链路）。
+    ModelRepoImporter.onDownload = (url, fileName) async {
+      await _downloadUrl(
+        taskId: fileName,
+        url: url,
+        fileName: fileName,
+        displayName: fileName,
+      );
+    };
   }
 
   /// AI 精选：把社区列表交给 AI 挑几个并写中文介绍，结果固定到本机。
@@ -459,6 +470,27 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       appBar: AppBar(
         title: const Text('模型商店'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.travel_explore),
+            tooltip: '模型广场（搜索/筛选社区模型）',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ModelPlazaScreen(
+                    onDownloadRequested: ({required url, required fileName, required displayName}) {
+                      _downloadUrl(
+                        taskId: fileName,
+                        url: url,
+                        fileName: fileName,
+                        displayName: displayName,
+                      );
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.auto_awesome),
             tooltip: 'AI 精选（挑模型 + 写介绍，固定到本机）',

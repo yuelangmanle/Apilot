@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'download_task_store.dart';
+
 /// 下载状态。
 enum DownloadStatus { idle, downloading, paused, completed, failed, cancelled }
 
@@ -76,6 +78,7 @@ class ModelDownloadService {
 
   final HttpClient _client;
   final Map<String, DownloadProgress> _progressMap = {};
+  DateTime? _lastTaskWrite;
   final Set<String> _cancelRequested = {};
   final _progressController = StreamController<DownloadProgress>.broadcast();
 
@@ -123,6 +126,15 @@ class ModelDownloadService {
 
     // 记录下载来源（sidecar）：未完成的下载可在下载管理里续传/删除。
     await _writeSidecar(finalPath, url, fileName);
+    // 任务记录（持久化）：失败/中断也留痕，用户在下载管理里看得到、能续传。
+    await _recordTask(
+      taskId: taskId,
+      url: url,
+      fileName: fileName,
+      status: 'downloading',
+      receivedBytes: partFile.existsSync() ? partFile.lengthSync() : 0,
+      totalBytes: 0,
+    );
 
     // 已完成的文件直接返回。
     if (finalFile.existsSync() && !partFile.existsSync()) {
@@ -217,6 +229,14 @@ class ModelDownloadService {
             status: DownloadStatus.paused,
           );
           _notify(taskId);
+          await _recordTask(
+            taskId: taskId,
+            url: url,
+            fileName: fileName,
+            status: 'paused',
+            receivedBytes: received,
+            totalBytes: totalSize,
+          );
           throw const DownloadCancelledException();
         }
         received += chunk.length;
@@ -231,6 +251,20 @@ class ModelDownloadService {
         );
         onProgress?.call(received, totalSize);
         _notify(taskId);
+        // 进度落盘做节流：每 3 秒一次，避免频繁写文件。
+        final now = DateTime.now();
+        if (_lastTaskWrite == null ||
+            now.difference(_lastTaskWrite!) > const Duration(seconds: 3)) {
+          _lastTaskWrite = now;
+          unawaited(_recordTask(
+            taskId: taskId,
+            url: url,
+            fileName: fileName,
+            status: 'downloading',
+            receivedBytes: received,
+            totalBytes: totalSize,
+          ));
+        }
       }
 
       await sink.flush();
@@ -240,6 +274,14 @@ class ModelDownloadService {
       // 下载完成，rename .part → 正式文件。
       await partFile.rename(finalPath);
       await _deleteSidecar(finalPath);
+      await _recordTask(
+        taskId: taskId,
+        url: url,
+        fileName: fileName,
+        status: 'completed',
+        receivedBytes: received,
+        totalBytes: totalSize,
+      );
 
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
@@ -264,6 +306,16 @@ class ModelDownloadService {
         error: e.toString(),
       );
       _notify(taskId);
+      // 失败也留痕：已下载的部分保留（.part 不删），记录错误供界面解释。
+      await _recordTask(
+        taskId: taskId,
+        url: url,
+        fileName: fileName,
+        status: 'failed',
+        receivedBytes: partFile.existsSync() ? partFile.lengthSync() : 0,
+        totalBytes: 0,
+        error: e.toString(),
+      );
       rethrow;
     }
   }
@@ -349,6 +401,28 @@ class ModelDownloadService {
     final dir = await modelsDir();
     final fileName = url.split('/').last.replaceAll(RegExp(r'[?#].*$'), '');
     return p.join(dir.path, fileName);
+  }
+
+  /// 记录/更新持久化任务（失败与暂停都会留痕）。
+  static Future<void> _recordTask({
+    required String taskId,
+    required String url,
+    required String fileName,
+    required String status,
+    required int receivedBytes,
+    required int totalBytes,
+    String? error,
+  }) async {
+    await DownloadTaskStore.upsert(DownloadTask(
+      id: taskId,
+      url: url,
+      fileName: fileName,
+      status: status,
+      receivedBytes: receivedBytes,
+      totalBytes: totalBytes,
+      error: error,
+      updatedAt: DateTime.now(),
+    ));
   }
 
   void _notify(String taskId) {

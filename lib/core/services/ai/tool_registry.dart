@@ -1,0 +1,900 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'memory_store.dart';
+
+/// 插件分类（界面上一类一个开关）。
+class ToolCategory {
+  final String id;
+  final String label;
+  final String description;
+  final bool defaultEnabled;
+
+  const ToolCategory({
+    required this.id,
+    required this.label,
+    required this.description,
+    this.defaultEnabled = true,
+  });
+
+  String get prefsKey => 'ai_tool_enabled_$id';
+}
+
+/// 一个可被 AI 调用的工具（插件）。
+class AiTool {
+  final String name;
+  final String description;
+
+  /// 参数说明（给模型看的人类可读描述）。
+  final String parameters;
+
+  /// 所属分类（开关粒度）。
+  final String category;
+
+  /// 执行；返回给模型的文本结果。
+  final Future<String> Function(Map<String, dynamic> args) run;
+
+  const AiTool({
+    required this.name,
+    required this.description,
+    required this.parameters,
+    required this.category,
+    required this.run,
+  });
+}
+
+/// AI 工具注册表（内置插件）。
+///
+/// 调用协议与模型无关：模型需要工具时**只输出一行**
+/// `@@TOOL {"name":"web_search","args":{"query":"..."}}`，宿主执行后回灌结果。
+/// 本地小模型与云端模型共用同一套机制，不依赖各家 chat template。
+///
+/// 开关粒度：按 [categories] 分类，用户可在对话页逐个开关。
+class ToolRegistry {
+  ToolRegistry._();
+
+  static final List<AiTool> _tools = [];
+  static final Set<String> _disabled = {};
+
+  static List<AiTool> get tools => List.unmodifiable(_tools);
+
+  /// 全部分类（开关面板用）。
+  static const List<ToolCategory> categories = [
+    ToolCategory(
+      id: 'search',
+      label: '联网搜索',
+      description: '内置多引擎（Bing / DuckDuckGo / 百度），无需配置 Key',
+    ),
+    ToolCategory(
+      id: 'web',
+      label: '抓取网页',
+      description: '把指定网址转成纯文本阅读（只允许公网地址）',
+    ),
+    ToolCategory(
+      id: 'calc',
+      label: '计算器',
+      description: '精确算术，避免模型心算出错',
+    ),
+    ToolCategory(
+      id: 'html',
+      label: 'HTML 编写与自检',
+      description: '写页面、结构自检、反复修正后存成草稿',
+    ),
+    ToolCategory(
+      id: 'todo',
+      label: '待办清单',
+      description: '多步任务自己列 to-do 并逐项推进',
+    ),
+    ToolCategory(
+      id: 'screen',
+      label: '截屏自查',
+      description: '截取当前屏幕；多模态模型可直接"看"画面',
+      defaultEnabled: false,
+    ),
+    ToolCategory(
+      id: 'app',
+      label: '查询 Apilot 数据',
+      description: '列出 API 方案、用量摘要、打开页面（只读）',
+    ),
+    ToolCategory(
+      id: 'memory',
+      label: '长期记忆',
+      description: '把用户说过的关键事实记下来，之后对话自动带上（可查看/删除）',
+    ),
+    ToolCategory(
+      id: 'models',
+      label: '找模型 / 入库下载',
+      description: '联网搜索 HuggingFace / 魔搭 / GitHub 上的模型，'
+          '写入「我的社区模型」并可立即下载',
+    ),
+    ToolCategory(
+      id: 'time',
+      label: '时间与日期',
+      description: '告诉模型今天的日期时间（模型自己不知道"现在"）',
+    ),
+  ];
+
+  /// 当前启用的工具（受开关控制）。
+  static List<AiTool> get enabledTools =>
+      _tools.where((t) => !_disabled.contains(t.category)).toList();
+
+  static bool isCategoryEnabled(String category) =>
+      !_disabled.contains(category);
+
+  /// 从本地偏好加载开关（App 启动时调用一次）。
+  static Future<void> loadEnabledFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _disabled.clear();
+      for (final category in categories) {
+        final enabled =
+            prefs.getBool(category.prefsKey) ?? category.defaultEnabled;
+        if (!enabled) _disabled.add(category.id);
+      }
+    } catch (e) {
+      debugPrint('[Tools] 读取插件开关失败: $e');
+    }
+  }
+
+  static Future<void> setCategoryEnabled(String category, bool enabled) async {
+    if (enabled) {
+      _disabled.remove(category);
+    } else {
+      _disabled.add(category);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('ai_tool_enabled_$category', enabled);
+    } catch (e) {
+      debugPrint('[Tools] 保存插件开关失败: $e');
+    }
+  }
+
+  static AiTool? byName(String name) {
+    for (final tool in _tools) {
+      if (tool.name == name) return tool;
+    }
+    return null;
+  }
+
+  static void register(AiTool tool) {
+    _tools.removeWhere((t) => t.name == tool.name);
+    _tools.add(tool);
+  }
+
+  @visibleForTesting
+  static void resetForTest() {
+    _tools.clear();
+    _disabled.clear();
+  }
+
+  /// 给模型的工具说明（只包含已启用的分类）。
+  static String describeForPrompt() {
+    final enabled = enabledTools;
+    if (enabled.isEmpty) return '';
+    final buffer = StringBuffer()
+      ..writeln('你可以使用以下工具。需要时，**只输出一行**，格式：')
+      ..writeln('@@TOOL {"name":"工具名","args":{...}}')
+      ..writeln('宿主会执行并把结果发给你，你再用自然语言回答用户。')
+      ..writeln('不需要工具时正常回答，不要输出 @@TOOL。')
+      ..writeln('多步任务建议先用 todo_write 列出计划，再逐项执行；'
+          '写网页时先用 html_check 自检、有问题就改，改完再 save_html。')
+      ..writeln('可用工具：');
+    for (final tool in enabled) {
+      buffer.writeln('- ${tool.name}：${tool.description} 参数：${tool.parameters}');
+    }
+    return buffer.toString();
+  }
+
+  /// 解析模型输出里的工具调用（只取第一条）。
+  ///
+  /// 花括号配对扫描而非正则：参数常含嵌套对象（`{"args":{...}}`）。
+  static ({String name, Map<String, dynamic> args})? parseCall(String text) {
+    final json = _extractToolJson(text);
+    if (json == null) return null;
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is! Map) return null;
+      final name = decoded['name']?.toString() ?? '';
+      if (name.isEmpty) return null;
+      final argsRaw = decoded['args'];
+      final args = argsRaw is Map
+          ? Map<String, dynamic>.from(argsRaw)
+          : <String, dynamic>{};
+      return (name: name, args: args);
+    } catch (e) {
+      debugPrint('[Tools] 解析工具调用失败: $e');
+      return null;
+    }
+  }
+
+  static String? _extractToolJson(String text) {
+    final marker = text.indexOf('@@TOOL');
+    if (marker < 0) return null;
+    final start = text.indexOf('{', marker);
+    if (start < 0) return null;
+    var depth = 0;
+    var inString = false;
+    var escaped = false;
+    for (var i = start; i < text.length; i++) {
+      final char = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char == r'\') {
+          escaped = true;
+        } else if (char == '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (char == '"') {
+        inString = true;
+      } else if (char == '{') {
+        depth++;
+      } else if (char == '}') {
+        depth--;
+        if (depth == 0) return text.substring(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  static String stripCall(String text) {
+    var result = text;
+    while (true) {
+      final json = _extractToolJson(result);
+      if (json == null) {
+        if (result.contains('@@TOOL')) {
+          result = result.replaceAll('@@TOOL', '');
+          continue;
+        }
+        break;
+      }
+      final marker = result.indexOf('@@TOOL');
+      final start = result.indexOf(json, marker);
+      result =
+          result.substring(0, marker) + result.substring(start + json.length);
+    }
+    return result.trim();
+  }
+
+  /// 执行工具（尊重开关：被关掉的分类一律拒绝执行）。
+  static Future<String> execute(String name, Map<String, dynamic> args) async {
+    final tool = byName(name);
+    if (tool == null) return '错误：没有名为 $name 的工具';
+    if (!isCategoryEnabled(tool.category)) {
+      return '错误：插件「${tool.category}」已被用户关闭，请在对话页插件面板里开启';
+    }
+    try {
+      final result = await tool.run(args).timeout(const Duration(seconds: 45));
+      return result.length > 6000 ? '${result.substring(0, 6000)}…（已截断）' : result;
+    } catch (e) {
+      return '工具 $name 执行失败：$e';
+    }
+  }
+
+  /// 注册全部内置工具（App 启动时调用一次）。
+  static void registerBuiltins() {
+    register(_webSearchTool);
+    register(_webFetchTool);
+    register(_calculatorTool);
+    register(_htmlCheckTool);
+    register(_saveHtmlTool);
+    register(_todoWriteTool);
+    register(_todoReadTool);
+    register(_screenshotTool);
+    register(_currentTimeTool);
+    register(_memorySaveTool);
+    register(_memorySearchTool);
+    register(_modelSearchTool);
+    register(_modelSaveTool);
+  }
+
+  // ── 联网搜索：内置多引擎（国内可用，无需 Key） ──────────────────
+
+  static final AiTool _webSearchTool = AiTool(
+    name: 'web_search',
+    category: 'search',
+    description: '联网搜索，返回若干条标题+链接+摘要。',
+    parameters: '{"query":"搜索词"}',
+    run: (args) async {
+      final query = args['query']?.toString().trim() ?? '';
+      if (query.isEmpty) return '错误：query 不能为空';
+      final attempts = <(String, Future<String?> Function())>[
+        ('Bing', () => _bingSearch(query)),
+        ('DuckDuckGo', () => _ddgSearch(query)),
+        ('百度', () => _baiduSearch(query)),
+      ];
+      for (final (name, fetcher) in attempts) {
+        try {
+          final text = await fetcher();
+          if (text != null && text.trim().isNotEmpty) return text;
+        } catch (e) {
+          debugPrint('[Tools] $name 搜索失败: $e');
+        }
+      }
+      return '搜索失败：网络不可达或被限制（已尝试 Bing / DuckDuckGo / 百度）';
+    },
+  );
+
+  /// Bing 中国站（国内可直连）。
+  static Future<String?> _bingSearch(String query) async {
+    final html = await _httpGet(Uri.parse(
+        'https://cn.bing.com/search?q=${Uri.encodeQueryComponent(query)}'));
+    if (html == null) return null;
+    final blocks = RegExp(r'<li class="b_algo".*?</li>',
+            dotAll: true, caseSensitive: false)
+        .allMatches(html)
+        .toList();
+    final buffer = StringBuffer('搜索「$query」（Bing）：\n');
+    var count = 0;
+    for (final block in blocks.take(6)) {
+      final chunk = block.group(0)!;
+      final link = RegExp(r'<a[^>]+href="(http[^"]+)"[^>]*>(.*?)</a>',
+              dotAll: true, caseSensitive: false)
+          .firstMatch(chunk);
+      if (link == null) continue;
+      final url = _unescape(link.group(1)!);
+      final title = _htmlToText(link.group(2)!);
+      final snippet = _htmlToText(
+          RegExp(r'<p[^>]*>(.*?)</p>', dotAll: true, caseSensitive: false)
+                  .firstMatch(chunk)
+                  ?.group(1) ??
+              '');
+      if (title.isEmpty) continue;
+      count++;
+      buffer.writeln('- $title\n  $url\n  $snippet');
+    }
+    return count == 0 ? null : buffer.toString();
+  }
+
+  static Future<String?> _ddgSearch(String query) async {
+    final html = await _httpGet(Uri.parse(
+        'https://lite.duckduckgo.com/lite/?q=${Uri.encodeQueryComponent(query)}'));
+    if (html == null) return null;
+    final results = <(String, String)>[];
+    for (final match in RegExp(
+            r'<a[^>]+class="result-link"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+            dotAll: true,
+            caseSensitive: false)
+        .allMatches(html)) {
+      results.add((_htmlToText(match.group(2)!), _unescape(match.group(1)!)));
+    }
+    if (results.isEmpty) return null;
+    final snippets = RegExp(r'class="result-snippet"[^>]*>(.*?)</td>',
+            dotAll: true, caseSensitive: false)
+        .allMatches(html)
+        .map((m) => _htmlToText(m.group(1)!))
+        .toList();
+    final buffer = StringBuffer('搜索「$query」（DuckDuckGo）：\n');
+    for (var i = 0; i < results.length && i < 6; i++) {
+      buffer.writeln('- ${results[i].$1}\n  ${results[i].$2}\n'
+          '  ${i < snippets.length ? snippets[i] : ''}');
+    }
+    return buffer.toString();
+  }
+
+  static Future<String?> _baiduSearch(String query) async {
+    final html = await _httpGet(Uri.parse(
+        'https://www.baidu.com/s?wd=${Uri.encodeQueryComponent(query)}'));
+    if (html == null) return null;
+    final buffer = StringBuffer('搜索「$query」（百度）：\n');
+    var count = 0;
+    for (final match in RegExp(
+            r'<h3[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+            dotAll: true,
+            caseSensitive: false)
+        .allMatches(html)) {
+      final url = _unescape(match.group(1)!);
+      final title = _htmlToText(match.group(2)!);
+      if (title.isEmpty) continue;
+      count++;
+      buffer.writeln('- $title\n  $url');
+      if (count >= 6) break;
+    }
+    return count == 0 ? null : buffer.toString();
+  }
+
+  // ── 抓网页 ──────────────────────────────────────────────────────
+
+  static final AiTool _webFetchTool = AiTool(
+    name: 'web_fetch',
+    category: 'web',
+    description: '抓取网页并转成纯文本（最多 6000 字）。',
+    parameters: '{"url":"https://..."}',
+    run: (args) async {
+      final raw = args['url']?.toString().trim() ?? '';
+      final uri = Uri.tryParse(raw);
+      if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
+        return '错误：只支持 http/https 链接';
+      }
+      if (!isPublicHost(uri.host)) {
+        return '错误：出于安全考虑，只允许访问公网地址';
+      }
+      final html = await _httpGet(uri);
+      if (html == null) return '抓取失败：网络不可达或状态码异常';
+      final text = _htmlToText(html);
+      return text.isEmpty ? '页面没有可读文本' : text;
+    },
+  );
+
+  // ── 算术 ────────────────────────────────────────────────────────
+
+  static final AiTool _calculatorTool = AiTool(
+    name: 'calculator',
+    category: 'calc',
+    description: '做基础算术（+ - * / % 与括号），避免心算出错。',
+    parameters: '{"expression":"(1+2)*3"}',
+    run: (args) async {
+      final expression = args['expression']?.toString() ?? '';
+      if (expression.isEmpty) return '错误：expression 不能为空';
+      final value = _safeEval(expression);
+      return value == null
+          ? '错误：表达式不合法（只支持数字与 + - * / % 括号）'
+          : '$expression = $value';
+    },
+  );
+
+  // ── HTML：自检 + 保存（AI 可反复修正） ──────────────────────────
+
+  static final AiTool _htmlCheckTool = AiTool(
+    name: 'html_check',
+    category: 'html',
+    description: '自检 HTML：报出未闭合标签、缺 DOCTYPE、'
+        'script/style 括号不平衡、属性引号未闭合等问题。写完页面先自检。',
+    parameters: '{"html":"<!DOCTYPE html>..."}',
+    run: (args) async {
+      final html = args['html']?.toString() ?? '';
+      if (html.trim().isEmpty) return '错误：html 不能为空';
+      final issues = checkHtml(html);
+      if (issues.isEmpty) return '自检通过：没有发现结构性问题。';
+      return '发现 ${issues.length} 个问题：\n'
+          '${issues.asMap().entries.map((e) => '${e.key + 1}. ${e.value}').join('\n')}';
+    },
+  );
+
+  static final AiTool _saveHtmlTool = AiTool(
+    name: 'save_html',
+    category: 'html',
+    description: '把 HTML 保存成草稿（内置编辑器可预览/导出）。'
+        '保存前建议先用 html_check 自检。',
+    parameters: '{"title":"标题","html":"<!DOCTYPE html>..."}',
+    run: (args) async {
+      final title = args['title']?.toString().trim() ?? '未命名';
+      final html = args['html']?.toString() ?? '';
+      if (html.trim().isEmpty) return '错误：html 不能为空';
+      final dir = await _snippetsDir();
+      final safeName = title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5\-]+'), '_');
+      final file = File(p.join(dir.path, '$safeName.html'));
+      await file.writeAsString(html, flush: true);
+      final issues = checkHtml(html);
+      return '已保存草稿「$title」（${html.length} 字符）。'
+          '${issues.isEmpty ? '结构自检通过。' : '注意仍有 ${issues.length} 个问题：${issues.first}'}'
+          '用户可在「设置 → 工具箱 → HTML 编辑器」打开预览或导出。';
+    },
+  );
+
+  /// HTML 结构自检（纯文本模型也能"调试"的关键：可验证的检查项）。
+  static List<String> checkHtml(String html) {
+    final issues = <String>[];
+    final lower = html.toLowerCase();
+    if (!lower.contains('<!doctype html>')) {
+      issues.add('缺少 <!DOCTYPE html>（浏览器会进入怪异模式）。');
+    }
+    if (!lower.contains('<html')) issues.add('缺少 <html> 根标签。');
+    if (!lower.contains('<body')) issues.add('缺少 <body> 标签。');
+
+    const pairs = ['html', 'head', 'body', 'div', 'span', 'p', 'ul', 'ol',
+        'li', 'table', 'tr', 'td', 'th', 'section', 'header', 'footer',
+        'main', 'nav', 'style', 'script', 'title', 'h1', 'h2', 'h3', 'button'];
+    for (final tag in pairs) {
+      final opens = RegExp('<$tag(\\s[^>]*)?>', caseSensitive: false)
+          .allMatches(html)
+          .length;
+      final closes = RegExp('</$tag\\s*>', caseSensitive: false)
+          .allMatches(html)
+          .length;
+      if (opens != closes) {
+        issues.add('<$tag> 开合不匹配：$opens 个开始标签 vs $closes 个结束标签。');
+      }
+    }
+    for (final tag in ['script', 'style']) {
+      final blocks = RegExp('<$tag[^>]*>(.*?)</$tag>',
+          dotAll: true, caseSensitive: false);
+      for (final block in blocks.allMatches(html)) {
+        final body = block.group(1) ?? '';
+        final open = '{'.allMatches(body).length;
+        final close = '}'.allMatches(body).length;
+        if (open != close) {
+          issues.add('<$tag> 里花括号不平衡（{ $open 个 vs } $close 个）。');
+        }
+        for (final pair in [('(', ')'), ('[', ']')]) {
+          final a = pair.$1.allMatches(body).length;
+          final b = pair.$2.allMatches(body).length;
+          if (a != b) {
+            issues.add('<$tag> 里 ${pair.$1}${pair.$2} 数量不匹配（$a vs $b）。');
+          }
+        }
+      }
+    }
+    final unclosedQuotes =
+        RegExp(r'''=\s*"[^"]*$''', multiLine: true).allMatches(html).length;
+    if (unclosedQuotes > 0) {
+      issues.add('有 $unclosedQuotes 处属性引号没有闭合。');
+    }
+    return issues;
+  }
+
+  // ── 待办清单（多步任务自己推进） ────────────────────────────────
+
+  static const _todoPrefsKey = 'ai_tool_todo_items';
+
+  static final AiTool _todoWriteTool = AiTool(
+    name: 'todo_write',
+    category: 'todo',
+    description: '写入/更新待办清单（多步任务先列计划）。'
+        '传完整清单，已完成项用 [x] 开头。',
+    parameters: '{"items":["[ ] 步骤一","[x] 已完成步骤"]}',
+    run: (args) async {
+      final raw = args['items'];
+      final items = <String>[];
+      if (raw is List) {
+        for (final item in raw) {
+          final text = item.toString().trim();
+          if (text.isNotEmpty) items.add(text);
+        }
+      } else if (raw is String && raw.trim().isNotEmpty) {
+        items.addAll(raw
+            .split('\n')
+            .map((line) => line.trim())
+            .where((line) => line.isNotEmpty));
+      }
+      if (items.isEmpty) return '错误：items 不能为空';
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList(_todoPrefsKey, items);
+      } catch (e) {
+        debugPrint('[Tools] 保存待办失败: $e');
+      }
+      return '已更新待办清单：\n${items.join('\n')}';
+    },
+  );
+
+  static final AiTool _todoReadTool = AiTool(
+    name: 'todo_read',
+    category: 'todo',
+    description: '读取当前待办清单。',
+    parameters: '{}',
+    run: (args) async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final items = prefs.getStringList(_todoPrefsKey) ?? const [];
+        if (items.isEmpty) return '待办清单为空。';
+        return '当前待办清单：\n${items.join('\n')}';
+      } catch (e) {
+        return '读取待办失败：$e';
+      }
+    },
+  );
+
+  /// 界面展示用：当前待办清单。
+  static Future<List<String>> readTodoList() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getStringList(_todoPrefsKey) ?? const [];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // ── 时间 ────────────────────────────────────────────────────────
+
+  static final AiTool _currentTimeTool = AiTool(
+    name: 'current_time',
+    category: 'time',
+    description: '获取当前日期与时间（需要"今天""现在"相关回答时先调用）。',
+    parameters: '{}',
+    run: (args) async {
+      final now = DateTime.now();
+      const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+      return '现在是 ${now.year}-${now.month.toString().padLeft(2, '0')}-'
+          '${now.day.toString().padLeft(2, '0')} '
+          '${now.hour.toString().padLeft(2, '0')}:'
+          '${now.minute.toString().padLeft(2, '0')}'
+          '（星期${weekdays[now.weekday - 1]}，本地时区）';
+    },
+  );
+
+  // ── 长期记忆 ────────────────────────────────────────────────────
+
+  static final AiTool _memorySaveTool = AiTool(
+    name: 'memory_save',
+    category: 'memory',
+    description: '把值得长期记住的用户事实存下来（偏好、身份、常用信息）。'
+        '只在用户明确表达"记住/以后都用"或信息确实长期有用时调用。',
+    parameters: '{"text":"用户最喜欢的颜色是蓝色","tags":["偏好"]}',
+    run: (args) async {
+      final text = args['text']?.toString().trim() ?? '';
+      if (text.isEmpty) return '错误：text 不能为空';
+      final tags = (args['tags'] as List?)
+              ?.whereType<String>()
+              .map((t) => t.trim())
+              .where((t) => t.isNotEmpty)
+              .toList() ??
+          const <String>[];
+      final entry = await MemoryStore.save(text, tags: tags);
+      return '已记住：${entry.text}'
+          '（用户可在「设置 → 工具箱」里查看或删除）';
+    },
+  );
+
+  static final AiTool _memorySearchTool = AiTool(
+    name: 'memory_search',
+    category: 'memory',
+    description: '按关键词检索长期记忆（找用户以前说过的偏好/事实）。',
+    parameters: '{"query":"颜色"}',
+    run: (args) async {
+      final query = args['query']?.toString().trim() ?? '';
+      final recalled = await MemoryStore.recall(query);
+      if (recalled.isEmpty) return '没有找到相关记忆。';
+      return '相关记忆：\n'
+          '${recalled.map((e) => '- ${e.text}').join('\n')}';
+    },
+  );
+
+  // ── 找模型 / 入库下载 ───────────────────────────────────────────
+
+  static final AiTool _modelSearchTool = AiTool(
+    name: 'model_search',
+    category: 'models',
+    description: '在 HuggingFace 与魔搭搜索 GGUF 模型（真实数据：文件清单与体积）。',
+    parameters: '{"query":"qwen3 gguf"}',
+    run: (args) async {
+      final query = args['query']?.toString().trim() ?? '';
+      if (query.isEmpty) return '错误：query 不能为空';
+      final handler = ToolHost.searchModels;
+      if (handler == null) return '模型搜索不可用（宿主未注册）';
+      return handler(query);
+    },
+  );
+
+  static final AiTool _modelSaveTool = AiTool(
+    name: 'model_save',
+    category: 'models',
+    description: '把一个模型仓库（HuggingFace / 魔搭 / GitHub 链接或 owner/repo）'
+        '解析成可下载条目，写入「我的社区模型」；download=true 时立即开始下载。',
+    parameters: '{"repo":"XHToken/Spark-X2.5-4B-GGUF","download":true}',
+    run: (args) async {
+      final repo = args['repo']?.toString().trim() ?? '';
+      if (repo.isEmpty) return '错误：repo 不能为空';
+      final download = args['download'] == true;
+      final handler = ToolHost.saveModel;
+      if (handler == null) return '模型入库不可用（宿主未注册）';
+      return handler(repo, download);
+    },
+  );
+
+  // ── 截屏自查（多模态模型可直接"看"） ────────────────────────────
+
+  /// 最近一次截屏路径（AgentRunner 作为图片附件回灌给模型）。
+  static String? lastScreenshotPath;
+
+  static final AiTool _screenshotTool = AiTool(
+    name: 'screenshot',
+    category: 'screen',
+    description: '截取 Apilot 当前屏幕。多模态模型会直接看到这张图；'
+        '纯文本模型只会得到"已截屏"的说明。',
+    parameters: '{}',
+    run: (args) async {
+      final handler = ToolHost.screenshot;
+      if (handler == null) return '截屏不可用（宿主未注册）';
+      final path = await handler();
+      if (path == null) return '截屏失败：无法获取屏幕画面';
+      lastScreenshotPath = path;
+      return '已截屏并保存到 $path。'
+          '${ToolHost.visionEnabled ? '（图片会附在下一轮对话里，你可以直接分析画面）' : '（当前模型不支持看图，无法分析画面内容）'}';
+    },
+  );
+
+  // ── 基础设施 ────────────────────────────────────────────────────
+
+  static Future<Directory> _snippetsDir() async {
+    final support = await getApplicationSupportDirectory();
+    final dir = Directory(p.join(support.path, 'snippets'));
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return dir;
+  }
+
+  static Future<String?> _httpGet(Uri uri) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 15);
+        final request = await client.getUrl(uri);
+        request.headers.set('User-Agent',
+            'Mozilla/5.0 (Linux; Android 14) Apilot/2.6 Safari/537.36');
+        request.headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en;q=0.8');
+        final response =
+            await request.close().timeout(const Duration(seconds: 25));
+        if (response.statusCode != 200) {
+          client.close();
+          continue;
+        }
+        final body = await response.transform(utf8.decoder).join();
+        client.close();
+        return body;
+      } catch (e) {
+        debugPrint('[Tools] GET $uri 失败: $e');
+      }
+    }
+    return null;
+  }
+
+  static String _htmlToText(String html) {
+    var text = html
+        .replaceAll(
+            RegExp(r'<(script|style|noscript)[^>]*>.*?</\1>',
+                dotAll: true, caseSensitive: false),
+            ' ')
+        .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), ' ')
+        .replaceAll(RegExp(r'<(br|/p|/div|/li|/h[1-6])[^>]*>',
+            caseSensitive: false), '\n')
+        .replaceAll(RegExp(r'<[^>]+>'), ' ');
+    text = _unescape(text);
+    return text
+        .replaceAll(RegExp(r'[ \t]+'), ' ')
+        .replaceAll(RegExp(r'\n\s*\n+'), '\n\n')
+        .trim();
+  }
+
+  static String _unescape(String text) => text
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'");
+
+  static int _index = 0;
+  static List<String> _tokens = const [];
+
+  static num? _safeEval(String expression) {
+    final cleaned = expression.replaceAll(' ', '');
+    if (!RegExp(r'^[\d+\-*/%().]+$').hasMatch(cleaned)) return null;
+    try {
+      return _evalTokens(_tokenize(cleaned));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static List<String> _tokenize(String input) {
+    final tokens = <String>[];
+    final buffer = StringBuffer();
+    for (final char in input.split('')) {
+      if ('+-*/%()'.contains(char)) {
+        if (buffer.isNotEmpty) {
+          tokens.add(buffer.toString());
+          buffer.clear();
+        }
+        tokens.add(char);
+      } else {
+        buffer.write(char);
+      }
+    }
+    if (buffer.isNotEmpty) tokens.add(buffer.toString());
+    return tokens;
+  }
+
+  static num _evalTokens(List<String> tokens) {
+    _tokens = tokens;
+    _index = 0;
+    final value = _parseExpression();
+    if (_index != _tokens.length) throw const FormatException('多余字符');
+    return value;
+  }
+
+  static num _parseExpression() {
+    var value = _parseTerm();
+    while (_index < _tokens.length &&
+        (_tokens[_index] == '+' || _tokens[_index] == '-')) {
+      final op = _tokens[_index++];
+      final rhs = _parseTerm();
+      value = op == '+' ? value + rhs : value - rhs;
+    }
+    return value;
+  }
+
+  static num _parseTerm() {
+    var value = _parseFactor();
+    while (_index < _tokens.length &&
+        (_tokens[_index] == '*' ||
+            _tokens[_index] == '/' ||
+            _tokens[_index] == '%')) {
+      final op = _tokens[_index++];
+      final rhs = _parseFactor();
+      if ((op == '/' || op == '%') && rhs == 0) {
+        throw const FormatException('除零');
+      }
+      value = switch (op) {
+        '*' => value * rhs,
+        '/' => value / rhs,
+        _ => value % rhs,
+      };
+    }
+    return value;
+  }
+
+  static num _parseFactor() {
+    if (_index >= _tokens.length) throw const FormatException('意外结束');
+    final token = _tokens[_index];
+    if (token == '-') {
+      _index++;
+      return -_parseFactor();
+    }
+    if (token == '(') {
+      _index++;
+      final value = _parseExpression();
+      if (_index >= _tokens.length || _tokens[_index] != ')') {
+        throw const FormatException('括号不匹配');
+      }
+      _index++;
+      return value;
+    }
+    _index++;
+    final number = num.tryParse(token);
+    if (number == null) throw const FormatException('非法数字');
+    return number;
+  }
+}
+
+/// 宿主能力注入点（需要页面/Provider 才能提供的能力）。
+class ToolHost {
+  ToolHost._();
+
+  /// 截屏（返回保存路径）。
+  static Future<String?> Function()? screenshot;
+
+  /// 当前模型是否支持看图（决定截屏能否被"看见"）。
+  static bool visionEnabled = false;
+
+  /// 模型搜索（返回真实候选清单文本）。
+  static Future<String> Function(String query)? searchModels;
+
+  /// 模型入库（解析仓库 → 存进"我的社区模型"，可选立即下载）。
+  static Future<String> Function(String repo, bool download)? saveModel;
+}
+
+/// 是否公网地址（拒绝本机、内网、保留地址）。
+bool isPublicHost(String host) {
+  if (host.isEmpty) return false;
+  final lower = host.toLowerCase();
+  if (lower == 'localhost' || lower.endsWith('.local')) return false;
+  final ip = InternetAddress.tryParse(lower);
+  if (ip == null) return true;
+  if (ip.isLoopback) return false;
+  final bytes = ip.rawAddress;
+  if (bytes.length == 4) {
+    final a = bytes[0], b = bytes[1];
+    if (a == 10) return false;
+    if (a == 172 && b >= 16 && b <= 31) return false;
+    if (a == 192 && b == 168) return false;
+    if (a == 169 && b == 254) return false;
+    if (a == 127 || a == 0) return false;
+    if (a >= 224) return false;
+  } else if (bytes.length == 16) {
+    if (bytes.every((b) => b == 0) ||
+        (bytes.sublist(0, 15).every((b) => b == 0) && bytes[15] == 1)) {
+      return false;
+    }
+    if ((bytes[0] & 0xfe) == 0xfc) return false;
+    if (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80) return false;
+  }
+  return true;
+}
