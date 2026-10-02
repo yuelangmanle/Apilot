@@ -227,9 +227,12 @@ class AgentRunner {
     List<String> imagePaths = const [],
     void Function(String delta)? onDelta,
   }) async {
-    // 本地对话页传了引擎 → 直接用；没有则看全局设置里的本地来源。
+    // 路由规则（严格）：
+    // · 云端对话页传了 cloudConfig → 一律走那个云端配置（绝不被本地引擎劫持）；
+    // · 本地对话页传了引擎 → 用本地；
+    // · 两者都没有（AI 诊断等功能）→ 按全局"AI 设置"选来源。
     var engine = localEngine;
-    if (engine == null || !engine.isLoaded) {
+    if (cloudConfig == null && (engine == null || !engine.isLoaded)) {
       final shared = AiService.sharedLocalEngine;
       if (shared != null && await AiService.isLocalSourceSelected()) {
         engine = shared;

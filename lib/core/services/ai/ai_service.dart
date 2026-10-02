@@ -89,7 +89,12 @@ class AiService {
     ApiConfig? preferredConfig,
     int maxTokens = 512,
   }) async {
-    if (!await isEnabled()) return null;
+    // 只有"按全局设置挑来源"时才看总开关；调用方显式给了配置或引擎
+    // （云端对话页/本地对话页）就必须照做——否则用户在对话里怎么点都会
+    // 收到"AI 未配置、调用失败或没有返回内容"。
+    final explicitlyRouted = preferredConfig != null ||
+        (localEngine != null && localEngine.isLoaded);
+    if (!explicitlyRouted && !await isEnabled()) return null;
 
     try {
       final prefs = await SharedPreferences.getInstance();

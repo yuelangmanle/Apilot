@@ -221,17 +221,22 @@ class ToolRegistry {
   static String describeForPrompt() {
     final enabled = enabledTools;
     if (enabled.isEmpty) return '';
+    // 精简版工具说明：只给"名字 + 一句话 + 参数键名"。
+    // 之前把每个工具的完整参数说明都塞进系统提示词，预填充变长、工具模式明显变慢；
+    // 参数细节模型大多能从键名推断，必要时再问它。
     final buffer = StringBuffer()
-      ..writeln('你可以使用以下工具。需要时，**只输出一行**，格式：')
-      ..writeln('@@TOOL {"name":"工具名","args":{...}}')
-      ..writeln('（写成 @@工具名 {参数} 也可以，但一行只能有一个调用）')
-      ..writeln('宿主会执行并把结果发给你，你再用自然语言回答用户。')
-      ..writeln('不需要工具时正常回答，不要输出 @@TOOL。')
-      ..writeln('多步任务建议先用 todo_write 列出计划，再逐项执行；'
-          '写网页时先用 html_check 自检、有问题就改，改完再 save_html。')
+      ..writeln('需要工具时只输出一行：@@TOOL {"name":"工具名","args":{...}}')
+      ..writeln('（@@工具名 {参数} 也可以）。不需要工具就正常回答。')
+      ..writeln('多步任务先 todo_write 列计划；写网页先 html_check 自检再 save_html。')
       ..writeln('可用工具：');
     for (final tool in enabled) {
-      buffer.writeln('- ${tool.name}：${tool.description} 参数：${tool.parameters}');
+      final keys = RegExp(r'"([a-zA-Z_][a-zA-Z0-9_]*)":')
+          .allMatches(tool.parameters)
+          .map((m) => m.group(1))
+          .where((k) => k != 'name' && k != 'args')
+          .toList();
+      buffer.writeln('- ${tool.name}：${tool.description}'
+          '${keys.isEmpty ? '' : '（参数：${keys.join('/')}）'}');
     }
     return buffer.toString();
   }

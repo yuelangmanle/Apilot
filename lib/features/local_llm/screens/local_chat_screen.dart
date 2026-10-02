@@ -741,6 +741,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      // 全屏高度的面板会顶到状态栏（标题与时间/电量重叠）。
+      useSafeArea: true,
       builder: (sheetContext) => StatefulBuilder(
         builder: (sheetContext, setSheetState) {
           final settings = _conversation.settings;
