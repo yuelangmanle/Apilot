@@ -38,6 +38,7 @@ import 'features/settings/screens/usage_stats_screen.dart';
 import 'features/settings/screens/security_dashboard_screen.dart';
 import 'features/api_management/screens/recycle_bin_screen.dart';
 import 'features/api_management/screens/group_manage_screen.dart';
+import 'features/local_llm/screens/model_store_screen.dart';
 
 class ApiManagerApp extends StatelessWidget {
   const ApiManagerApp({super.key});
@@ -226,6 +227,7 @@ class _AppShellState extends State<AppShell>
   static const List<Widget> _screens = [
     ApiListScreen(),
     HistoryScreen(),
+    ModelStoreScreen(),
     SyncScreen(),
     SettingsScreen(),
   ];
@@ -233,6 +235,7 @@ class _AppShellState extends State<AppShell>
   static const List<_NavItem> _navItems = [
     _NavItem(icon: Icons.api, label: 'API'),
     _NavItem(icon: Icons.history, label: '历史'),
+    _NavItem(icon: Icons.psychology, label: '模型'),
     _NavItem(icon: Icons.sync, label: '同步'),
     _NavItem(icon: Icons.settings, label: '设置'),
   ];

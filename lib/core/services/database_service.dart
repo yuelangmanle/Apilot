@@ -562,6 +562,7 @@ class DatabaseService {
              COALESCE(t.deleted_at, a.deleted_at) AS effective_deleted_at
       FROM api_configs a
       LEFT JOIN deleted_config_ids t ON t.id = a.id
+      WHERE COALESCE(t.deleted_at, a.deleted_at) IS NOT NULL
       ORDER BY COALESCE(t.deleted_at, a.deleted_at) DESC
     ''');
     final mirror = await _readDeletionMirror();
