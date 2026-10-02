@@ -101,6 +101,12 @@ class ApiCard extends StatelessWidget {
             ) ==
             true;
       },
+      // 关键：确认后卡片被移除时**必须**执行真正的删除。
+      // 此前缺失此回调，导致"卡片消失但数据库没改"，重启后配置复活、
+      // 回收站为空——这是回收站长期异常的真正根因。
+      onDismissed: (direction) {
+        onDelete();
+      },
       child: Card(
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
         shape: selected && selectMode
@@ -137,7 +143,7 @@ class ApiCard extends StatelessWidget {
                       ),
                     Expanded(
                         child: Hero(
-                          tag: 'api-name-\${api.id}',
+                          tag: 'api-name-${api.id}',
                           child: Text(api.name,
                               style: TextStyle(
                                   fontSize: 18,

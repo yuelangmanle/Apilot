@@ -8,6 +8,7 @@ import '../../../core/services/api_service.dart';
 import '../../../core/services/api_profile_registry.dart';
 import '../../../core/services/health_check_service.dart';
 import '../../../shared/utils/clipboard_privacy.dart';
+import '../../local_llm/screens/api_chat_screen.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
 import '../../../shared/utils/persisted_route.dart';
@@ -76,6 +77,18 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                       leading: Icon(Icons.ios_share),
                       title: Text('导出配置文件'))),
             ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.forum_outlined),
+            tooltip: 'AI 对话（多轮）',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ApiChatScreen(apiConfig: _apiConfig),
+                ),
+              );
+            },
           ),
           IconButton(
             icon: Icon(
@@ -149,7 +162,7 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Hero(
-                    tag: 'api-name-\${_apiConfig.id}',
+                    tag: 'api-name-${_apiConfig.id}',
                     child: Text(
                       _apiConfig.name,
                       style: const TextStyle(

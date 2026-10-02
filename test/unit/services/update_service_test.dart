@@ -2,6 +2,7 @@ import 'package:api_manager/core/services/update_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  _atomTests();
   group('UpdateService release history', () {
     test('parses every published GitHub release into changelog entries', () {
       final history = UpdateService.parseReleaseHistory([
@@ -77,6 +78,38 @@ void main() {
       );
 
       expect(url, 'https://example.com/windows.exe');
+    });
+  });
+}
+
+// ============ Atom feed 兜底（国内网络） ============
+void _atomTests() {
+  group('UpdateService.parseAtomFeed', () {
+    test('parses entries with version, notes and date', () {
+      const xml = '''
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>v2.3.0</title>
+    <updated>2026-10-02T01:08:57Z</updated>
+    <content type="html">&lt;p&gt;新功能 A&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>v2.2.0</title>
+    <updated>2026-10-01T12:00:00Z</updated>
+    <content type="html">旧版本</content>
+  </entry>
+</feed>''';
+      final releases = UpdateService.parseAtomFeed(xml);
+      expect(releases, hasLength(2));
+      expect(releases.first.version, '2.3.0');
+      expect(releases.first.releaseNotes, contains('新功能 A'));
+      expect(releases.first.publishedAt.year, 2026);
+      expect(releases.last.version, '2.2.0');
+    });
+
+    test('returns empty list for malformed xml', () {
+      expect(UpdateService.parseAtomFeed('not xml'), isEmpty);
+      expect(UpdateService.parseAtomFeed('<feed></feed>'), isEmpty);
     });
   });
 }

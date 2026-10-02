@@ -33,13 +33,14 @@ class LocalLlmEngine {
     List<LlamaChatMessage> messages, {
     int maxTokens = 1024,
     double temp = 0.8,
+    double topP = 0.9,
   }) async {
     final engine = _engine;
     if (engine == null) throw StateError('模型未加载');
     final buffer = StringBuffer();
     await for (final chunk in engine.create(
       messages,
-      params: GenerationParams(maxTokens: maxTokens, temp: temp),
+      params: GenerationParams(maxTokens: maxTokens, temp: temp, topP: topP),
     )) {
       final text = chunk.choices.first.delta.content;
       if (text != null) buffer.write(text);
@@ -47,20 +48,37 @@ class LocalLlmEngine {
     return buffer.toString();
   }
 
-  /// 流式生成：逐帧产出增量文本。
-  Stream<String> generateStream(
+  /// 流式生成：逐帧产出增量（正文 + 思考过程分离）。
+  ///
+  /// [thinkingEnabled] 为 true 时启用思考预算（部分推理模型支持），
+  /// 思考内容经 [LocalLlmChunk.thinking] 单独产出，界面可折叠展示。
+  Stream<LocalLlmChunk> generateStream(
     List<LlamaChatMessage> messages, {
     int maxTokens = 1024,
     double temp = 0.8,
+    double topP = 0.9,
+    bool thinkingEnabled = false,
   }) async* {
     final engine = _engine;
     if (engine == null) throw StateError('模型未加载');
     await for (final chunk in engine.create(
       messages,
-      params: GenerationParams(maxTokens: maxTokens, temp: temp),
+      params: GenerationParams(
+        maxTokens: maxTokens,
+        temp: temp,
+        topP: topP,
+        thinkingBudget: thinkingEnabled
+            ? const ThinkingBudget(maxTokens: 1024)
+            : null,
+      ),
     )) {
-      final text = chunk.choices.first.delta.content;
-      if (text != null && text.isNotEmpty) yield text;
+      final delta = chunk.choices.first.delta;
+      final content = delta.content;
+      final thinking = delta.thinking;
+      if ((content != null && content.isNotEmpty) ||
+          (thinking != null && thinking.isNotEmpty)) {
+        yield LocalLlmChunk(content: content, thinking: thinking);
+      }
     }
   }
 
@@ -79,6 +97,14 @@ class LocalLlmEngine {
     _disposed = true;
     await unload();
   }
+}
+
+/// 流式增量：content 与 thinking 分离（推理模型的思考过程可折叠展示）。
+class LocalLlmChunk {
+  final String? content;
+  final String? thinking;
+
+  const LocalLlmChunk({this.content, this.thinking});
 }
 
 /// 已下载的本地模型记录。

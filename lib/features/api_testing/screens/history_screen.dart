@@ -172,7 +172,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             } else {
               _expandedIds.remove(item.id);
               _prettyCache.remove(item.id);
-              _prettyCache.remove('\${item.id}:resp');
+              _prettyCache.remove('${item.id}:resp');
             }
           });
         },
@@ -239,7 +239,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 if (item.responseBody != null)
                   _buildLazySection(
                       '响应体',
-                      '\${item.id}:resp',
+                      '${item.id}:resp',
                       () => _prettyJson(item.responseBody!),
                       context),
                 if (item.statusCode != null) ...[

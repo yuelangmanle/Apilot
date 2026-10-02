@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../../core/services/ai/ai_service.dart';
 import '../../../core/services/cost_estimator.dart';
 import '../../../shared/utils/persisted_route.dart';
 import '../../../core/services/usage_aggregator.dart';
@@ -17,6 +18,7 @@ class UsageStatsScreen extends StatefulWidget {
 }
 
 class _UsageStatsScreenState extends State<UsageStatsScreen> {
+  bool _aiAnalyzing = false;
   @override
   void initState() {
     super.initState();
@@ -218,9 +220,77 @@ class _UsageStatsScreenState extends State<UsageStatsScreen> {
     );
 
     return Scaffold(
-      appBar: AppBar(title: const Text('用量统计')),
+      appBar: AppBar(
+        title: const Text('用量统计'),
+        actions: [
+          IconButton(
+            icon: _aiAnalyzing
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.auto_awesome),
+            tooltip: 'AI 用量分析',
+            onPressed: _aiAnalyzing
+                ? null
+                : () => _analyzeUsage(usages, costs, totalTokens, totalRequests),
+          ),
+        ],
+      ),
       body:
           isWide ? CenteredContent(maxWidth: 640, child: content) : content,
+    );
+  }
+
+  /// AI 用量分析：把聚合后的数字交给 AI 给出观察与建议（不发送 Key/请求体）。
+  Future<void> _analyzeUsage(
+    List<ConfigUsage> usages,
+    Map<String, double> costs,
+    int totalTokens,
+    int totalRequests,
+  ) async {
+    if (usages.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('还没有请求历史，先发几次请求再分析')));
+      return;
+    }
+    setState(() => _aiAnalyzing = true);
+    final configs = context.read<ApiProvider>().allApiConfigs;
+    final lines = usages
+        .map((u) => '- ${u.configName}: ${u.requestCount} 次请求，'
+            '${_formatTokens(u.totalTokens)} tokens，'
+            '失败 ${u.requestCount - u.successCount} 次，'
+            '估算成本 ¥${(costs[u.configId] ?? 0).toStringAsFixed(3)}')
+        .join('\n');
+    final analysis = await AiService.ask(
+      systemPrompt: '你是 API 用量分析助手。根据统计数据指出 2-3 条值得注意的现象'
+          '（异常失败率、成本集中度、用量趋势）并给出可执行建议。'
+          '直接给结论，不要 Markdown 标题，控制在 200 字内。',
+      userPrompt: '总计：$totalRequests 次请求，${_formatTokens(totalTokens)} tokens\n'
+          '按配置明细：\n$lines',
+      configs: configs,
+      maxTokens: 400,
+    );
+    if (!mounted) return;
+    setState(() => _aiAnalyzing = false);
+    if (analysis == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('AI 未配置或调用失败，请先在「设置 → AI 助手」里配置来源')));
+      return;
+    }
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('AI 用量分析'),
+        content: SingleChildScrollView(
+            child: SelectableText(analysis,
+                style: const TextStyle(fontSize: 13, height: 1.5))),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('关闭')),
+        ],
+      ),
     );
   }
 

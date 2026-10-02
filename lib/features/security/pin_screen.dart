@@ -50,6 +50,7 @@ class _PinScreenState extends State<PinScreen>
       vsync: this, duration: const Duration(milliseconds: 400));
 
   static const _length = 4;
+  bool _isVerifying = false;
 
   void _shake() {
     _shakeController.forward(from: 0);
@@ -102,7 +103,7 @@ class _PinScreenState extends State<PinScreen>
   }
 
   void _append(String digit) {
-    if (_pin.length >= _length) return;
+    if (_isVerifying || _pin.length >= _length) return;
     setState(() {
       _pin += digit;
       _error = null;
@@ -119,20 +120,40 @@ class _PinScreenState extends State<PinScreen>
 
     switch (_mode) {
       case PinScreenMode.unlock:
-        final ok = await lock.unlock(_pin);
-        if (!mounted) return;
-        if (!ok) {
+        setState(() => _isVerifying = true);
+        try {
+          final ok = await lock.unlock(_pin);
+          if (!mounted) return;
+          setState(() => _isVerifying = false);
+          if (!ok) {
+            setState(() {
+              _pin = '';
+              _error = 'PIN 不正确';
+            });
+            HapticFeedback.vibrate();
+            _shake();
+          } else {
+            // 检查是否发生了"损坏锁自动解除"的恢复路径。
+            final recovered = lock.takeLockRecoveredMessage();
+            if (recovered != null && mounted) {
+              messenger.showSnackBar(SnackBar(
+                content: Text(recovered),
+                backgroundColor: AppColors.warning,
+              ));
+            }
+            // 锁屏态是 LockGate 的唯一路由（不能 pop）；从设置页进入时
+            // 则返回设置页并告知验证成功。
+            final navigator = Navigator.of(context);
+            if (navigator.canPop()) navigator.pop(true);
+          }
+        } catch (e) {
+          // 任何内部异常都要有可见反馈——绝不允许静默卡死。
+          if (!mounted) return;
           setState(() {
+            _isVerifying = false;
             _pin = '';
-            _error = 'PIN 不正确';
+            _error = '解锁失败：$e';
           });
-          HapticFeedback.vibrate();
-          _shake();
-        } else {
-          // 锁屏态是 LockGate 的唯一路由（不能 pop）；从设置页进入时
-          // 则返回设置页并告知验证成功。
-          final navigator = Navigator.of(context);
-          if (navigator.canPop()) navigator.pop(true);
         }
         break;
       case PinScreenMode.setFirst:
@@ -153,13 +174,19 @@ class _PinScreenState extends State<PinScreen>
           HapticFeedback.vibrate();
           return;
         }
+        setState(() => _isVerifying = true);
         try {
           await lock.enable(_firstPin);
           if (!mounted) return;
+          setState(() => _isVerifying = false);
           navigator.pop(true);
         } catch (e) {
           if (mounted) {
-            messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+            setState(() => _isVerifying = false);
+            messenger.showSnackBar(SnackBar(
+              content: Text('设置失败：$e'),
+              backgroundColor: AppColors.error,
+            ));
           }
         }
         break;
@@ -246,6 +273,21 @@ class _PinScreenState extends State<PinScreen>
                   }),
                 ),
               ),
+              if (_isVerifying)
+                const Padding(
+                  padding: EdgeInsets.only(top: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                      SizedBox(width: 8),
+                      Text('验证中…', style: TextStyle(fontSize: 12)),
+                    ],
+                  ),
+                ),
               const Spacer(flex: 2),
               _buildPad(context),
               const SizedBox(height: 24),

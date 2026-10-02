@@ -30,6 +30,14 @@ class AppLockController extends ChangeNotifier
   bool _biometricEnabled = false;
   bool _loadFailed = false;
   DateTime? _lastUnlockAt;
+  String? _lockRecoveredMessage;
+
+  /// 应用锁因配置损坏被自动解除时的一次性提示（界面读取后应清除）。
+  String? takeLockRecoveredMessage() {
+    final message = _lockRecoveredMessage;
+    _lockRecoveredMessage = null;
+    return message;
+  }
 
   bool get enabled => _enabled;
   bool get locked => _locked;
@@ -72,8 +80,16 @@ class AppLockController extends ChangeNotifier
   }
 
   /// 在独立 isolate 中执行派生，主线程不冻结。
-  static Future<String> hashPinAsync(String pin, String salt) {
-    return Isolate.run(() => hashPin(pin, salt));
+  /// isolate 不可用或超时（部分 Android 设备/释放模式）时回退主线程同步
+  /// 计算——宁可短暂冻结也绝不永久卡死，这是数据安全的底线。
+  static Future<String> hashPinAsync(String pin, String salt) async {
+    try {
+      return await Isolate.run(() => hashPin(pin, salt))
+          .timeout(const Duration(seconds: 20));
+    } catch (e) {
+      debugPrint('[AppLock] isolate 派生失败，回退同步计算: $e');
+      return hashPin(pin, salt);
+    }
   }
 
   static String _randomSalt() {
@@ -133,7 +149,16 @@ class AppLockController extends ChangeNotifier
     if (DateTime.now().millisecondsSinceEpoch < lockUntil) return false;
 
     final stored = prefs.getString(_pinHashKey);
-    if (stored == null) return false;
+    if (stored == null || stored.isEmpty) {
+      // 锁已启用但 PIN 哈希缺失 = enable 写入失败导致的损坏状态。
+      // 若不做处理用户将永久无法进入（数据无法导出）。此处自动解除应用锁
+      // 并提示——保护数据优先于这一道本地便捷锁。
+      debugPrint('[AppLock] PIN 哈希缺失，自动解除损坏的应用锁');
+      await disable();
+      _lockRecoveredMessage = '应用锁配置异常，已自动解除，请重新设置';
+      notifyListeners();
+      return true;
+    }
 
     var ok = false;
     if (stored.startsWith('pbkdf2:')) {

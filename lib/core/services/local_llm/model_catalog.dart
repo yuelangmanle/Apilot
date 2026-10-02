@@ -1,4 +1,29 @@
 
+/// 社区仓库中的一个可下载文件（真实文件名/大小/下载地址）。
+class ModelFileVariant {
+  final String fileName;
+  final String downloadUrl;
+  final int sizeBytes;
+  final String quantization;
+
+  const ModelFileVariant({
+    required this.fileName,
+    required this.downloadUrl,
+    required this.sizeBytes,
+    required this.quantization,
+  });
+
+  String get sizeMb => sizeBytes <= 0
+      ? '大小未知'
+      : '${(sizeBytes / (1024 * 1024)).toStringAsFixed(0)} MB';
+
+  String get sizeLabel => sizeBytes <= 0
+      ? '大小未知'
+      : sizeBytes >= 1024 * 1024 * 1024
+          ? '${(sizeBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB'
+          : sizeMb;
+}
+
 /// 内置本地模型目录：名称/描述/下载地址/量化等级/内存需求。
 /// 数据来自 HuggingFace 公开 GGUF 镜像，中国网络可直连或走镜像站。
 class LocalModelInfo {
@@ -13,6 +38,9 @@ class LocalModelInfo {
   final bool recommended;
   final String? license;
 
+  /// 仓库内全部可选文件（社区模型才有；内置目录为空）。
+  final List<ModelFileVariant> variants;
+
   const LocalModelInfo({
     required this.id,
     required this.name,
@@ -24,6 +52,7 @@ class LocalModelInfo {
     this.tags = const [],
     this.recommended = false,
     this.license,
+    this.variants = const [],
   });
 
   String get sizeMb => '${(sizeBytes / (1024 * 1024)).toStringAsFixed(0)} MB';

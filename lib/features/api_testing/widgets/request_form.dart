@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../../core/models/api_config.dart';
+import '../../../core/services/ai/ai_service.dart';
 import '../../../core/services/api_service.dart';
 import '../../../core/services/prompt_preset_store.dart';
+import '../../api_management/providers/api_provider.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 class RequestForm extends StatefulWidget {
@@ -37,6 +40,90 @@ class _RequestFormState extends State<RequestForm> {
   String? _selectedModel;
   final _endpointController = TextEditingController();
   final _bodyController = TextEditingController();
+  bool _generatingBody = false;
+
+  /// AI 生成请求体：用一句自然语言描述需求，生成合法 JSON 并填入编辑器。
+  Future<void> _generateBodyWithAi() async {
+    final controller = TextEditingController();
+    final messenger = ScaffoldMessenger.of(context);
+    final description = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('AI 生成请求体'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('用一句话描述你想发起的请求，AI 会生成对应的 JSON 请求体。',
+                style: TextStyle(fontSize: 12)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                hintText: '例如：问它北京今天天气怎么样，带上工具调用',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isEmpty) return;
+                Navigator.pop(dialogContext, text);
+              },
+              child: const Text('生成')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || description == null) return;
+
+    setState(() => _generatingBody = true);
+    final answer = await AiService.ask(
+      systemPrompt: '你是 API 请求体生成器。根据用户描述输出一个合法的 JSON 对象，'
+          '用于 OpenAI 兼容的 /chat/completions 请求（必须包含 model 和 messages）。'
+          '只输出 JSON，不要 Markdown 代码围栏、不要解释。',
+      userPrompt: '模型名：${_selectedModel ?? '未知'}\n'
+          '当前请求体（可参考并修改）：${_bodyController.text}\n'
+          '用户需求：$description',
+      configs: context.read<ApiProvider>().allApiConfigs,
+      maxTokens: 800,
+    );
+    if (!mounted) return;
+    setState(() => _generatingBody = false);
+    final formatted = _extractJsonBody(answer);
+    if (formatted == null) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('AI 未配置或未能生成合法 JSON，请重试')));
+      return;
+    }
+    setState(() => _bodyController.text = formatted);
+    messenger.showSnackBar(const SnackBar(
+        content: Text('已生成请求体，确认后发送'),
+        backgroundColor: AppColors.success));
+  }
+
+  /// 从 AI 输出里提取 JSON 并格式化（容忍 ```json 围栏与前后说明文字）。
+  String? _extractJsonBody(String? answer) {
+    if (answer == null) return null;
+    final text = answer.replaceAll(RegExp(r'```(?:json)?'), '').trim();
+    final start = text.indexOf('{');
+    final end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      final decoded = jsonDecode(text.substring(start, end + 1));
+      if (decoded is! Map<String, dynamic>) return null;
+      return const JsonEncoder.withIndent('  ').convert(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
 
   @override
   void initState() {
@@ -183,6 +270,18 @@ class _RequestFormState extends State<RequestForm> {
                 onPressed: _showPresetPicker,
                 icon: const Icon(Icons.bookmarks_outlined, size: 16),
                 label: const Text('从预设填入', style: TextStyle(fontSize: 12)),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _generatingBody ? null : _generateBodyWithAi,
+                icon: _generatingBody
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.auto_awesome, size: 16),
+                label: Text(_generatingBody ? '生成中…' : 'AI 生成请求体',
+                    style: const TextStyle(fontSize: 12)),
               ),
             ],
           ),

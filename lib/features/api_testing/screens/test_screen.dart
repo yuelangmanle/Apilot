@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/models/api_config.dart';
 import '../../../core/models/request_history.dart';
 import '../../../core/services/api_protocol_adapter.dart';
+import '../../../core/services/ai/ai_service.dart';
 import '../../../core/services/api_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
@@ -55,6 +56,8 @@ class _TestScreenState extends State<TestScreen> {
   int? _statusCode;
   int? _duration;
   TokenUsage? _usage;
+  String? _aiDiagnosis;
+  bool _aiDiagnosing = false;
 
   @override
   void initState() {
@@ -82,6 +85,7 @@ class _TestScreenState extends State<TestScreen> {
       _statusCode = null;
       _duration = null;
       _usage = null;
+      _aiDiagnosis = null;
     });
 
     try {
@@ -288,6 +292,29 @@ class _TestScreenState extends State<TestScreen> {
     }
   }
 
+  /// AI 诊断：把错误信息 + 请求上下文交给 AI 分析（不发送 API Key）。
+  Future<void> _diagnoseError() async {
+    final message = _errorMessage;
+    if (message == null || _aiDiagnosing) return;
+    setState(() => _aiDiagnosing = true);
+    final configs = context.read<ApiProvider>().allApiConfigs;
+    final diagnosis = await AiService.ask(
+      systemPrompt: '你是 API 调试专家。根据错误信息给出简短诊断：可能原因（1-3 条）'
+          '和对应的解决步骤。不要 Markdown 标题，不要复述错误原文。',
+      userPrompt: '接口地址：${_currentApi.baseUrl}\n'
+          '模型：${_currentApi.selectedModel ?? (_currentApi.models.isEmpty ? '未知' : _currentApi.models.first)}\n'
+          'HTTP 状态码：${_statusCode ?? '无响应'}\n'
+          '错误信息：$message',
+      configs: configs,
+      maxTokens: 400,
+    );
+    if (!mounted) return;
+    setState(() {
+      _aiDiagnosing = false;
+      _aiDiagnosis = diagnosis ?? 'AI 未配置或调用失败，请先在「设置 → AI 助手」里配置来源';
+    });
+  }
+
   void _switchApi(ApiConfig api) {
     // 作废在途请求：取消旧流并递增序号，旧回包/旧 finally 不影响新请求。
     _requestId++;
@@ -309,6 +336,7 @@ class _TestScreenState extends State<TestScreen> {
       _reasoningText = '';
       _isLoading = false;
       _streaming = false;
+      _aiDiagnosis = null;
     });
   }
 
@@ -531,21 +559,65 @@ class _TestScreenState extends State<TestScreen> {
 
     if (_errorMessage != null) {
       return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.error_outline, size: 48, color: errorColor),
-            const SizedBox(height: 16),
-            const Text('请求失败',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(_errorMessage!,
-                  style: TextStyle(color: errorColor, fontSize: 14),
-                  textAlign: TextAlign.center),
-            ),
-          ],
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, size: 48, color: errorColor),
+              const SizedBox(height: 16),
+              const Text('请求失败',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(_errorMessage!,
+                    style: TextStyle(color: errorColor, fontSize: 14),
+                    textAlign: TextAlign.center),
+              ),
+              const SizedBox(height: 16),
+              if (_aiDiagnosis != null)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 24),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.auto_awesome,
+                              size: 14, color: AppColors.primary),
+                          SizedBox(width: 6),
+                          Text('AI 诊断',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.primary)),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      SelectableText(_aiDiagnosis!,
+                          style: const TextStyle(fontSize: 13, height: 1.5)),
+                    ],
+                  ),
+                )
+              else
+                OutlinedButton.icon(
+                  icon: _aiDiagnosing
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.auto_awesome, size: 18),
+                  label: Text(_aiDiagnosing ? '诊断中…' : 'AI 诊断这个错误'),
+                  onPressed: _aiDiagnosing ? null : _diagnoseError,
+                ),
+            ],
+          ),
         ),
       );
     }

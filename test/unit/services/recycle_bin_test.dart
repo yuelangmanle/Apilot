@@ -95,14 +95,14 @@ void main() {
     final db = await database.database;
     final oldCutoff = DateTime.now().subtract(const Duration(days: 10));
     final recent = DateTime.now().subtract(const Duration(hours: 1));
-    // 墓碑表是删除时间的权威来源（v9 起）。
+    // deleted_at 列是删除时间的唯一来源。
     await db.update(
-      'deleted_config_ids',
+      'api_configs',
       {'deleted_at': oldCutoff.toIso8601String()},
       where: "id = 'old'",
     );
     await db.update(
-      'deleted_config_ids',
+      'api_configs',
       {'deleted_at': recent.toIso8601String()},
       where: "id = 'new'",
     );

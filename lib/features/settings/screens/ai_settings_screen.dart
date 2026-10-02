@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/services/ai/ai_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_management/providers/api_provider.dart';
 
@@ -79,6 +80,33 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                   value: _aiEnabled,
                   onChanged: (value) => setState(() => _aiEnabled = value),
                   secondary: const Icon(Icons.auto_awesome),
+                ),
+                const Divider(height: 24),
+                // 当前生效状态：用户配完能立刻看到 AI 到底会不会工作。
+                FutureBuilder<String>(
+                  future: AiService.sourceDescription(configs),
+                  builder: (context, snapshot) => Card(
+                    margin: EdgeInsets.zero,
+                    child: ListTile(
+                      dense: true,
+                      leading: const Icon(Icons.info_outline,
+                          color: AppColors.primary, size: 20),
+                      title: Text(
+                        _aiEnabled
+                            ? '当前生效：${snapshot.data ?? '检测中…'}'
+                            : 'AI 功能已关闭',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        _aiEnabled
+                            ? (_useLocalModel
+                                ? '本地模型需先在模型商店下载；未加载时首次调用会自动加载（较慢）'
+                                : '调用失败会回退到本地启发式，不影响主流程')
+                            : '打开上面的开关后，错误诊断/用量分析/识别兜底才会生效',
+                        style: TextStyle(fontSize: 11, color: secondary),
+                      ),
+                    ),
+                  ),
                 ),
                 const Divider(height: 24),
                 Text('AI 引擎来源',

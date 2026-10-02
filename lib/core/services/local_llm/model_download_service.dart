@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -42,6 +43,28 @@ class DownloadCancelledException implements Exception {
 
   @override
   String toString() => '下载已取消';
+}
+
+/// 未完成的下载（`.part` 文件），可在下载管理里续传或删除。
+class PartialDownload {
+  final String url;
+  final String fileName;
+  final String partialPath;
+  final int receivedBytes;
+
+  const PartialDownload({
+    required this.url,
+    required this.fileName,
+    required this.partialPath,
+    required this.receivedBytes,
+  });
+
+  String get receivedLabel => receivedBytes >= 1024 * 1024 * 1024
+      ? '${(receivedBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB'
+      : '${(receivedBytes / (1024 * 1024)).toStringAsFixed(0)} MB';
+
+  /// sidecar 丢失（老版本下载）时为 true：只能删除，不能续传。
+  bool get resumable => url.isNotEmpty;
 }
 
 /// 模型下载管理器：流式下载 + HTTP Range 断点续传 + 进度流 + 取消支持。
@@ -97,6 +120,9 @@ class ModelDownloadService {
     final partPath = '$finalPath.part';
     final partFile = File(partPath);
     final finalFile = File(finalPath);
+
+    // 记录下载来源（sidecar）：未完成的下载可在下载管理里续传/删除。
+    await _writeSidecar(finalPath, url, fileName);
 
     // 已完成的文件直接返回。
     if (finalFile.existsSync() && !partFile.existsSync()) {
@@ -213,6 +239,7 @@ class ModelDownloadService {
 
       // 下载完成，rename .part → 正式文件。
       await partFile.rename(finalPath);
+      await _deleteSidecar(finalPath);
 
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
@@ -247,6 +274,62 @@ class ModelDownloadService {
     if (file.existsSync()) await file.delete();
     final partFile = File('$filePath.part');
     if (partFile.existsSync()) await partFile.delete();
+    await _deleteSidecar(filePath);
+  }
+
+  /// 已下载的模型继续下载/删除时用的 sidecar 路径。
+  static String _sidecarPath(String finalPath) => '$finalPath.meta.json';
+
+  static Future<void> _writeSidecar(
+      String finalPath, String url, String fileName) async {
+    try {
+      await File(_sidecarPath(finalPath)).writeAsString(
+        jsonEncode({
+          'url': url,
+          'fileName': fileName,
+          'createdAt': DateTime.now().toIso8601String(),
+        }),
+        flush: true,
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> _deleteSidecar(String finalPath) async {
+    try {
+      final file = File(_sidecarPath(finalPath));
+      if (file.existsSync()) await file.delete();
+    } catch (_) {}
+  }
+
+  /// 列出未完成的下载（`.part` 文件），用于下载管理页续传/删除。
+  static Future<List<PartialDownload>> listPartialDownloads() async {
+    final dir = await modelsDir();
+    if (!dir.existsSync()) return [];
+    final results = <PartialDownload>[];
+    for (final file in dir.listSync().whereType<File>()) {
+      if (!file.path.endsWith('.part')) continue;
+      final finalPath = file.path.substring(0, file.path.length - 5);
+      var url = '';
+      var fileName = p.basename(finalPath);
+      try {
+        final sidecar = File(_sidecarPath(finalPath));
+        if (sidecar.existsSync()) {
+          final decoded = jsonDecode(await sidecar.readAsString());
+          if (decoded is Map) {
+            url = decoded['url'] as String? ?? '';
+            fileName = decoded['fileName'] as String? ?? fileName;
+          }
+        }
+      } catch (_) {}
+      results.add(PartialDownload(
+        url: url,
+        fileName: fileName,
+        partialPath: file.path,
+        receivedBytes: file.lengthSync(),
+      ));
+    }
+    results.sort((a, b) => b.receivedBytes.compareTo(a.receivedBytes));
+    return results;
   }
 
   /// 列出已下载的模型文件（排除 .part 临时文件）。

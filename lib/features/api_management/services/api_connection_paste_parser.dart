@@ -5,10 +5,14 @@ class ApiConnectionPasteResult {
   final String apiKey;
   final bool urlWasNormalized;
 
+  /// 模型列表（仅 AI 兜底识别会填；正则路径恒为空）。
+  final List<String> models;
+
   const ApiConnectionPasteResult({
     required this.baseUrl,
     required this.apiKey,
     required this.urlWasNormalized,
+    this.models = const [],
   });
 }
 

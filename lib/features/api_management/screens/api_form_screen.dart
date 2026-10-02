@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -9,6 +10,7 @@ import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../providers/api_provider.dart';
+import '../../../core/services/ai/ai_service.dart';
 import '../services/api_connection_paste_parser.dart';
 
 class ApiFormScreen extends StatefulWidget {
@@ -657,12 +659,47 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     );
   }
 
+  /// 解析 AI 返回的 JSON（容错：允许包裹在 ```json 里或带前后缀文本）。
+  ApiConnectionPasteResult? _parseAiConnectionJson(String? answer) {
+    if (answer == null) return null;
+    var text = answer.trim();
+    final fence = RegExp(r'```(?:json)?').allMatches(text);
+    if (fence.isNotEmpty) {
+      text = text.replaceAll(RegExp(r'```(?:json)?'), '').trim();
+    }
+    final start = text.indexOf('{');
+    final end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      final decoded = jsonDecode(text.substring(start, end + 1));
+      if (decoded is! Map) return null;
+      final baseUrl = (decoded['baseUrl'] as String? ?? '').trim();
+      final apiKey = (decoded['apiKey'] as String? ?? '').trim();
+      if (baseUrl.isEmpty || apiKey.isEmpty) return null;
+      final models = (decoded['models'] as List?)
+              ?.whereType<String>()
+              .where((m) => m.trim().isNotEmpty)
+              .map((m) => m.trim())
+              .toList() ??
+          const [];
+      return ApiConnectionPasteResult(
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        urlWasNormalized: false,
+        models: models,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _recognizePastedConnection() async {
     final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
     if (!mounted) return;
     final textController = TextEditingController(text: clipboard?.text ?? '');
     ApiConnectionPasteResult? parsed;
     String? error;
+    bool aiParsing = false;
 
     final result = await showDialog<ApiConnectionPasteResult>(
       context: context,
@@ -696,6 +733,53 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
             ),
           ),
           actions: [
+            if (aiParsing)
+              const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+              )
+            else
+              TextButton.icon(
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: const Text('AI 识别'),
+                onPressed: () async {
+                  final raw = textController.text.trim();
+                  if (raw.isEmpty) return;
+                  setDialogState(() {
+                    aiParsing = true;
+                    error = null;
+                  });
+                  final configs =
+                      context.read<ApiProvider>().allApiConfigs;
+                  final answer = await AiService.ask(
+                    systemPrompt: '你是 API 配置解析器。从用户给的文本里提取 API 信息，'
+                        '只输出一行 JSON：{"baseUrl":"...","apiKey":"...",'
+                        '"models":["..."]}。找不到的字段给空字符串或空数组。'
+                        'baseUrl 必须是 http(s) 开头的完整地址。不要输出任何解释。',
+                    userPrompt: raw.length > 4000
+                        ? raw.substring(0, 4000)
+                        : raw,
+                    configs: configs,
+                    maxTokens: 300,
+                  );
+                  if (!dialogContext.mounted) return;
+                  final candidate = _parseAiConnectionJson(answer);
+                  setDialogState(() {
+                    aiParsing = false;
+                    if (candidate == null) {
+                      error = answer == null
+                          ? 'AI 未配置或调用失败，请先在「设置 → AI 助手」里配置来源'
+                          : 'AI 没能从这段文本里提取出地址和 Key';
+                    }
+                  });
+                  if (candidate != null) {
+                    Navigator.pop(dialogContext, candidate);
+                  }
+                },
+              ),
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
               child: const Text('取消'),
@@ -726,6 +810,10 @@ class _ApiFormScreenState extends State<ApiFormScreen> {
     setState(() {
       _baseUrlController.text = result.baseUrl;
       _apiKeyController.text = result.apiKey;
+      if (result.models.isNotEmpty &&
+          _modelsController.text.trim().isEmpty) {
+        _modelsController.text = result.models.join(', ');
+      }
       _validationStatus = '';
     });
     ScaffoldMessenger.of(context).showSnackBar(
