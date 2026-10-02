@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:llamadart/llamadart.dart';
 
 import '../../../core/models/api_config.dart';
@@ -108,6 +109,10 @@ class LocalGatewayService {
   }) async {
     if (!Platform.isAndroid) return;
     try {
+      if (running) {
+        // Android 13+ 需要 POST_NOTIFICATIONS，否则前台服务跑了但状态栏看不到。
+        await _ensureNotificationPermission();
+      }
       await _foregroundChannel.invokeMethod<void>(
         running ? 'start' : 'stop',
         running ? {'port': port} : null,
@@ -115,6 +120,21 @@ class LocalGatewayService {
       debugPrint('[Gateway] 前台服务 ${running ? '已启动' : '已停止'}');
     } catch (e) {
       debugPrint('[Gateway] 前台服务调用失败: $e');
+    }
+  }
+
+  /// 申请通知权限（用户拒绝时不阻断网关，只是看不到常驻通知）。
+  static Future<void> _ensureNotificationPermission() async {
+    try {
+      if (!Platform.isAndroid) return;
+      var status = await Permission.notification.status;
+      if (!status.isGranted) {
+        status = await Permission.notification.request();
+      }
+      debugPrint('[Gateway] 通知权限: ${status.isGranted ? '已授予' : '未授予'
+          '（前台服务仍运行，但状态栏看不到提示）'}');
+    } catch (e) {
+      debugPrint('[Gateway] 申请通知权限失败: $e');
     }
   }
 

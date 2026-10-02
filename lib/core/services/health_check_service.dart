@@ -170,6 +170,14 @@ class HealthCheckService {
           }
         });
       }
+      final atRaw = prefs.getString(_checkedAtKey);
+      if (atRaw != null && atRaw.isNotEmpty) {
+        final decodedAt = jsonDecode(atRaw) as Map<String, dynamic>;
+        decodedAt.forEach((key, value) {
+          final parsed = DateTime.tryParse(value.toString());
+          if (parsed != null) _lastCheckedAt[key] = parsed;
+        });
+      }
     } catch (e) {
       debugPrint('[Health] 读取体检缓存失败: $e');
     }
@@ -207,6 +215,7 @@ class HealthCheckService {
       for (final config in configs) {
         if (_cancelled) break;
         _results[config.id] = await checkOne(config);
+        _lastCheckedAt[config.id] = DateTime.now();
         done++;
         onProgress?.call(done, configs.length);
       }

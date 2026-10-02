@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/services/local_llm/local_llm_engine.dart';
+import '../../../core/services/local_llm/model_capabilities.dart';
 import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/community_model_service.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
@@ -756,6 +757,12 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (_projectors.isNotEmpty && projectorName == null)
+            IconButton(
+              icon: const Icon(Icons.link, color: AppColors.warning),
+              tooltip: '配对视觉投影（多模态模型看图用）',
+              onPressed: () => _pairProjectorFor(model),
+            ),
           IconButton(
             icon: const Icon(Icons.chat_bubble_outline,
                 color: AppColors.primary),
@@ -827,6 +834,32 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     );
   }
 
+  /// 手动把一个投影配对给这个模型（配对后条目会折叠显示投影）。
+  Future<void> _pairProjectorFor(DownloadedModel model) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final picked = await showDialog<File>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: Text('给「${model.name}」选择视觉投影'),
+        children: [
+          for (final file in _projectors)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, file),
+              child: Text(file.uri.pathSegments.last,
+                  style: const TextStyle(fontSize: 13)),
+            ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    await ModelStorageSettings.pairProjector(
+        model.fileName, picked.uri.pathSegments.last);
+    await _refreshDownloaded();
+    messenger.showSnackBar(SnackBar(
+        content: Text('已配对：${model.name} ↔ ${picked.uri.pathSegments.last}'),
+        backgroundColor: AppColors.success));
+  }
+
   /// 找该主模型配套的投影文件名（配对记录优先，其次单投影回退）。
   String? _projectorFor(DownloadedModel model) {
     final name = model.fileName;
@@ -835,6 +868,16 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     }
     if (_projectors.length == 1 && _downloaded.length == 1) {
       return _projectors.first.uri.pathSegments.last;
+    }
+    // 目录里只有一个投影，且只有一个"视觉家族"模型 → 直接配上
+    // （用户只可能有一个视觉模型时，这是最符合直觉的默认行为）。
+    if (_projectors.length == 1) {
+      final visionModels = _downloaded
+          .where((m) => ModelCapabilities.isVisionFamily(m.name))
+          .toList();
+      if (visionModels.length == 1 && visionModels.first.fileName == name) {
+        return _projectors.first.uri.pathSegments.last;
+      }
     }
     // 名字包含核心词也算（如 mmproj-gemma-3-4b-it-f16.gguf）。
     final core = model.name.toLowerCase().split(RegExp(r'-(?=q\d|iq\d)')).first;
