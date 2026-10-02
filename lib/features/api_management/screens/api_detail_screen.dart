@@ -37,8 +37,10 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
   @override
   void initState() {
     super.initState();
-    PersistedRoute.save('api-detail', _apiConfig.id);
+    // 必须先赋值再使用：late 字段在赋值前读取会抛
+    // LateInitializationError，整页渲染成 ErrorWidget（"本区域渲染出错"）。
     _apiConfig = widget.apiConfig;
+    PersistedRoute.save('api-detail', _apiConfig.id);
   }
 
   @override

@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/services/ai/ai_service.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
+import '../../../core/services/local_llm/model_capabilities.dart';
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../shared/theme/color_scheme.dart';
 import 'conversation_list_screen.dart';
@@ -93,8 +94,25 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   }
 
   Future<void> _send() async {
-    final text = _controller.text.trim();
+    var text = _controller.text.trim();
     if ((text.isEmpty && _pendingAttachments.isEmpty) || _isGenerating) return;
+
+    // 纯文本模型发图：先讲清楚再决定，不要让引擎抛错（用户看不懂）。
+    final hasImage =
+        _pendingAttachments.any((a) => a.type == 'image');
+    if (hasImage && !_engine.supportsVision) {
+      final useTextOnly = await _confirmTextOnly();
+      if (useTextOnly != true) return;
+      setState(() => _pendingAttachments.removeWhere((a) => a.type == 'image'));
+      text = _controller.text.trim();
+      if (text.isEmpty && _pendingAttachments.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('图片已移除，请输入文字后再发送')));
+        }
+        return;
+      }
+    }
 
     final attachments = List<ChatAttachment>.from(_pendingAttachments);
     _controller.clear();
@@ -122,7 +140,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         maxTokens: _conversation.settings.maxTokens,
         temp: _conversation.settings.temp,
         topP: _conversation.settings.topP,
-        thinkingEnabled: _conversation.settings.thinkingEnabled,
+        thinkingEnabled: _conversation.settings.thinkingEnabled &&
+            ModelCapabilities.supportsThinking(widget.modelName),
       )) {
         if (!mounted) return;
         if (_stopRequested) break;
@@ -166,6 +185,33 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     _scrollToBottom();
   }
 
+  /// 纯文本模型收到图片时的说明与分流。
+  Future<bool?> _confirmTextOnly() {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('当前模型不支持图片'),
+        content: Text(
+          '「${widget.modelName}」是纯文本模型'
+          '${ModelCapabilities.isVisionFamily(widget.modelName) ? '（同目录缺少视觉投影文件 mmproj-*.gguf）' : ''}，'
+          '识别不了图片内容。\n\n'
+          '要换成多模态模型（如 Gemma 3 / Qwen2.5-VL 系列）请到「模型」页下载；'
+          '也可以先移除图片，只发文字。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('移除图片，继续发文字'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 把对话记录转成引擎消息（附件按类型处理）。
   List<LlamaChatMessage> _buildEngineMessages() {
     final messages = <LlamaChatMessage>[];
@@ -180,9 +226,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           ? LlamaChatRole.user
           : LlamaChatRole.assistant;
 
-      final images = record.attachments
-          .where((a) => a.type == 'image' && a.path != null)
-          .toList();
+      final images = _engine.supportsVision
+          ? record.attachments
+              .where((a) => a.type == 'image' && a.path != null)
+              .toList()
+          : const <ChatAttachment>[];
       final textFiles = record.attachments
           .where((a) => a.type == 'text' && (a.content?.isNotEmpty ?? false))
           .toList();
@@ -257,6 +305,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       builder: (sheetContext) => StatefulBuilder(
         builder: (sheetContext, setSheetState) {
           final settings = _conversation.settings;
+          final supportsThinking =
+              ModelCapabilities.supportsThinking(widget.modelName);
           void update(ChatGenerationSettings next) {
             setSheetState(() {});
             setState(() => _conversation.settings = next);
@@ -306,10 +356,16 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('深度思考'),
-                      subtitle: const Text('推理模型会先输出思考过程（可折叠查看）'),
-                      value: settings.thinkingEnabled,
-                      onChanged: (v) =>
-                          update(settings.copyWith(thinkingEnabled: v)),
+                      subtitle: Text(
+                        supportsThinking
+                            ? '推理模型会先输出思考过程（可折叠查看）'
+                            : '当前模型不支持深度思考，开关已禁用',
+                      ),
+                      value: supportsThinking && settings.thinkingEnabled,
+                      onChanged: supportsThinking
+                          ? (v) =>
+                              update(settings.copyWith(thinkingEnabled: v))
+                          : null,
                     ),
                     const SizedBox(height: 8),
                     const Text('系统提示词', style: TextStyle(fontSize: 13)),
@@ -434,17 +490,23 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final secondary =
         isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+    final modelName = widget.modelName;
 
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_conversation.title,
+            // _conversation 由异步 _init 赋值：就绪前必须回退到入参，
+            // 否则 late 字段未初始化会抛错（整页 "本区域渲染出错"）。
+            Text(_modelReady ? _conversation.title : widget.modelName,
                 style: const TextStyle(fontSize: 16),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),
-            Text(widget.modelName,
+            Text(
+                '$modelName'
+                '${_modelReady ? ' · ${_engine.supportsVision ? '多模态' : '纯文本'}' : ''}'
+                '${ModelCapabilities.supportsThinking(widget.modelName) ? ' · 支持思考' : ''}',
                 style: TextStyle(fontSize: 11, color: secondary),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),

@@ -98,8 +98,9 @@ class _PinScreenState extends State<PinScreen>
     final lock = context.read<AppLockController>();
     final ok = await lock.authenticateAndUnlock();
     if (!mounted || !ok) return;
-    final navigator = Navigator.of(context);
-    if (navigator.canPop()) navigator.pop(true);
+    // 锁屏由 LockGate 直接切换（无 Navigator 祖先）；设置页里是压栈页面。
+    final navigator = Navigator.maybeOf(context);
+    if (navigator != null && navigator.canPop()) navigator.pop(true);
   }
 
   void _append(String digit) {
@@ -116,7 +117,10 @@ class _PinScreenState extends State<PinScreen>
   Future<void> _submit() async {
     final lock = context.read<AppLockController>();
     final messenger = ScaffoldMessenger.of(context);
-    final navigator = Navigator.of(context);
+    // 关键：锁屏 PinScreen 挂在 LockGate（MaterialApp.builder 覆盖层）里，
+    // 没有 Navigator 祖先——这里用 Navigator.of 会同步抛错，导致 PIN 校验
+    // 根本没开始（表现为 4 个点填满后无任何反应）。用 maybeOf 并判空。
+    final navigator = Navigator.maybeOf(context);
 
     switch (_mode) {
       case PinScreenMode.unlock:
@@ -141,10 +145,11 @@ class _PinScreenState extends State<PinScreen>
                 backgroundColor: AppColors.warning,
               ));
             }
-            // 锁屏态是 LockGate 的唯一路由（不能 pop）；从设置页进入时
-            // 则返回设置页并告知验证成功。
-            final navigator = Navigator.of(context);
-            if (navigator.canPop()) navigator.pop(true);
+            // 锁屏态由 LockGate 随 locked 状态直接切换（无 Navigator 可 pop）；
+            // 从设置页进入时则返回设置页并告知验证成功。
+            if (navigator != null && navigator.canPop()) {
+              navigator.pop(true);
+            }
           }
         } catch (e) {
           // 任何内部异常都要有可见反馈——绝不允许静默卡死。
@@ -179,7 +184,9 @@ class _PinScreenState extends State<PinScreen>
           await lock.enable(_firstPin);
           if (!mounted) return;
           setState(() => _isVerifying = false);
-          navigator.pop(true);
+          if (navigator != null && navigator.canPop()) {
+            navigator.pop(true);
+          }
         } catch (e) {
           if (mounted) {
             setState(() => _isVerifying = false);

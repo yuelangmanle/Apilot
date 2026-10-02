@@ -48,10 +48,15 @@ class AppLockController extends ChangeNotifier
   /// 避免读取异常导致锁静默失效。
   bool get loadFailed => _loadFailed;
 
-  AppLockController() {
+  /// [hasher] 仅供测试注入快速实现；生产默认走 PBKDF2（独立 isolate）。
+  AppLockController({Future<String> Function(String pin, String salt)? hasher})
+      : _hasher = hasher ?? hashPinAsync {
     WidgetsBinding.instance.addObserver(this);
     _load();
   }
+
+  /// PIN 派生实现（生产 = PBKDF2 in isolate）。
+  final Future<String> Function(String pin, String salt) _hasher;
 
   Future<void> _load() async {
     try {
@@ -108,7 +113,7 @@ class AppLockController extends ChangeNotifier
     if (pin.length < 4) throw StateError('PIN 至少 4 位');
     final prefs = await SharedPreferences.getInstance();
     final salt = _randomSalt();
-    final hash = await hashPinAsync(pin, salt);
+    final hash = await _hasher(pin, salt);
     await prefs.setString(_pinHashKey, 'pbkdf2:$salt:$hash');
     await prefs.setBool(_enabledKey, true);
     await prefs.setInt(_failCountKey, 0);
@@ -168,7 +173,7 @@ class AppLockController extends ChangeNotifier
       if (index > 0) {
         final salt = rest.substring(0, index);
         final expected = rest.substring(index + 1);
-        ok = await hashPinAsync(pin, salt) == expected;
+        ok = await _hasher(pin, salt) == expected;
       }
     } else {
       // 旧格式（v1.25.0 前）：<salt>:<sha256>，兼容校验一次。
@@ -197,7 +202,7 @@ class AppLockController extends ChangeNotifier
     await prefs.setInt(_failLockUntilKey, 0);
     if (!stored.startsWith('pbkdf2:')) {
       final salt = _randomSalt();
-      final hash = await hashPinAsync(pin, salt);
+      final hash = await _hasher(pin, salt);
       await prefs.setString(_pinHashKey, 'pbkdf2:$salt:$hash');
     }
     _locked = false;

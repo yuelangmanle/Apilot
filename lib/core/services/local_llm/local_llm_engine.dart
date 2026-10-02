@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 
+import 'model_capabilities.dart';
 import 'model_catalog.dart';
 
 /// 本地推理引擎封装：加载 GGUF 模型、流式生成、对话会话。
@@ -10,13 +12,29 @@ import 'model_catalog.dart';
 class LocalLlmEngine {
   LlamaEngine? _engine;
   String? _loadedModelPath;
+  bool _visionAvailable = false;
+  String? _projectorPath;
   bool _disposed = false;
 
   String? get loadedModelPath => _loadedModelPath;
+
+  /// 当前模型是否真的能看图（取决于是否成功加载了视觉投影 mmproj）。
+  bool get supportsVision => _visionAvailable;
+
+  /// 已加载的视觉投影文件路径（没有则为 null）。
+  String? get projectorPath => _projectorPath;
+
   bool get isLoaded => _engine != null && _loadedModelPath != null;
 
   /// 从本地文件路径加载 GGUF 模型。
-  Future<void> loadModel(String filePath, {int contextSize = 4096}) async {
+  ///
+  /// [mmProjPath] 显式指定视觉投影文件；不传时自动在同目录查找
+  /// `mmproj*.gguf`——多模态模型靠它才能看图，缺了它就是纯文本行为。
+  Future<void> loadModel(
+    String filePath, {
+    int contextSize = 4096,
+    String? mmProjPath,
+  }) async {
     if (_disposed) throw StateError('引擎已释放');
     await unload();
     final engine = LlamaEngine(LlamaBackend());
@@ -26,6 +44,37 @@ class LocalLlmEngine {
     );
     _engine = engine;
     _loadedModelPath = filePath;
+
+    // 视觉投影：失败不影响文本能力，只是没有看图能力。
+    final projector = mmProjPath ?? _findSiblingProjector(filePath);
+    if (projector != null) {
+      try {
+        await engine.loadMultimodalProjector(projector);
+        _projectorPath = projector;
+        _visionAvailable = await engine.supportsVision;
+        debugPrint('[LocalLlm] 视觉投影已加载: $projector '
+            '(supportsVision=$_visionAvailable)');
+      } catch (e) {
+        debugPrint('[LocalLlm] 视觉投影加载失败（按纯文本处理）: $e');
+        _projectorPath = null;
+        _visionAvailable = false;
+      }
+    }
+  }
+
+  /// 在同目录查找视觉投影文件（mmproj*.gguf）。
+  static String? _findSiblingProjector(String modelPath) {
+    try {
+      final file = File(modelPath);
+      final dir = file.parent;
+      if (!dir.existsSync()) return null;
+      for (final entity in dir.listSync()) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.last;
+        if (ModelCapabilities.isProjectorFile(name)) return entity.path;
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// 非流式生成：发送消息列表，返回完整回复文本。
@@ -89,6 +138,8 @@ class LocalLlmEngine {
       await engine.dispose();
       _engine = null;
       _loadedModelPath = null;
+      _visionAvailable = false;
+      _projectorPath = null;
     }
   }
 

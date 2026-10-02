@@ -26,6 +26,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleShareIntent(intent)
+        buildGatewayGrantRequest(intent)?.let { pendingGatewayGrant = it }
     }
 
     private fun handleShareIntent(intent: Intent?) {
@@ -93,6 +94,9 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    private var gatewayGrantChannel: MethodChannel? = null
+    private var pendingGatewayGrant: Map<String, Any?>? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -149,6 +153,26 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
+        gatewayGrantChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            GATEWAY_GRANT_CHANNEL_NAME
+        )
+        gatewayGrantChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getInitialGrantRequest" -> {
+                    val request = pendingGatewayGrant ?: readInitialGatewayGrantRequest()
+                    pendingGatewayGrant = null
+                    result.success(request)
+                }
+                "completeGrant" -> completeGatewayGrant(
+                    call.argument<String>("payload"),
+                    result
+                )
+                "cancelGrant" -> cancelGatewayGrant(result)
+                else -> result.notImplemented()
+            }
+        }
+
         qrScannerChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             QR_SCANNER_CHANNEL_NAME
@@ -166,6 +190,16 @@ class MainActivity : FlutterFragmentActivity() {
         handleShareIntent(intent)
 
         setIntent(intent)
+
+        val grantRequest = buildGatewayGrantRequest(intent)
+        if (grantRequest != null) {
+            val channel = gatewayGrantChannel
+            if (channel == null) {
+                pendingGatewayGrant = grantRequest
+            } else {
+                channel.invokeMethod("onGrantRequest", grantRequest)
+            }
+        }
 
         val pickRequest = buildPickRequest(intent)
         if (pickRequest != null) {
@@ -457,6 +491,49 @@ class MainActivity : FlutterFragmentActivity() {
         return digest.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
     }
 
+    /// 解析"一键授予本地网关能力"请求。
+    private fun buildGatewayGrantRequest(intent: Intent?): Map<String, Any?>? {
+        if (intent?.action != ACTION_GRANT_GATEWAY) return null
+        val callerPackage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            callingActivity?.packageName
+        } else {
+            @Suppress("DEPRECATION")
+            callingActivity?.packageName
+        }
+        return mapOf(
+            "requestId" to intent.getStringExtra(EXTRA_REQUEST_ID),
+            "sourceName" to intent.getStringExtra(EXTRA_SOURCE_NAME),
+            "requestedScope" to (intent.getStringExtra(EXTRA_REQUESTED_SCOPE) ?: "loopback"),
+            "callerPackage" to callerPackage,
+            "declaredSignatureSha256" to intent.getStringExtra(EXTRA_SOURCE_SIGNATURE_SHA256),
+        )
+    }
+
+    private fun readInitialGatewayGrantRequest(): Map<String, Any?>? {
+        val request = buildGatewayGrantRequest(intent)
+        return request
+    }
+
+    /// 把网关授权结果回传给调用方并结束本页。
+    private fun completeGatewayGrant(payload: String?, result: MethodChannel.Result) {
+        if (payload == null) {
+            result.error("INVALID_PAYLOAD", "payload 不能为空", null)
+            return
+        }
+        val data = Intent().apply {
+            putExtra(EXTRA_GATEWAY_GRANT_JSON, payload)
+        }
+        setResult(Activity.RESULT_OK, data)
+        result.success(true)
+        finish()
+    }
+
+    private fun cancelGatewayGrant(result: MethodChannel.Result) {
+        setResult(Activity.RESULT_CANCELED)
+        result.success(true)
+        finish()
+    }
+
     private data class PayloadResult(
         val payload: String?,
         val error: String?,
@@ -465,6 +542,10 @@ class MainActivity : FlutterFragmentActivity() {
     companion object {
         private const val CHANNEL_NAME = "com.apilot/third_party_import"
         private const val API_CONFIG_PICK_CHANNEL_NAME = "com.apilot/third_party_api_config_pick"
+        private const val GATEWAY_GRANT_CHANNEL_NAME = "com.apilot/third_party_gateway_grant"
+        private const val ACTION_GRANT_GATEWAY = "com.apilot.intent.action.GRANT_GATEWAY"
+        private const val EXTRA_GATEWAY_GRANT_JSON = "com.apilot.extra.GATEWAY_GRANT_JSON"
+        private const val EXTRA_REQUESTED_SCOPE = "com.apilot.extra.REQUESTED_SCOPE"
         private const val QR_SCANNER_CHANNEL_NAME = "com.apilot/qr_scanner"
         private const val ACTION_IMPORT_API_CONFIGS = "com.apilot.intent.action.IMPORT_API_CONFIGS"
         private const val ACTION_PICK_API_CONFIG = "com.apilot.intent.action.PICK_API_CONFIG"

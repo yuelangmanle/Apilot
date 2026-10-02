@@ -13,6 +13,8 @@ import '../../../shared/utils/persisted_route.dart';
 import '../../../shared/widgets/responsive_layout.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../sync/services/local_gateway_service.dart';
+import '../../../core/services/local_llm/local_llm_engine.dart';
+import '../../../core/services/local_llm/model_download_service.dart';
 
 /// 本地网关：127.0.0.1 起一个 OpenAI 兼容反代，任意工具指向它即可
 /// 使用 Apilot 所选配置的 Key。仅监听回环地址，不对外网暴露。
@@ -29,8 +31,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
   int _port = LocalGatewayService.defaultPort;
   bool _lanEnabled = false;
   String _gatewayToken = '';
-  final String _lanIp = '';
+  String _lanIp = '';
   bool _loading = true;
+  /// 网关目标来源：cloud = 转发云端配置；local = 本机模型离线推理。
+  String _targetKind = 'cloud';
+  List<DownloadedModel> _localModels = [];
+  DownloadedModel? _selectedLocal;
 
   @override
   void initState() {
@@ -45,12 +51,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
       _port = prefs.getInt(_portPrefsKey) ?? LocalGatewayService.defaultPort;
       _lanEnabled = prefs.getBool('apilot_gateway_lan') ?? false;
       _gatewayToken = prefs.getString('apilot_gateway_token') ?? '';
+      _targetKind = prefs.getString('apilot_gateway_target_kind') ?? 'cloud';
     } catch (_) {}
-    _detectLanIp();
+    _lanIp = await _detectLanIp();
+    final files = await ModelDownloadService.listDownloadedModels();
     if (!mounted) return;
     final configs = context.read<ApiProvider>().allApiConfigs;
     setState(() {
       if (configs.isNotEmpty) _selected = configs.first;
+      _localModels = files.map((f) => DownloadedModel.fromFile(f)).toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      if (_localModels.isNotEmpty) _selectedLocal = _localModels.first;
       _loading = false;
     });
   }
@@ -82,18 +93,35 @@ class _GatewayScreenState extends State<GatewayScreen> {
           duration: Duration(seconds: 1)));
       return;
     }
+    final useLocal = _targetKind == 'local';
     final selected = _selected;
-    if (selected == null) return;
+    final selectedLocal = _selectedLocal;
+    if (useLocal && selectedLocal == null) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('还没有已下载的本地模型：先到「模型」页下载一个')),
+      );
+      return;
+    }
+    if (!useLocal && selected == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_portPrefsKey, _port);
       await prefs.setBool('apilot_gateway_lan', _lanEnabled);
+      await prefs.setString('apilot_gateway_target_kind', _targetKind);
       if (_lanEnabled && _gatewayToken.isEmpty) {
         _gatewayToken = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
         await prefs.setString('apilot_gateway_token', _gatewayToken);
       }
-      await LocalGatewayService.start(selected,
-          port: _port, lanEnabled: _lanEnabled, token: _gatewayToken);
+      await LocalGatewayService.start(
+        useLocal ? null : selected,
+        localModel: useLocal
+            ? GatewayLocalModel(
+                filePath: selectedLocal!.filePath, name: selectedLocal.fileName)
+            : null,
+        port: _port,
+        lanEnabled: _lanEnabled,
+        token: _gatewayToken,
+      );
       if (mounted) setState(() {});
     } catch (e) {
       messenger.showSnackBar(SnackBar(
@@ -146,24 +174,77 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         ],
                       ),
                       const SizedBox(height: 12),
-                      DropdownButtonFormField<ApiConfig>(
-                        initialValue: _selected,
-                        isExpanded: true,
-                        decoration: const InputDecoration(
-                          labelText: '目标配置',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: configs
-                            .map((c) => DropdownMenuItem(
-                                value: c,
-                                child: Text(c.name,
-                                    overflow: TextOverflow.ellipsis)))
-                            .toList(),
-                        onChanged: running
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(
+                              value: 'cloud',
+                              icon: Icon(Icons.cloud_outlined, size: 16),
+                              label: Text('云端配置')),
+                          ButtonSegment(
+                              value: 'local',
+                              icon: Icon(Icons.memory, size: 16),
+                              label: Text('本机模型')),
+                        ],
+                        selected: {_targetKind},
+                        onSelectionChanged: running
                             ? null
-                            : (value) =>
-                                setState(() => _selected = value),
+                            : (values) =>
+                                setState(() => _targetKind = values.first),
                       ),
+                      const SizedBox(height: 12),
+                      if (_targetKind == 'local')
+                        if (_localModels.isEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.warning.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '还没有已下载的本地模型。先到「模型」页下载一个，'
+                              '再回来就能用它做网关后端（完全离线，不消耗额度）。',
+                              style: TextStyle(fontSize: 12, color: secondary),
+                            ),
+                          )
+                        else
+                          DropdownButtonFormField<DownloadedModel>(
+                            initialValue: _selectedLocal,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: '本机模型（离线推理，不联网）',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: _localModels
+                                .map((m) => DropdownMenuItem(
+                                    value: m,
+                                    child: Text('${m.name} · ${m.sizeMb}',
+                                        overflow: TextOverflow.ellipsis)))
+                                .toList(),
+                            onChanged: running
+                                ? null
+                                : (value) =>
+                                    setState(() => _selectedLocal = value),
+                          )
+                      else
+                        DropdownButtonFormField<ApiConfig>(
+                          initialValue: _selected,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            labelText: '目标配置（转发，自动注入 Key）',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: configs
+                              .map((c) => DropdownMenuItem(
+                                  value: c,
+                                  child: Text(c.name,
+                                      overflow: TextOverflow.ellipsis)))
+                              .toList(),
+                          onChanged: running
+                              ? null
+                              : (value) =>
+                                  setState(() => _selected = value),
+                        ),
                       const SizedBox(height: 12),
                       TextField(
                         keyboardType: TextInputType.number,
@@ -252,6 +333,16 @@ class _GatewayScreenState extends State<GatewayScreen> {
                                       fontSize: 12),
                                 ),
                               ],
+                              if (LocalGatewayService.localTarget != null) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  '客户端 model 字段填：'
+                                  '${LocalGatewayService.localTarget!.id}',
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      fontFamily: 'monospace'),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -266,7 +357,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: FilledButton.icon(
-                          onPressed: _selected == null ? null : _toggle,
+                          onPressed: (_targetKind == 'local'
+                                  ? _selectedLocal == null
+                                  : _selected == null)
+                              ? null
+                              : _toggle,
                           icon: Icon(running
                               ? Icons.stop
                               : Icons.play_arrow),
@@ -296,17 +391,34 @@ class _GatewayScreenState extends State<GatewayScreen> {
                             fontSize: 12, height: 1.6, color: secondary),
                       ),
                       const SizedBox(height: 8),
+                      const Text('两种模式，按需选择',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13)),
+                      const SizedBox(height: 6),
+                      Text(
+                        '· 仅本机（默认）：只监听 127.0.0.1，同一台手机上的'
+                        '其他 App 可以连；其他设备连不上——默认最安全的形态，'
+                        'Key 不会离开这台手机；\n'
+                        '· 允许局域网设备访问：监听所有网卡，同一 WiFi / 热点的'
+                        '设备可以连，但必须携带下面的网关 Token。开启前请确认'
+                        '这些设备你都信任——同一网络里的任何人拿到 Token 都能'
+                        '用你的额度，用完随时关掉即可。',
+                        style: TextStyle(
+                            fontSize: 12, height: 1.6, color: secondary),
+                      ),
+                      const SizedBox(height: 8),
                       const Text('注意事项',
                           style: TextStyle(
                               fontWeight: FontWeight.bold, fontSize: 13)),
                       const SizedBox(height: 6),
                       Text(
-                        '· 网关只监听 127.0.0.1（本机回环），同一台手机上的'
-                        '其他 App 可以连，其他设备连不了——这是有意设计，防止 Key 暴露到局域网；\n'
+                        '· 走「本机模型」时请求不出手机、不消耗任何额度；'
+                        '走「云端配置」时 Key 只在网关内部注入，'
+                        '不会下发给连接的 App；\n'
                         '· Apilot 切到后台后可能被安卓冻结导致连不上：'
                         '使用时请保持 Apilot 在前台或分屏，或在系统设置里'
                         '关闭对 Apilot 的电池优化；\n'
-                        '· 流式响应原样透传；请求只在本机回环流动，不经外网。',
+                        '· 流式响应原样透传（本机模型同样支持流式）。',
                         style: TextStyle(
                             fontSize: 12, height: 1.6, color: secondary),
                       ),

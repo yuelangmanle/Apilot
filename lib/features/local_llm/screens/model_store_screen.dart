@@ -8,11 +8,14 @@ import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/community_model_service.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
+import '../../../core/services/local_llm/model_catalog_store.dart';
+import '../services/model_curator_service.dart';
 import '../../../core/services/local_llm/device_capabilities.dart';
 import '../../../core/services/ai/ai_service.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import 'download_manager_screen.dart';
 import 'local_chat_screen.dart';
 
 /// 模型商店：浏览内置模型 + 从 URL 导入 + 管理已下载模型。
@@ -29,6 +32,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   List<DownloadedModel> _downloaded = [];
   List<PartialDownload> _partials = [];
   List<LocalModelInfo> _communityModels = [];
+  List<SavedModelEntry> _savedModels = [];
+  final ModelCatalogStore _catalogStore = ModelCatalogStore();
   bool _loadingCommunity = false;
   bool _loading = true;
   bool _resolvingRepo = false;
@@ -53,6 +58,54 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     });
     _refreshDownloaded();
     _loadDeviceAndCommunity();
+  }
+
+  /// AI 精选：把社区列表交给 AI 挑几个并写中文介绍，结果固定到本机。
+  Future<void> _curateWithAi() async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (_communityModels.isEmpty) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('社区列表还没加载好，先点右上角刷新')));
+      return;
+    }
+    final configs = context.read<ApiProvider>().allApiConfigs;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => const AlertDialog(
+        content: Row(
+          children: [
+            SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+            SizedBox(width: 12),
+            Expanded(child: Text('AI 正在浏览社区模型并生成介绍…\n'
+                '（用本地模型做 AI 时可能需要一两分钟）')),
+          ],
+        ),
+      ),
+    );
+    final result = await ModelCuratorService.curate(
+      _communityModels,
+      configs: configs,
+      deviceRamMb: _deviceRamMb,
+    );
+    if (!mounted) return;
+    Navigator.pop(context); // 关掉进度框
+    if (!result.ok) {
+      messenger.showSnackBar(SnackBar(
+          content: Text(result.error ?? 'AI 精选失败'),
+          backgroundColor: AppColors.warning,
+          duration: const Duration(seconds: 4)));
+      return;
+    }
+    final saved = await _catalogStore.saveAll(result.entries);
+    await _loadSavedModels();
+    messenger.showSnackBar(SnackBar(
+      content: Text('AI 精选已固定 $saved 个模型到「我的社区模型」'),
+      backgroundColor: AppColors.success,
+    ));
   }
 
   /// 先取设备内存（推荐量化要看它），再拉社区列表。
@@ -87,9 +140,15 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     }
   }
 
+  Future<void> _loadSavedModels() async {
+    final saved = await _catalogStore.list();
+    if (mounted) setState(() => _savedModels = saved);
+  }
+
   Future<void> _refreshDownloaded() async {
     final files = await ModelDownloadService.listDownloadedModels();
     final partials = await ModelDownloadService.listPartialDownloads();
+    await _loadSavedModels();
     if (!mounted) return;
     setState(() {
       _downloaded = files
@@ -401,6 +460,25 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
         title: const Text('模型商店'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'AI 精选（挑模型 + 写介绍，固定到本机）',
+            onPressed: _loadingCommunity ? null : _curateWithAi,
+          ),
+          IconButton(
+            icon: const Icon(Icons.download_outlined),
+            tooltip: '下载管理',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      DownloadManagerScreen(downloader: _downloader),
+                ),
+              );
+              await _refreshDownloaded();
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: '刷新社区列表',
             onPressed: _loadingCommunity
@@ -435,42 +513,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                           color: secondary)),
                   const SizedBox(height: 8),
                   for (final partial in _partials)
-                    Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: const Icon(Icons.pause_circle_outline,
-                            color: AppColors.warning),
-                        title: Text(partial.fileName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 14)),
-                        subtitle: Text(
-                          partial.resumable
-                              ? '已下载 ${partial.receivedLabel} · 可断点续传'
-                              : '已下载 ${partial.receivedLabel} · 缺少来源信息，仅可删除',
-                          style: TextStyle(fontSize: 12, color: secondary),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (partial.resumable)
-                              IconButton(
-                                icon: const Icon(Icons.play_arrow,
-                                    color: AppColors.primary),
-                                tooltip: '继续下载',
-                                onPressed: () => _resumePartial(partial),
-                              ),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline,
-                                  color: AppColors.error),
-                              tooltip: '删除',
-                              onPressed: () => _deletePartial(partial),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                    _buildPartialCard(partial, secondary),
                   const Divider(height: 24),
                 ],
                 if (_downloaded.isNotEmpty) ...[
@@ -518,6 +561,24 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 for (final model in LocalModelCatalog.builtin)
                   _buildModelCard(model),
                 const SizedBox(height: 16),
+                if (_savedModels.isNotEmpty) ...[
+                  Row(
+                    children: [
+                      Text('我的社区模型',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: secondary)),
+                      const SizedBox(width: 6),
+                      Text('（AI 精选 / 粘贴固定，保存在本机）',
+                          style: TextStyle(fontSize: 11, color: secondary)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  for (final entry in _savedModels)
+                    _buildSavedCard(entry, secondary),
+                  const Divider(height: 24),
+                ],
                 Row(
                   children: [
                     Text('社区模型',
@@ -551,6 +612,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   Future<void> _importFromUrl() async {
     final controller = TextEditingController();
     final messenger = ScaffoldMessenger.of(context);
+    var pastedText = '';
     final parsed = await showDialog<ModelUrlParseResult>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -579,6 +641,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
               onPressed: () {
                 final text = controller.text.trim();
                 if (text.isEmpty) return;
+                pastedText = text;
                 final result = ModelUrlParser.parse(text);
                 Navigator.pop(dialogContext, result);
               },
@@ -589,6 +652,13 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     controller.dispose();
     if (!mounted) return;
     if (parsed == null || parsed.isEmpty) return;
+
+    // 一次粘贴了多个仓库（模型库/合集页）：逐个解析 → 多选 → 固定到"我的社区模型"。
+    final repos = ModelCuratorService.extractRepositories(pastedText);
+    if (repos.length > 1 && parsed.variants.isEmpty) {
+      await _importManyRepos(repos, messenger);
+      return;
+    }
 
     // 仓库页面 → 拉取真实文件清单（真实文件名 + 真实大小），再让用户挑版本。
     if (parsed.repoOwner != null && parsed.repoName != null) {
@@ -646,6 +716,251 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
         displayName: parsed.modelName,
       );
     }
+  }
+
+  /// 未完成下载卡片：绑实时进度（续传后立刻能看到进度与已下大小）。
+  Widget _buildPartialCard(PartialDownload partial, Color secondary) {
+    final active = _downloads[partial.fileName];
+    final received = active?.receivedBytes ?? partial.receivedBytes;
+    final downloading = active?.status == DownloadStatus.downloading;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.pause_circle_outline,
+                    size: 18, color: AppColors.warning),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(partial.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14)),
+                ),
+                if (downloading)
+                  IconButton(
+                    icon: const Icon(Icons.pause_circle_outline, size: 20),
+                    tooltip: '暂停',
+                    onPressed: () => _downloader.cancel(partial.fileName),
+                  )
+                else if (partial.resumable)
+                  TextButton.icon(
+                    icon: const Icon(Icons.play_arrow, size: 18),
+                    label:
+                        const Text('继续下载', style: TextStyle(fontSize: 12)),
+                    onPressed: () => _resumePartial(partial),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline,
+                      size: 20, color: AppColors.error),
+                  tooltip: '删除未完成数据',
+                  onPressed: () => _deletePartial(partial),
+                ),
+              ],
+            ),
+            if (downloading) ...[
+              LinearProgressIndicator(
+                value: active?.fraction ?? 0,
+                backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+              ),
+              const SizedBox(height: 4),
+            ],
+            Text(
+              downloading && (active?.totalBytes ?? 0) > 0
+                  ? '${((received) / (1024 * 1024)).toStringAsFixed(0)}'
+                      ' / ${((active!.totalBytes) / (1024 * 1024)).toStringAsFixed(0)} MB · 下载中'
+                  : partial.resumable
+                      ? '已下载 ${_formatBytes(received)} · 可断点续传'
+                      : '已下载 ${_formatBytes(received)} · 缺少来源信息，仅可删除',
+              style: TextStyle(fontSize: 12, color: secondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatBytes(int bytes) => bytes >= 1024 * 1024 * 1024
+      ? '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB'
+      : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+
+  /// 一次粘贴多个仓库：解析全部可下载文件 → 多选 → 固定到本机商店。
+  Future<void> _importManyRepos(
+      List<RepoRef> repos, ScaffoldMessengerState messenger) async {
+    setState(() => _resolvingRepo = true);
+    final resolved = <LocalModelInfo>[];
+    try {
+      resolved.addAll(await ModelCuratorService.resolvePastedLinks(
+        repos.map((r) => r.host == 'modelscope'
+                ? 'https://modelscope.cn/models/${r.path}'
+                : 'https://huggingface.co/${r.path}')
+            .join('\n'),
+        deviceRamMb: _deviceRamMb,
+      ));
+    } catch (e) {
+      debugPrint('[ModelStore] 多仓库解析失败: $e');
+    }
+    if (!mounted) return;
+    setState(() => _resolvingRepo = false);
+    if (resolved.isEmpty) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('这些链接里没有解析出可下载的 GGUF 文件'),
+        backgroundColor: AppColors.error,
+      ));
+      return;
+    }
+
+    final selected = await showDialog<List<LocalModelInfo>>(
+      context: context,
+      builder: (dialogContext) {
+        final chosen = <String>{resolved.first.id};
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) => AlertDialog(
+            title: Text('解析到 ${resolved.length} 个模型'),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('勾选后固定到「我的社区模型」，可随时下载或移除。',
+                      style: TextStyle(fontSize: 12)),
+                  const SizedBox(height: 8),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final model in resolved)
+                            CheckboxListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              value: chosen.contains(model.id),
+                              onChanged: (checked) => setDialogState(() {
+                                if (checked == true) {
+                                  chosen.add(model.id);
+                                } else {
+                                  chosen.remove(model.id);
+                                }
+                              }),
+                              title: Text(model.name,
+                                  style: const TextStyle(fontSize: 13)),
+                              subtitle: Text(
+                                  '${model.sizeMb} · ${model.quantization}'
+                                  '${model.variants.length > 1 ? ' · ${model.variants.length} 个版本' : ''}',
+                                  style: const TextStyle(fontSize: 11)),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消')),
+              FilledButton(
+                onPressed: () => Navigator.pop(
+                    dialogContext,
+                    resolved
+                        .where((m) => chosen.contains(m.id))
+                        .toList()),
+                child: const Text('固定到我的社区模型'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null || selected.isEmpty) return;
+    final count = await _catalogStore.saveAll(selected
+        .map((m) => SavedModelEntry(
+              info: m,
+              source: 'paste',
+              addedAt: DateTime.now(),
+            ))
+        .toList());
+    await _loadSavedModels();
+    messenger.showSnackBar(SnackBar(
+      content: Text('已固定 $count 个模型到「我的社区模型」'),
+      backgroundColor: AppColors.success,
+    ));
+  }
+
+  /// 已固定的模型卡片：显示 AI 写的介绍、能力标签，可下载/移除。
+  Widget _buildSavedCard(SavedModelEntry entry, Color secondary) {
+    final model = entry.info;
+    final sourceLabel = switch (entry.source) {
+      'ai' => 'AI 精选',
+      'paste' => '粘贴解析',
+      _ => '手动',
+    };
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(model.name,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15)),
+                ),
+                Text(sourceLabel,
+                    style: TextStyle(fontSize: 10, color: secondary)),
+                IconButton(
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: '从我的社区模型移除（不影响已下载文件）',
+                  onPressed: () async {
+                    await _catalogStore.delete(model.id);
+                    await _loadSavedModels();
+                  },
+                ),
+              ],
+            ),
+            if (model.description.isNotEmpty)
+              Text(model.description,
+                  style: const TextStyle(fontSize: 12, height: 1.5)),
+            const SizedBox(height: 6),
+            if (model.tags.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Wrap(
+                  spacing: 6,
+                  children: [
+                    for (final tag in model.tags)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(tag,
+                            style: const TextStyle(
+                                fontSize: 10, color: AppColors.primary)),
+                      ),
+                  ],
+                ),
+              ),
+            Text('${model.sizeMb} · ${model.ramRequired} · ${model.quantization}',
+                style: TextStyle(fontSize: 11, color: secondary)),
+            const SizedBox(height: 8),
+            _buildModelCard(model),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildModelCard(LocalModelInfo model) {
@@ -775,6 +1090,38 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   ],
                 ],
               ),
+            if (model.mmProjUrl != null) ...[
+              const SizedBox(height: 6),
+              Builder(builder: (context) {
+                const visionTags = ['多模态'];
+                final isVision =
+                    model.tags.any((t) => visionTags.contains(t)) ||
+                        model.mmProjUrl != null;
+                if (!isVision) return const SizedBox.shrink();
+                final projectorName = model.mmProjUrl!.split('/').last;
+                final installed = _downloaded
+                    .any((d) => d.fileName == projectorName);
+                return TextButton.icon(
+                  onPressed: installed
+                      ? null
+                      : () => _downloadUrl(
+                            taskId: projectorName,
+                            url: model.mmProjUrl!,
+                            fileName: projectorName,
+                            displayName: '$projectorName（视觉投影）',
+                          ),
+                  icon: Icon(
+                      installed ? Icons.check : Icons.visibility_outlined,
+                      size: 18),
+                  label: Text(
+                    installed
+                        ? '视觉投影已安装 · 可看图'
+                        : '补装视觉投影（下载后即可发图片）',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                );
+              }),
+            ],
           ],
         ),
       ),

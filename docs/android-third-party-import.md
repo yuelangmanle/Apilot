@@ -34,6 +34,9 @@ Apilot 面向任意第三方 Android App 开放 API 方案互操作。所有导�
 | V2 回传方式 | `com.apilot.extra.RETURN_TRANSPORT` |
 | 声明签名 SHA-256 | `com.apilot.extra.SOURCE_SIGNATURE_SHA256` |
 | 文档 deep link | `apilot://import` |
+| 网关授权 Action | `com.apilot.intent.action.GRANT_GATEWAY` |
+| 网关授权回传 extra | `com.apilot.extra.GATEWAY_GRANT_JSON` |
+| 网关模式 extra | `com.apilot.extra.REQUESTED_SCOPE` (`loopback` \| `lan`) |
 
 调用方应使用 `setPackage("com.example.api_manager")`。深链接仅用于打开说明，绝不能传递 API Key。
 
@@ -214,9 +217,42 @@ Apilot 提供本地 OpenAI 兼容网关（127.0.0.1 或局域网 IP），第三�
 2. **获取网关 Token** - 局域网模式下需携带 `X-Gateway-Token` 请求头（在 Apilot 网关页面复制）。本机回环地址（127.0.0.1）无需 Token。
 3. **通过互操作通道获取网关描述符** - 使用 `PICK_API_CONFIG` 的 V2 协议时，返回结果中 `connection.baseUrl` 可指向网关地址。
 
+### 一键授予网关能力（推荐，v2.5.0+）
+
+第三方 App 不需要让用户手抄地址和 Token，可以直接发一个授权请求：
+
+```kotlin
+val intent = Intent("com.apilot.intent.action.GRANT_GATEWAY").apply {
+    setPackage("com.example.api_manager")
+    putExtra("com.apilot.extra.SOURCE_NAME", "我的应用")
+    putExtra("com.apilot.extra.REQUEST_ID", "grant-1")
+    // loopback = 仅本机（默认，最安全）；lan = 允许局域网设备
+    putExtra("com.apilot.extra.REQUESTED_SCOPE", "loopback")
+}
+grantLauncher.launch(intent)   // ActivityResultLauncher<Intent>
+```
+
+用户在 Apilot 里会看到确认页：选择用**本机模型**（离线推理）还是**云端配置**（转发，Key 不下发），
+并可以决定是否开放局域网访问。确认后 Apilot 启动网关并把结果回传：
+
+```kotlin
+override fun onActivityResult(resultCode: Int, data: Intent?) {
+    if (resultCode != Activity.RESULT_OK) return   // 用户拒绝：RESULT_CANCELED
+    val grant = JSONObject(data?.getStringExtra("com.apilot.extra.GATEWAY_GRANT_JSON") ?: return)
+    val baseUrl = grant.getString("baseUrl")   // http://127.0.0.1:8787/v1
+    val model   = grant.getString("model")     // 直接填进请求的 model 字段
+    val token   = grant.optString("token")     // 局域网模式才有
+    // 之后按 OpenAI 协议调用 baseUrl；局域网模式记得带 X-Gateway-Token: <token>
+}
+```
+
+回调 JSON 字段：`baseUrl`、`model`、`scope`（`loopback` / `lan`）、`token`（可空）、
+`headerName`（固定 `X-Gateway-Token`）、`apiKey`（本机模式可直接当占位 Key 用）。
+
 注意事项：
 - 网关仅在 Apilot 运行时可用。建议引导用户保持 Apilot 在前台或分屏。
 - 本机回环地址（127.0.0.1）无需 Token；局域网地址需 Token。
+- Apilot 侧的"本机模型"后端只支持文本对话；请求里带图片会返回 400 与明确说明。
 
 ## 取消、错误和安全
 

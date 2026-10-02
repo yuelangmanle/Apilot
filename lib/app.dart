@@ -29,6 +29,8 @@ import 'features/third_party_import/models/third_party_import_models.dart';
 import 'features/third_party_import/services/share_channel.dart';
 import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
 import 'features/third_party_import/screens/third_party_api_config_pick_screen.dart';
+import 'features/third_party_import/screens/third_party_gateway_grant_screen.dart';
+import 'features/third_party_import/services/third_party_gateway_grant_channel.dart';
 import 'features/third_party_import/screens/third_party_import_source_screen.dart';
 import 'features/third_party_import/services/third_party_api_config_pick_channel.dart';
 import 'features/third_party_import/services/third_party_import_channel.dart';
@@ -222,6 +224,8 @@ class _AppShellState extends State<AppShell>
       ThirdPartyImportChannel.instance;
   final ThirdPartyApiConfigPickChannel _thirdPartyApiConfigPickChannel =
       ThirdPartyApiConfigPickChannel.instance;
+  final ThirdPartyGatewayGrantChannel _gatewayGrantChannel =
+      ThirdPartyGatewayGrantChannel.instance;
   StreamSubscription<String>? _shareSubscription;
 
   static const List<Widget> _screens = [
@@ -260,6 +264,10 @@ class _AppShellState extends State<AppShell>
             .initialize(onRequest: _handleThirdPartyApiConfigPickRequest)
             .catchError((Object e) =>
                 debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
+        _gatewayGrantChannel
+            .initialize(onRequest: _handleGatewayGrantRequest)
+            .catchError((Object e) =>
+                debugPrint('[Apilot] 网关授权通道初始化失败: $e'));
         _initShareTarget();
       }
       ApiManagerApp.registerSyncCallbacks(context);
@@ -412,6 +420,20 @@ class _AppShellState extends State<AppShell>
     if (imported == true && mounted) {
       await context.read<ApiProvider>().loadApiConfigs();
     }
+  }
+
+  /// 第三方 App 请求"使用本地网关"：弹确认页 → 启动网关 → 回传地址与 Token。
+  Future<void> _handleGatewayGrantRequest(
+      GatewayGrantRequest request) async {
+    if (!mounted) return;
+    await context.read<ApiProvider>().loadApiConfigs();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) =>
+            ThirdPartyGatewayGrantScreen(request: request),
+      ),
+    );
   }
 
   Future<void> _handleThirdPartyApiConfigPickRequest(

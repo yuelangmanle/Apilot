@@ -360,7 +360,9 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_conversation.title,
+            // _conversation 异步初始化：就绪前回退到配置名，避免
+            // late 字段未初始化抛错（整页渲染成错误占位）。
+            Text(_ready ? _conversation.title : widget.apiConfig.name,
                 style: const TextStyle(fontSize: 16),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis),

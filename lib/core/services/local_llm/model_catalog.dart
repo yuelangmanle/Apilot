@@ -22,6 +22,21 @@ class ModelFileVariant {
       : sizeBytes >= 1024 * 1024 * 1024
           ? '${(sizeBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB'
           : sizeMb;
+
+  Map<String, dynamic> toJson() => {
+        'fileName': fileName,
+        'downloadUrl': downloadUrl,
+        'sizeBytes': sizeBytes,
+        'quantization': quantization,
+      };
+
+  static ModelFileVariant fromJson(Map<String, dynamic> json) =>
+      ModelFileVariant(
+        fileName: json['fileName'] as String? ?? '',
+        downloadUrl: json['downloadUrl'] as String? ?? '',
+        sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+        quantization: json['quantization'] as String? ?? 'Q4_K_M',
+      );
 }
 
 /// 内置本地模型目录：名称/描述/下载地址/量化等级/内存需求。
@@ -41,6 +56,9 @@ class LocalModelInfo {
   /// 仓库内全部可选文件（社区模型才有；内置目录为空）。
   final List<ModelFileVariant> variants;
 
+  /// 视觉投影文件（多模态模型需要它才能看图，可空）。
+  final String? mmProjUrl;
+
   const LocalModelInfo({
     required this.id,
     required this.name,
@@ -53,6 +71,7 @@ class LocalModelInfo {
     this.recommended = false,
     this.license,
     this.variants = const [],
+    this.mmProjUrl,
   });
 
   String get sizeMb => '${(sizeBytes / (1024 * 1024)).toStringAsFixed(0)} MB';
@@ -66,6 +85,9 @@ class LocalModelInfo {
         'quantization': quantization,
         'ramRequired': ramRequired,
         'tags': tags,
+        if (mmProjUrl != null) 'mmProjUrl': mmProjUrl,
+        if (variants.isNotEmpty)
+          'variants': variants.map((v) => v.toJson()).toList(),
       };
 
   static LocalModelInfo fromJson(Map<String, dynamic> json) => LocalModelInfo(
@@ -78,6 +100,13 @@ class LocalModelInfo {
         ramRequired: json['ramRequired'] as String? ?? '',
         tags: (json['tags'] as List?)?.cast<String>() ?? const [],
         recommended: json['recommended'] == true,
+        mmProjUrl: json['mmProjUrl'] as String?,
+        variants: (json['variants'] as List?)
+                ?.whereType<Map>()
+                .map((v) =>
+                    ModelFileVariant.fromJson(Map<String, dynamic>.from(v)))
+                .toList() ??
+            const [],
       );
 }
 
@@ -87,57 +116,127 @@ class LocalModelCatalog {
 
   static const List<LocalModelInfo> builtin = [
     LocalModelInfo(
+      id: 'qwen3-0.6b-q4km',
+      name: 'Qwen3-0.6B (Q4_K_M)',
+      description: '通义千问 3 超轻量版（0.37GB）。几乎任何手机都能跑，'
+          '适合快速问答与低配设备；支持深度思考开关。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf',
+      sizeBytes: 397284474,
+      quantization: 'Q4_K_M',
+      ramRequired: '~0.8 GB',
+      tags: ['中文', '超轻量', '可深度思考'],
+      license: 'Apache-2.0',
+    ),
+    LocalModelInfo(
       id: 'qwen3-1.7b-q4km',
       name: 'Qwen3-1.7B (Q4_K_M)',
-      description: '通义千问 1.7B 量化版。中文最强小模型，支持思考模式开关，'
-          '适合日常问答和轻量任务。约 1.4GB。',
+      description: '通义千问 3（1.03GB）。中文能力强、体积小，'
+          '日常问答和轻量任务的首选；支持深度思考开关。',
       downloadUrl:
           'https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf',
-      sizeBytes: 1400000000,
+      sizeBytes: 1105734656,
       quantization: 'Q4_K_M',
-      ramRequired: '~2 GB',
-      tags: ['中文', '轻量', '推荐'],
+      ramRequired: '~1.6 GB',
+      tags: ['中文', '轻量', '可深度思考'],
       recommended: true,
       license: 'Apache-2.0',
     ),
     LocalModelInfo(
       id: 'qwen3-4b-q4km',
       name: 'Qwen3-4B (Q4_K_M)',
-      description: '通义千问 4B 量化版。能力更强，支持思考模式开关，'
-          '适合需要更好推理质量的场景。约 2.5GB。',
+      description: '通义千问 3 4B（2.33GB）。中文与推理的平衡点，'
+          '适合主力使用；支持深度思考开关。',
       downloadUrl:
           'https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
-      sizeBytes: 2500000000,
+      sizeBytes: 2502239232,
       quantization: 'Q4_K_M',
       ramRequired: '~3.5 GB',
-      tags: ['中文', '推理', '推荐'],
+      tags: ['中文', '推理', '可深度思考'],
       recommended: true,
+      license: 'Apache-2.0',
+    ),
+    LocalModelInfo(
+      id: 'qwen3-4b-thinking-q4km',
+      name: 'Qwen3-4B-Thinking-2507 (Q4_K_M)',
+      description: '专为"深度思考"调优的 Qwen3 4B（2.33GB）。'
+          '数学、代码、多步推理更强，思考过程可折叠查看。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3-4B-Thinking-2507-GGUF/resolve/main/Qwen3-4B-Thinking-2507-Q4_K_M.gguf',
+      sizeBytes: 2502239232,
+      quantization: 'Q4_K_M',
+      ramRequired: '~3.5 GB',
+      tags: ['中文', '推理', '可深度思考'],
       license: 'Apache-2.0',
     ),
     LocalModelInfo(
       id: 'gemma-3-1b-it-q4km',
       name: 'Gemma 3 1B IT (Q4_K_M)',
-      description: 'Google Gemma 3 1B 指令调优版。英文能力优秀，多语言支持好。',
+      description: 'Google Gemma 3 1B（0.75GB）。英文与多语言表现好，'
+          '轻快省电，适合英文对话。',
       downloadUrl:
           'https://huggingface.co/ggml-org/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf',
-      sizeBytes: 800000000,
+      sizeBytes: 806546048,
       quantization: 'Q4_K_M',
-      ramRequired: '~1.5 GB',
+      ramRequired: '~1.4 GB',
       tags: ['英文', '轻量', 'Google'],
       license: 'Gemma Terms',
     ),
     LocalModelInfo(
+      id: 'gemma-3-4b-it-q4km',
+      name: 'Gemma 3 4B IT (Q4_K_M)',
+      description: 'Gemma 3 4B（2.32GB）多模态版：可看图。'
+          '下载后如需看图，再补装"视觉投影"文件（0.79GB）。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf',
+      sizeBytes: 2491081032,
+      quantization: 'Q4_K_M',
+      ramRequired: '~3.4 GB',
+      tags: ['多模态', '英文', 'Google'],
+      license: 'Gemma Terms',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/mmproj-F16.gguf',
+    ),
+    LocalModelInfo(
       id: 'llama-3.2-3b-q4km',
       name: 'Llama 3.2 3B (Q4_K_M)',
-      description: 'Meta Llama 3.2 3B 量化版。Meta 官方小模型，'
-          '英文对话和通用任务能力强。',
+      description: 'Meta Llama 3.2 3B（1.88GB）。英文对话与通用任务扎实，'
+          '生态成熟。',
       downloadUrl:
           'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-      sizeBytes: 2000000000,
+      sizeBytes: 2018634854,
       quantization: 'Q4_K_M',
-      ramRequired: '~2.5 GB',
+      ramRequired: '~2.7 GB',
       tags: ['英文', 'Meta'],
       license: 'Llama 3.2 Community',
+    ),
+    LocalModelInfo(
+      id: 'qwen2.5-vl-7b-q4km',
+      name: 'Qwen2.5-VL 7B (Q4_K_M)',
+      description: '通义千问视觉理解模型（4.36GB）多模态：能看图、读图表、'
+          '识别截图文字。需补装视觉投影文件（0.79GB）。',
+      downloadUrl:
+          'https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf',
+      sizeBytes: 4681513472,
+      quantization: 'Q4_K_M',
+      ramRequired: '~6.3 GB',
+      tags: ['多模态', '中文', '视觉'],
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf',
+    ),
+    LocalModelInfo(
+      id: 'deepseek-r1-distill-qwen-7b-q4km',
+      name: 'DeepSeek-R1-Distill-Qwen-7B (Q4_K_M)',
+      description: 'DeepSeek R1 蒸馏的 7B 推理模型（4.36GB）。'
+          '中文推理、数学解题强，会先输出思考过程。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
+      sizeBytes: 4681513472,
+      quantization: 'Q4_K_M',
+      ramRequired: '~6.3 GB',
+      tags: ['中文', '推理', '可深度思考'],
+      license: 'MIT',
     ),
   ];
 

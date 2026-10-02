@@ -49,6 +49,12 @@
                 <action android:name="com.apilot.intent.action.PICK_API_CONFIG"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
+            <!-- 一键授予本地网关能力：第三方 App 发这个 action，
+                 Apilot 弹确认框 → 启动网关 → 回传 baseUrl 与 Token。 -->
+            <intent-filter>
+                <action android:name="com.apilot.intent.action.GRANT_GATEWAY"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>
                 <category android:name="android.intent.category.DEFAULT"/>
