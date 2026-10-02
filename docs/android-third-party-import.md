@@ -206,6 +206,18 @@ putExtra("com.apilot.extra.MODEL_MODE", "all")
 }
 ```
 
+## 本地网关互操作
+
+Apilot 提供本地 OpenAI 兼容网关（127.0.0.1 或局域网 IP），第三方 App 可以：
+
+1. **作为客户端调用** - 将 base_url 指向 `http://127.0.0.1:<port>/v1`，即可使用 Apilot 中保存的 API 配置（Key 由 Apilot 注入，第三方 App 不需要知道真 Key）。
+2. **获取网关 Token** - 局域网模式下需携带 `X-Gateway-Token` 请求头（在 Apilot 网关页面复制）。本机回环地址（127.0.0.1）无需 Token。
+3. **通过互操作通道获取网关描述符** - 使用 `PICK_API_CONFIG` 的 V2 协议时，返回结果中 `connection.baseUrl` 可指向网关地址。
+
+注意事项：
+- 网关仅在 Apilot 运行时可用。建议引导用户保持 Apilot 在前台或分屏。
+- 本机回环地址（127.0.0.1）无需 Token；局域网地址需 Token。
+
 ## 取消、错误和安全
 
 - 用户取消授权或导入时，Activity Result 返回 `RESULT_CANCELED`，调用方不得把它当作失败重试或静默回退。

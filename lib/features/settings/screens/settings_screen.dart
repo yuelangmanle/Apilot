@@ -13,6 +13,7 @@ import '../../api_management/screens/group_manage_screen.dart';
 import '../../third_party_import/screens/third_party_import_docs_screen.dart';
 import '../../third_party_import/screens/third_party_interop_audit_screen.dart';
 import 'release_history_screen.dart';
+import 'ai_settings_screen.dart';
 import 'gateway_screen.dart';
 import '../../local_llm/screens/model_store_screen.dart';
 import 'privacy_screen.dart';
@@ -181,6 +182,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     context,
                     MaterialPageRoute(
                         builder: (context) => const GatewayScreen()),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.auto_awesome_outlined),
+                title: const Text('AI 设置'),
+                subtitle: const Text('选择 AI 功能使用的引擎和配置'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const AiSettingsScreen()),
                   );
                 },
               ),

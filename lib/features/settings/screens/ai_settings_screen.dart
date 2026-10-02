@@ -1,0 +1,142 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../../shared/theme/color_scheme.dart';
+import '../../api_management/providers/api_provider.dart';
+
+/// AI 功能设置：选择使用哪个 API 配置或本地模型来接管 AI 功能。
+class AiSettingsScreen extends StatefulWidget {
+  const AiSettingsScreen({super.key});
+
+  @override
+  State<AiSettingsScreen> createState() => _AiSettingsScreenState();
+}
+
+class _AiSettingsScreenState extends State<AiSettingsScreen> {
+  static const _aiSourceKey = 'apilot_ai_source';
+  static const _aiEnabledKey = 'apilot_ai_enabled';
+
+  String? _selectedConfigId;
+  bool _useLocalModel = false;
+  bool _aiEnabled = true;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _selectedConfigId = prefs.getString(_aiSourceKey);
+      _useLocalModel = prefs.getBool('apilot_ai_use_local') ?? false;
+      _aiEnabled = prefs.getBool(_aiEnabledKey) ?? true;
+    } catch (_) {}
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _save() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_aiSourceKey, _selectedConfigId ?? '');
+      await prefs.setBool('apilot_ai_use_local', _useLocalModel);
+      await prefs.setBool(_aiEnabledKey, _aiEnabled);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final configs = context.watch<ApiProvider>().allApiConfigs;
+    final secondary = Theme.of(context).brightness == Brightness.dark
+        ? AppColors.darkTextSecondary
+        : AppColors.textSecondary;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('AI 设置'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.check),
+            onPressed: () {
+              _save();
+              Navigator.pop(context);
+            },
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                SwitchListTile(
+                  title: const Text('启用 AI 功能'),
+                  subtitle:
+                      const Text('错误诊断 / 粘贴识别兜底 / 用量分析'),
+                  value: _aiEnabled,
+                  onChanged: (value) => setState(() => _aiEnabled = value),
+                  secondary: const Icon(Icons.auto_awesome),
+                ),
+                const Divider(height: 24),
+                Text('AI 引擎来源',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: secondary)),
+                const SizedBox(height: 8),
+                RadioListTile<bool>(
+                  title: const Text('云端 API 配置'),
+                  subtitle: const Text('使用下方选择的 API 配置'),
+                  value: false,
+                  groupValue: _useLocalModel,
+                  onChanged: (value) =>
+                      setState(() => _useLocalModel = value ?? false),
+                ),
+                if (!_useLocalModel)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16, bottom: 8),
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedConfigId,
+                      decoration: const InputDecoration(
+                        labelText: '选择 API 配置',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: configs
+                          .map((c) => DropdownMenuItem(
+                              value: c.id, child: Text(c.name)))
+                          .toList(),
+                      onChanged: (value) =>
+                          setState(() => _selectedConfigId = value),
+                    ),
+                  ),
+                RadioListTile<bool>(
+                  title: const Text('本地模型'),
+                  subtitle: const Text('使用模型商店中已下载的本地模型（完全离线）'),
+                  value: true,
+                  groupValue: _useLocalModel,
+                  onChanged: (value) =>
+                      setState(() => _useLocalModel = value ?? false),
+                ),
+                const SizedBox(height: 16),
+                Text('使用说明',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: secondary)),
+                const SizedBox(height: 8),
+                Text(
+                  '· AI 功能包括：错误诊断、粘贴识别兜底、请求体生成、用量分析\n'
+                  '· 不会将你的 API Key 发送给 AI——只发送任务相关的上下文\n'
+                  '· 云端配置使用你已有的 API Key，本地模型完全离线',
+                  style:
+                      TextStyle(fontSize: 12, height: 1.6, color: secondary),
+                ),
+              ],
+            ),
+    );
+  }
+}

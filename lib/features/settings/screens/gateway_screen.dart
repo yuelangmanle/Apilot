@@ -203,10 +203,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           enabled: !running,
                           controller: TextEditingController(
                               text: _gatewayToken),
-                          obscureText: true,
                           decoration: InputDecoration(
                             labelText: '网关 Token',
-                            helperText: '其他设备请求时需携带 X-Gateway-Token 头',
+                            helperText: '其他设备请求时需在 Header 中携带 X-Gateway-Token',
                             border: const OutlineInputBorder(),
                             isDense: true,
                             suffixIcon: IconButton(
