@@ -5,6 +5,7 @@ import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import 'local_chat_screen.dart';
 
 /// 模型商店：浏览内置模型 + 从 URL 导入 + 管理已下载模型。
 class ModelStoreScreen extends StatefulWidget {
@@ -89,6 +90,18 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     if (mounted) setState(() => _downloads.remove(model.id));
   }
 
+  void _openChat(DownloadedModel model) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LocalChatScreen(
+          modelPath: model.filePath,
+          modelName: model.name,
+        ),
+      ),
+    );
+  }
+
   Future<void> _deleteModel(DownloadedModel model) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -137,13 +150,25 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                         leading: const Icon(Icons.memory, color: AppColors.success),
                         title: Text(model.name,
                             style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text(model.sizeMb,
+                        subtitle: Text('点击开始对话 · ${model.sizeMb}',
                             style: TextStyle(fontSize: 12, color: secondary)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline,
-                              color: AppColors.error),
-                          onPressed: () => _deleteModel(model),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.chat_bubble_outline,
+                                  color: AppColors.primary),
+                              tooltip: '开始对话',
+                              onPressed: () => _openChat(model),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline,
+                                  color: AppColors.error),
+                              onPressed: () => _deleteModel(model),
+                            ),
+                          ],
                         ),
+                        onTap: () => _openChat(model),
                       ),
                     ),
                   const Divider(height: 24),
