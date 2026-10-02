@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../core/services/local_llm/model_catalog.dart';
+import '../../../core/services/local_llm/community_model_service.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -19,6 +20,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   final ModelDownloadService _downloader = ModelDownloadService();
   final Map<String, DownloadProgress> _downloads = {};
   List<DownloadedModel> _downloaded = [];
+  List<LocalModelInfo> _communityModels = [];
+  bool _loadingCommunity = false;
   bool _loading = true;
 
   @override
@@ -28,6 +31,23 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       if (mounted) setState(() {});
     });
     _refreshDownloaded();
+    _fetchCommunity();
+  }
+
+  Future<void> _fetchCommunity() async {
+    try {
+      final models = await CommunityModelService.fetchHuggingFaceModels();
+      if (mounted) {
+        setState(() {
+          _communityModels = models;
+          _loadingCommunity = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loadingCommunity = false);
+      }
+    }
   }
 
   Future<void> _refreshDownloaded() async {
@@ -131,7 +151,16 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
         : AppColors.textSecondary;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('模型商店')),
+      appBar: AppBar(
+        title: const Text('模型商店'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.content_paste),
+            tooltip: '粘贴模型链接',
+            onPressed: () => _importFromUrl(context),
+          ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -181,9 +210,147 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 ],
                 for (final model in LocalModelCatalog.builtin)
                   _buildModelCard(model),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Text('社区模型',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                            color: secondary)),
+                    const Spacer(),
+                    if (_loadingCommunity)
+                      const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                for (final model in _communityModels)
+                  _buildModelCard(model),
+                if (_communityModels.isEmpty && !_loadingCommunity)
+                  Center(
+                    child: Text('社区模型加载失败或无结果',
+                        style: TextStyle(
+                            fontSize: 12, color: secondary)),
+                  ),
               ],
             ),
     );
+  }
+
+  /// 粘贴模型链接：自动解析 HF/ModelScope 页面并显示可下载的量化版本。
+  Future<void> _importFromUrl(BuildContext context) async {
+    final controller = TextEditingController();
+    final messenger = ScaffoldMessenger.of(context);
+    final parsed = await showDialog<ModelUrlParseResult>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('粘贴模型链接'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('支持 HuggingFace、ModelScope 页面链接或直接的 .gguf 下载链接。'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                hintText: 'https://huggingface.co/...',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isEmpty) return;
+                final result = ModelUrlParser.parse(text);
+                Navigator.pop(dialogContext, result);
+              },
+              child: const Text('解析')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted) return;
+    if (parsed == null || parsed.isEmpty) return;
+
+    // 解析出多个版本时让用户选择
+    if (parsed.variants.isNotEmpty) {
+      final selectedUrl = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('选择量化版本'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < parsed.downloadUrls.length; i++)
+                ListTile(
+                  dense: true,
+                  title: Text(
+                      parsed.variants.length > i
+                          ? parsed.variants[i]
+                          : '变体 ${i + 1}',
+                      style: const TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                      parsed.downloadUrls[i].split('/').last,
+                      style: const TextStyle(fontSize: 11)),
+                  onTap: () => Navigator.pop(
+                      dialogContext, parsed.downloadUrls[i]),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消')),
+          ],
+        ),
+      );
+      if (selectedUrl == null) return;
+      // 下载选中的量化版本
+      final fileName = selectedUrl.split('/').last;
+      try {
+        await _downloader.download(selectedUrl, fileName,
+            expectedFileName: fileName);
+        messenger.showSnackBar(
+          SnackBar(
+              content: Text('已下载 $fileName'),
+              backgroundColor: AppColors.success),
+        );
+        await _refreshDownloaded();
+      } catch (e) {
+        messenger.showSnackBar(SnackBar(
+            content: Text('下载失败: $e'),
+            backgroundColor: AppColors.error));
+      }
+      return;
+    }
+
+    // 单个下载链接
+    for (final url in parsed.downloadUrls) {
+      try {
+        await _downloader.download(url, url.split('/').last,
+            expectedFileName: url.split('/').last);
+        messenger.showSnackBar(
+          SnackBar(
+              content: Text('已下载 ${parsed.modelName}'),
+              backgroundColor: AppColors.success),
+        );
+      } catch (e) {
+        messenger.showSnackBar(SnackBar(
+            content: Text('下载失败: $e'), backgroundColor: AppColors.error));
+      }
+    }
+    await _refreshDownloaded();
   }
 
   Widget _buildModelCard(LocalModelInfo model) {

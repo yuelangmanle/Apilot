@@ -87,19 +87,24 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                         fontSize: 14,
                         color: secondary)),
                 const SizedBox(height: 8),
-                RadioListTile<bool>(
+                ListTile(
                   title: const Text('云端 API 配置'),
                   subtitle: const Text('使用下方选择的 API 配置'),
-                  value: false,
-                  groupValue: _useLocalModel,
-                  onChanged: (value) =>
-                      setState(() => _useLocalModel = value ?? false),
+                  leading: Icon(
+                    !_useLocalModel
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    color: !_useLocalModel
+                        ? AppColors.primary
+                        : AppColors.textSecondary,
+                  ),
+                  onTap: () => setState(() => _useLocalModel = false),
                 ),
                 if (!_useLocalModel)
                   Padding(
                     padding: const EdgeInsets.only(left: 16, bottom: 8),
                     child: DropdownButtonFormField<String>(
-                      value: _selectedConfigId,
+                      initialValue: _selectedConfigId,
                       decoration: const InputDecoration(
                         labelText: '选择 API 配置',
                         border: OutlineInputBorder(),
@@ -113,13 +118,18 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                           setState(() => _selectedConfigId = value),
                     ),
                   ),
-                RadioListTile<bool>(
+                ListTile(
                   title: const Text('本地模型'),
                   subtitle: const Text('使用模型商店中已下载的本地模型（完全离线）'),
-                  value: true,
-                  groupValue: _useLocalModel,
-                  onChanged: (value) =>
-                      setState(() => _useLocalModel = value ?? false),
+                  leading: Icon(
+                    _useLocalModel
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    color: _useLocalModel
+                        ? AppColors.primary
+                        : AppColors.textSecondary,
+                  ),
+                  onTap: () => setState(() => _useLocalModel = true),
                 ),
                 const SizedBox(height: 16),
                 Text('使用说明',
