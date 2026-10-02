@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'download_task_store.dart';
+import 'model_storage_settings.dart';
 
 /// 下载状态。
 enum DownloadStatus { idle, downloading, paused, completed, failed, cancelled }
@@ -79,6 +81,15 @@ class ModelDownloadService {
   final HttpClient _client;
   final Map<String, DownloadProgress> _progressMap = {};
   DateTime? _lastTaskWrite;
+  int _attempt = 0;
+  static const int _maxAutoRetries = 3;
+
+  /// 错误信息去掉签名 URL（用户看不懂，而且很长）。
+  static String _cleanError(String raw) {
+    var text = raw.replaceAll(RegExp(r'https?://\S+'), '（下载源）');
+    text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return text.length > 200 ? '${text.substring(0, 200)}…' : text;
+  }
   final Set<String> _cancelRequested = {};
   final _progressController = StreamController<DownloadProgress>.broadcast();
 
@@ -96,9 +107,24 @@ class ModelDownloadService {
   }
 
   /// 获取模型存储目录。
+  /// 模型目录：跟随"存储位置"设置（默认应用私有；
+  /// 可切公共下载目录，权限不足会自动回退并给出提示）。
   static Future<Directory> modelsDir() async {
+    final (dir, warning) = await ModelStorageSettings.resolveDir();
+    if (warning != null) {
+      debugPrint('[Download] $warning');
+      lastStorageWarning = warning;
+    }
+    return dir;
+  }
+
+  /// 最近一次目录回退的原因（界面可提示一次）。
+  static String? lastStorageWarning;
+
+  /// 不考虑用户设置的"默认私有目录"（迁移时比对源目录用）。
+  static Future<Directory> privateModelsDir() async {
     final support = await getApplicationSupportDirectory();
-    final dir = Directory('${support.path}/models');
+    final dir = Directory(p.join(support.path, 'models'));
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return dir;
   }
@@ -115,6 +141,7 @@ class ModelDownloadService {
   }) async {
     // 清除上次可能残留的取消标记。
     _cancelRequested.remove(taskId);
+    _attempt = 0;
 
     final dir = await modelsDir();
     final fileName = expectedFileName ??
@@ -298,12 +325,37 @@ class ModelDownloadService {
         await sink?.flush();
         await sink?.close();
       } catch (_) {}
+      // 连接被中断（CDN 常见）：自动重试几次，用 Range 从断点继续。
+      final message = e.toString();
+      final retriable = _attempt < _maxAutoRetries &&
+          partFile.existsSync() &&
+          (message.contains('Connection closed') ||
+              message.contains('Connection reset') ||
+              message.contains('Connection terminated') ||
+              message.contains('SocketException') ||
+              message.contains('timed out') ||
+              message.contains('Software caused connection abort'));
+      if (retriable) {
+        _attempt++;
+        debugPrint('[Download] 连接中断，自动重试第 $_attempt 次（断点续传）');
+        _progressMap[taskId] = DownloadProgress(
+          taskId: taskId,
+          url: url,
+          filePath: finalPath,
+          status: DownloadStatus.downloading,
+          error: '连接中断，正在自动重试（第 $_attempt 次）',
+        );
+        _notify(taskId);
+        await Future<void>.delayed(Duration(seconds: 2 * _attempt));
+        return download(url, taskId,
+            onProgress: onProgress, expectedFileName: fileName);
+      }
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
         url: url,
         filePath: finalPath,
         status: DownloadStatus.failed,
-        error: e.toString(),
+        error: _cleanError(message),
       );
       _notify(taskId);
       // 失败也留痕：已下载的部分保留（.part 不删），记录错误供界面解释。
@@ -314,7 +366,7 @@ class ModelDownloadService {
         status: 'failed',
         receivedBytes: partFile.existsSync() ? partFile.lengthSync() : 0,
         totalBytes: 0,
-        error: e.toString(),
+        error: _cleanError(message),
       );
       rethrow;
     }

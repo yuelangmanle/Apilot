@@ -37,7 +37,10 @@ import 'package:path_provider/path_provider.dart';
 
 import 'core/services/ai/app_tools.dart';
 import 'core/services/local_llm/community_model_service.dart';
+import 'core/services/local_llm/download_task_store.dart';
+import 'core/services/local_llm/model_download_service.dart';
 import 'core/services/local_llm/model_repo_importer.dart';
+import 'core/services/local_llm/model_storage_settings.dart';
 import 'core/services/ai/tool_registry.dart';
 import 'core/services/usage_aggregator.dart';
 import 'features/local_llm/screens/html_editor_screen.dart';
@@ -446,8 +449,9 @@ class _AppShellState extends State<AppShell>
   void _initAiTools() {
     ToolRegistry.registerBuiltins();
     registerAppTools();
-    // 插件开关持久化（用户逐项控制）。
+    // 插件开关持久化（用户逐项控制）+ 模型存储位置。
     unawaited(ToolRegistry.loadEnabledFromPrefs());
+    unawaited(ModelStorageSettings.load());
     ToolHost.visionEnabled = false;
     ToolHost.screenshot = _captureScreenForTools;
     AppToolHost.listApis = () async {
@@ -502,6 +506,38 @@ class _AppShellState extends State<AppShell>
         download: download,
       );
       return saved;
+    };
+    ToolHost.downloadStatus = () async {
+      final tasks = await DownloadTaskStore.list();
+      if (tasks.isEmpty) return '当前没有下载任务。';
+      final buffer = StringBuffer('下载任务：\n');
+      for (final task in tasks.take(10)) {
+        buffer.writeln('- ${task.fileName}｜${task.status}｜'
+            '${task.receivedLabel}'
+            '${task.totalBytes > 0 ? ' / ${task.totalLabel}' : ''}'
+            '${task.error != null ? '｜${task.error}' : ''}');
+      }
+      return buffer.toString();
+    };
+    ToolHost.listDownloaded = () async {
+      final files = await ModelDownloadService.listDownloadedModels();
+      if (files.isEmpty) return '还没有已下载的本地模型。';
+      final buffer = StringBuffer('已下载模型（可离线对话）：\n');
+      for (final file in files) {
+        final size = file.lengthSync();
+        buffer.writeln('- ${file.uri.pathSegments.last}｜'
+            '${(size / (1024 * 1024)).toStringAsFixed(0)} MB');
+      }
+      return buffer.toString();
+    };
+    // AI 触发的下载用独立下载服务：不必先打开模型商店也能下。
+    ModelRepoImporter.onDownload = (url, fileName) async {
+      final downloader = ModelDownloadService();
+      try {
+        await downloader.download(url, fileName, expectedFileName: fileName);
+      } finally {
+        downloader.dispose();
+      }
     };
     AppToolHost.openPage = (page) async {
       if (!mounted) return 'App 未就绪';

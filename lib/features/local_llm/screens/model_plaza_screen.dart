@@ -36,6 +36,7 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
   bool _hasMore = true;
   String? _error;
   int? _deviceRamMb;
+  String? _resolvingDetail;
   Timer? _debounce;
 
   @override
@@ -232,7 +233,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
   }
 
   Widget _buildCard(PlazaModel model, Color secondary) {
-    final canFit = _deviceRamMb == null
+    final resolving = _resolvingDetail == model.info.id;
+    final canFit = model.info.sizeBytes <= 0 || _deviceRamMb == null
         ? null
         : model.bundleSizeGb * 1.35 * 1024 <= _deviceRamMb!;
     return Card(
@@ -299,10 +301,12 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
             ),
             const SizedBox(height: 6),
             Text(
-              '主模型 ${model.info.sizeMb}'
-              '${model.projector != null ? ' + 视觉投影 ${model.projector!.sizeLabel}' : ''}'
-              ' · ${model.info.ramRequired}'
-              ' · ${model.downloads} 次下载',
+              model.info.sizeBytes > 0
+                  ? '主模型 ${model.info.sizeMb}'
+                      '${model.projector != null ? ' + 视觉投影 ${model.projector!.sizeLabel}' : ''}'
+                      ' · ${model.info.ramRequired}'
+                      ' · ${model.downloads} 次下载'
+                  : '${model.downloads} 次下载 · 点「详情」解析真实体积',
               style: TextStyle(fontSize: 11, color: secondary),
             ),
             const SizedBox(height: 8),
@@ -310,11 +314,17 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    icon: const Icon(Icons.download, size: 18),
-                    label: Text(model.projector != null
-                        ? '下载（含看图）'
-                        : '下载模型'),
-                    onPressed: () => _download(model),
+                    icon: resolving
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.download, size: 18),
+                    // 列表阶段还不知道真实量化版本：先解析再下载，避免下错文件。
+                    label: Text(resolving
+                        ? '解析中…'
+                        : (model.info.sizeBytes > 0 ? '下载模型' : '解析并下载')),
+                    onPressed: resolving ? null : () => _download(model),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -338,6 +348,15 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
           content: Text('当前入口未接入下载（请从模型商店进入）')));
       return;
     }
+    // 列表阶段拿到的条目还没解析真实文件：先解析（含视觉投影一起下）。
+    if (model.info.sizeBytes <= 0) {
+      final primary = widget.onDownloadRequested;
+      if (primary == null) return;
+      await _showDetail(model, Theme.of(context).brightness == Brightness.dark
+          ? AppColors.darkTextSecondary
+          : AppColors.textSecondary);
+      return;
+    }
     handler(
       url: model.info.downloadUrl,
       fileName: model.info.downloadUrl.split('/').last,
@@ -352,7 +371,30 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
     }
   }
 
-  void _showDetail(PlazaModel model, Color secondary) {
+  /// 详情：按需解析真实文件清单（列表阶段不做，避免卡死）。
+  Future<void> _showDetail(PlazaModel model, Color secondary) async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _resolvingDetail = model.info.id);
+    PlazaModel? resolved;
+    try {
+      resolved = await ModelPlazaService.resolveDetail(
+          model, deviceRamMb: _deviceRamMb);
+    } catch (e) {
+      debugPrint('[Plaza] 详情解析失败: $e');
+    }
+    if (!mounted) return;
+    setState(() => _resolvingDetail = null);
+    if (resolved == null) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('没能解析这个仓库的文件清单：可能网络受限（试试挂 VPN）'
+            '或该仓库不含 GGUF。'),
+        backgroundColor: AppColors.warning,
+        duration: Duration(seconds: 4),
+      ));
+      return;
+    }
+    final detail = resolved;
+    if (!mounted) return;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -364,26 +406,26 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
             controller: scrollController,
             padding: const EdgeInsets.all(16),
             children: [
-              Text(model.info.name,
+              Text(detail.info.name,
                   style: const TextStyle(
                       fontWeight: FontWeight.bold, fontSize: 16)),
               const SizedBox(height: 4),
-              Text(model.info.description,
+              Text(detail.info.description,
                   style: TextStyle(fontSize: 12, color: secondary)),
               const SizedBox(height: 12),
-              if (model.capabilityTags.isNotEmpty) ...[
+              if (detail.capabilityTags.isNotEmpty) ...[
                 const Text('能力',
                     style:
                         TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                 const SizedBox(height: 4),
-                Text(model.capabilityTags.join(' · '),
+                Text(detail.capabilityTags.join(' · '),
                     style: const TextStyle(fontSize: 12)),
                 const SizedBox(height: 12),
               ],
               const Text('文件（真实体积）',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               const SizedBox(height: 4),
-              for (final variant in model.info.variants.take(12))
+              for (final variant in detail.info.variants.take(12))
                 ListTile(
                   dense: true,
                   contentPadding: EdgeInsets.zero,
@@ -405,7 +447,7 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                     },
                   ),
                 ),
-              if (model.projector != null) ...[
+              if (detail.projector != null) ...[
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.all(10),
@@ -421,7 +463,7 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                               fontSize: 12, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
                       Text(
-                        '${model.projector!.fileName} · ${model.projector!.sizeLabel}\n'
+                        '${detail.projector!.fileName} · ${detail.projector!.sizeLabel}\n'
                         'mmproj 是模型专用的（不能跨模型混用），这份与当前模型配套。',
                         style: const TextStyle(fontSize: 11, height: 1.4),
                       ),
@@ -432,22 +474,22 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
               const SizedBox(height: 16),
               FilledButton.icon(
                 icon: const Icon(Icons.download),
-                label: Text(model.projector != null
+                label: Text(detail.projector != null
                     ? '下载完整包（模型 + 视觉投影）'
-                    : '下载模型'),
+                    : '下载 ${detail.info.quantization}（${detail.info.sizeMb}）'),
                 onPressed: () {
-                  _download(model);
+                  _download(detail);
                   Navigator.pop(sheetContext);
                 },
               ),
-              if (model.projector != null) ...[
+              if (detail.projector != null) ...[
                 const SizedBox(height: 8),
                 OutlinedButton(
                   onPressed: () {
                     widget.onDownloadRequested?.call(
-                      url: model.info.downloadUrl,
-                      fileName: model.info.downloadUrl.split('/').last,
-                      displayName: model.info.name,
+                      url: detail.info.downloadUrl,
+                      fileName: detail.info.downloadUrl.split('/').last,
+                      displayName: detail.info.name,
                     );
                     Navigator.pop(sheetContext);
                   },

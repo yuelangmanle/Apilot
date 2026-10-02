@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 
 import 'package:flutter/material.dart';
 
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../core/services/local_llm/download_task_store.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
+import '../../../core/services/local_llm/model_storage_settings.dart';
 import '../../../core/services/storage_cleanup_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import 'local_chat_screen.dart';
@@ -131,6 +135,113 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     );
   }
 
+  /// 切换模型存储位置（可把已下载的模型一并搬过去）。
+  Future<void> _changeStorageLocation() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final isAndroid = Platform.isAndroid;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              dense: true,
+              title: Text('模型存储位置',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              subtitle: Text('公共目录在系统文件管理器里能直接看到模型文件',
+                  style: TextStyle(fontSize: 12)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.lock_outline, size: 20),
+              title: const Text('应用私有目录（默认）', style: TextStyle(fontSize: 14)),
+              trailing: ModelStorageSettings.mode == 'private'
+                  ? const Icon(Icons.check, size: 18, color: AppColors.success)
+                  : null,
+              onTap: () => Navigator.pop(sheetContext, 'private'),
+            ),
+            if (isAndroid)
+              ListTile(
+                leading: const Icon(Icons.download_outlined, size: 20),
+                title: const Text('公共下载目录 Download/Apilot',
+                    style: TextStyle(fontSize: 14)),
+                subtitle: const Text('需要"所有文件访问"权限',
+                    style: TextStyle(fontSize: 11)),
+                trailing: ModelStorageSettings.mode == 'public'
+                    ? const Icon(Icons.check, size: 18, color: AppColors.success)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, 'public'),
+              ),
+            if (!isAndroid)
+              ListTile(
+                leading: const Icon(Icons.folder_open, size: 20),
+                title: const Text('选择自定义目录', style: TextStyle(fontSize: 14)),
+                trailing: ModelStorageSettings.mode == 'custom'
+                    ? const Icon(Icons.check, size: 18, color: AppColors.success)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, 'custom'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+
+    var customDir = ModelStorageSettings.customDir;
+    if (choice == 'custom') {
+      final picked = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: '选择模型存放目录');
+      if (picked == null || picked.isEmpty) return;
+      customDir = picked;
+    }
+
+    final oldDir = await ModelDownloadService.modelsDir();
+    await ModelStorageSettings.setMode(choice, customDir: customDir);
+    if (!mounted) return;
+    final (newDir, warning) = await ModelStorageSettings.resolveDir();
+    if (warning != null) {
+      messenger.showSnackBar(SnackBar(
+          content: Text(warning),
+          backgroundColor: AppColors.warning,
+          duration: const Duration(seconds: 5)));
+      await _refresh();
+      return;
+    }
+    if (newDir.path == oldDir.path) {
+      await _refresh();
+      return;
+    }
+
+    // 问一句要不要把已有模型搬过去（默认搬，避免"模型看不见了"）。
+    final move = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('搬移已下载的模型？'),
+        content: Text('新位置：${newDir.path}\n'
+            '把已下载的模型与未完成数据搬过去后，列表会照常显示；'
+            '不搬的话旧文件仍留在原目录（空间不会自动释放）。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('不搬')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('搬过去')),
+        ],
+      ),
+    );
+    if (move == true) {
+      final (moved, failed) = await ModelStorageSettings.moveModels(
+          oldDir, newDir);
+      messenger.showSnackBar(SnackBar(
+        content: Text('已搬移 $moved 个文件'
+            '${failed > 0 ? '，$failed 个失败（可稍后重试）' : ''}'),
+        backgroundColor: failed > 0 ? AppColors.warning : AppColors.success,
+      ));
+    }
+    await _refresh();
+  }
+
   Future<void> _openCleanup() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -145,11 +256,16 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     super.dispose();
   }
 
-  /// 失败/中断的任务（排除正在下载的与已完成的）。
+  /// 真失败的任务（**不含手动暂停**：暂停只算"未完成"，避免同一任务
+  /// 同时出现在两个区块里）。
   List<DownloadTask> get _failedTasks => _tasks
       .where((t) =>
-          !t.isCompleted && !_active.containsKey(t.id) && !t.isActive)
+          t.isFailed && !_active.containsKey(t.id))
       .toList();
+
+  /// 失败任务对应的文件名集合（未完成区块据此去重）。
+  Set<String> get _failedFileNames =>
+      _failedTasks.map((t) => t.fileName).toSet();
 
   /// 失败卡片：说明原因 + 已占空间 + 重试/删除。
   Widget _buildFailedCard(DownloadTask task, Color secondary) {
@@ -206,8 +322,11 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     );
   }
 
-  String _shortError(String error) =>
-      error.length > 120 ? '${error.substring(0, 120)}…' : error;
+  String _shortError(String error) {
+    final cleaned =
+        error.replaceAll(RegExp(r'https?://\S+'), '（下载源）').trim();
+    return cleaned.length > 120 ? '${cleaned.substring(0, 120)}…' : cleaned;
+  }
 
   Future<void> _resumeTask(DownloadTask task) async {
     if (task.url.isEmpty) return;
@@ -317,7 +436,25 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                                 ],
                               ),
                             ),
-                        const SizedBox(height: 8),
+                        const Divider(height: 16),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          leading: const Icon(Icons.folder_outlined, size: 20),
+                          title: const Text('存储位置',
+                              style: TextStyle(fontSize: 13)),
+                          subtitle: Text(
+                            ModelStorageSettings.mode == 'public'
+                                ? '公共下载目录：Download/Apilot（文件管理器可见）'
+                                : ModelStorageSettings.mode == 'custom'
+                                    ? '自定义目录：${ModelStorageSettings.customDir}'
+                                    : '应用私有目录（默认；安卓上不好直接查看）',
+                            style: TextStyle(fontSize: 11, color: secondary),
+                          ),
+                          trailing: const Icon(Icons.chevron_right, size: 18),
+                          onTap: () => _changeStorageLocation(),
+                        ),
+                        const SizedBox(height: 4),
                         SizedBox(
                           width: double.infinity,
                           child: OutlinedButton.icon(
@@ -361,7 +498,9 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 // ── 未完成（可续传） ────────────────────────────────────
                 // 正在下载的任务已在上方展示，这里不再重复列出。
                 if (_partials
-                    .where((p) => !_active.containsKey(p.fileName))
+                    .where((p) =>
+                        !_active.containsKey(p.fileName) &&
+                        !_failedFileNames.contains(p.fileName))
                     .isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text('未完成的下载',
@@ -370,8 +509,9 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                           fontSize: 15,
                           color: secondary)),
                   const SizedBox(height: 8),
-                  for (final partial in _partials
-                      .where((p) => !_active.containsKey(p.fileName)))
+                  for (final partial in _partials.where((p) =>
+                      !_active.containsKey(p.fileName) &&
+                      !_failedFileNames.contains(p.fileName)))
                     _buildPartialCard(partial, secondary),
                 ],
 

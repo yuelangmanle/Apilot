@@ -113,6 +113,22 @@ class ToolRegistry {
           '写入「我的社区模型」并可立即下载',
     ),
     ToolCategory(
+      id: 'news',
+      label: '新闻与百科',
+      description: '按关键词取最新新闻（RSS，带日期与来源）与维基百科摘要，'
+          '比通用搜索更适合"今天有什么新闻"',
+    ),
+    ToolCategory(
+      id: 'github',
+      label: 'GitHub 搜索',
+      description: '搜索开源仓库（找模型、找工具、看人气）',
+    ),
+    ToolCategory(
+      id: 'downloads',
+      label: '下载管理',
+      description: '查询模型下载进度、列出已下载/未完成、继续或暂停下载',
+    ),
+    ToolCategory(
       id: 'time',
       label: '时间与日期',
       description: '告诉模型今天的日期时间（模型自己不知道"现在"）',
@@ -140,6 +156,13 @@ class ToolRegistry {
       debugPrint('[Tools] 读取插件开关失败: $e');
     }
   }
+
+  /// 立即改内存态（界面乐观更新用；随后仍需 [setCategoryEnabled] 落盘）。
+  static void enableCategoryInMemory(String category) =>
+      _disabled.remove(category);
+
+  static void disableCategoryInMemory(String category) =>
+      _disabled.add(category);
 
   static Future<void> setCategoryEnabled(String category, bool enabled) async {
     if (enabled) {
@@ -290,6 +313,11 @@ class ToolRegistry {
     register(_todoReadTool);
     register(_screenshotTool);
     register(_currentTimeTool);
+    register(_newsSearchTool);
+    register(_wikipediaTool);
+    register(_githubSearchTool);
+    register(_downloadStatusTool);
+    register(_listDownloadedTool);
     register(_memorySaveTool);
     register(_memorySearchTool);
     register(_modelSearchTool);
@@ -593,6 +621,177 @@ class ToolRegistry {
     }
   }
 
+  // ── 新闻（RSS，稳定且带日期） ───────────────────────────────────
+
+  static final AiTool _newsSearchTool = AiTool(
+    name: 'news_search',
+    category: 'news',
+    description: '按关键词获取最新新闻（带发布时间与来源）。'
+        '问"今天的新闻/最新动态"优先用这个，比通用搜索准。',
+    parameters: '{"query":"人工智能 国际","limit":8}',
+    run: (args) async {
+      final query = args['query']?.toString().trim() ?? '';
+      if (query.isEmpty) return '错误：query 不能为空';
+      final limit = (args['limit'] as num?)?.toInt() ?? 8;
+
+      // 依次尝试：Bing 新闻 RSS → Google 新闻 RSS → 百度新闻 RSS。
+      final feeds = <(String, String)>[
+        ('Bing 新闻',
+            'https://www.bing.com/news/search?q=${Uri.encodeQueryComponent(query)}&format=RSS'),
+        ('Google 新闻',
+            'https://news.google.com/rss/search?q=${Uri.encodeQueryComponent(query)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans'),
+        ('百度新闻',
+            'https://news.baidu.com/ns?word=${Uri.encodeQueryComponent(query)}&tn=newsrss&sr=0&cl=2&rn=20'),
+      ];
+      for (final (engine, url) in feeds) {
+        final xml = await _httpGet(Uri.parse(url));
+        if (xml == null) continue;
+        final items = _parseRss(xml).take(limit).toList();
+        if (items.isEmpty) continue;
+        final buffer = StringBuffer('「$query」最新新闻（$engine，'
+            '${items.length} 条）：\n');
+        for (final item in items) {
+          buffer.writeln('- ${item.$1}');
+          if (item.$2.isNotEmpty) buffer.writeln('  ${item.$2}');
+          if (item.$3.isNotEmpty) buffer.writeln('  ${item.$3}');
+        }
+        return buffer.toString();
+      }
+      return '新闻获取失败：三个新闻源都不可达（可检查网络或换个关键词）。';
+    },
+  );
+
+  /// 极简 RSS/Atom 解析：title / link / pubDate。
+  static List<(String title, String link, String date)> _parseRss(String xml) {
+    final results = <(String, String, String)>[];
+    final itemPattern =
+        RegExp(r'<item[\s>][\s\S]*?</item>', caseSensitive: false);
+    for (final item in itemPattern.allMatches(xml)) {
+      final chunk = item.group(0)!;
+      String pick(String tag) {
+        final match =
+            RegExp('<$tag[^>]*>([\\s\\S]*?)</$tag>', caseSensitive: false)
+                .firstMatch(chunk);
+        var value = match?.group(1) ?? '';
+        value = value.replaceAll(
+            RegExp(r'<!\[CDATA\[(.*?)\]\]>', dotAll: true), r'$1');
+        value = _htmlToText(value);
+        return value.trim();
+      }
+
+      final title = pick('title');
+      if (title.isEmpty) continue;
+      final link = pick('link');
+      final date = pick('pubDate');
+      results.add((title, link, date));
+    }
+    return results;
+  }
+
+  // ── 维基百科 ────────────────────────────────────────────────────
+
+  static final AiTool _wikipediaTool = AiTool(
+    name: 'wikipedia',
+    category: 'news',
+    description: '查询维基百科条目摘要（概念、人物、事件的背景知识）。',
+    parameters: '{"query":"Transformer 模型"}',
+    run: (args) async {
+      final query = args['query']?.toString().trim() ?? '';
+      if (query.isEmpty) return '错误：query 不能为空';
+      // 先中文，再英文。
+      for (final lang in ['zh', 'en']) {
+        final searchUrl = Uri.parse(
+            'https://$lang.wikipedia.org/w/api.php?action=query&format=json'
+            '&list=search&srsearch=${Uri.encodeQueryComponent(query)}&srlimit=1');
+        final raw = await _httpGet(searchUrl);
+        if (raw == null) continue;
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is! Map) continue;
+          final queryNode = decoded['query'];
+          if (queryNode is! Map) continue;
+          final list = queryNode['search'];
+          if (list is! List || list.isEmpty) continue;
+          final title = (list.first as Map)['title']?.toString() ?? '';
+          if (title.isEmpty) continue;
+          final summaryUrl = Uri.parse(
+              'https://$lang.wikipedia.org/api/rest_v1/page/summary/${Uri.encodeComponent(title)}');
+          final summaryRaw = await _httpGet(summaryUrl);
+          if (summaryRaw == null) continue;
+          final summary = jsonDecode(summaryRaw);
+          if (summary is! Map) continue;
+          final extract = summary['extract']?.toString() ?? '';
+          if (extract.isEmpty) continue;
+          return '【$title】（$lang 维基）\n$extract';
+        } catch (e) {
+          debugPrint('[Tools] wiki 解析失败: $e');
+        }
+      }
+      return '没有找到「$query」的维基条目。';
+    },
+  );
+
+  // ── GitHub 搜索 ─────────────────────────────────────────────────
+
+  static final AiTool _githubSearchTool = AiTool(
+    name: 'github_search',
+    category: 'github',
+    description: '搜索 GitHub 仓库（找模型实现、工具、看 star 数）。',
+    parameters: '{"query":"gguf vision model","limit":5}',
+    run: (args) async {
+      final query = args['query']?.toString().trim() ?? '';
+      if (query.isEmpty) return '错误：query 不能为空';
+      final limit = (args['limit'] as num?)?.toInt() ?? 5;
+      final raw = await _httpGet(Uri.parse(
+          'https://api.github.com/search/repositories?q=${Uri.encodeQueryComponent(query)}'
+          '&sort=stars&order=desc&per_page=$limit'));
+      if (raw == null) return 'GitHub 搜索失败：网络不可达或限流。';
+      try {
+        final decoded = jsonDecode(raw);
+        final items =
+            (decoded is Map ? decoded['items'] : null) as List? ?? const [];
+        if (items.isEmpty) return '没有搜到相关仓库。';
+        final buffer = StringBuffer('GitHub「$query」结果：\n');
+        for (final item in items.whereType<Map>()) {
+          buffer.writeln('- ${item['full_name']}（★${item['stargazers_count']}，'
+              '${item['language'] ?? '—'}）');
+          final desc = item['description']?.toString() ?? '';
+          if (desc.isNotEmpty) buffer.writeln('  $desc');
+          buffer.writeln('  ${item['html_url']}');
+        }
+        return buffer.toString();
+      } catch (e) {
+        return 'GitHub 结果解析失败：$e';
+      }
+    },
+  );
+
+  // ── 下载管理 ────────────────────────────────────────────────────
+
+  static final AiTool _downloadStatusTool = AiTool(
+    name: 'model_download_status',
+    category: 'downloads',
+    description: '查看模型下载情况（进行中/失败/未完成，含已下载字节与原因）。',
+    parameters: '{}',
+    run: (args) async {
+      final handler = ToolHost.downloadStatus;
+      if (handler == null) return '下载状态不可用（宿主未注册）';
+      return handler();
+    },
+  );
+
+  static final AiTool _listDownloadedTool = AiTool(
+    name: 'model_list_downloaded',
+    category: 'downloads',
+    description: '列出已经下载好的本地模型（可离线对话的）。',
+    parameters: '{}',
+    run: (args) async {
+      final handler = ToolHost.listDownloaded;
+      if (handler == null) return '本地模型列表不可用（宿主未注册）';
+      return handler();
+    },
+  );
+
   // ── 时间 ────────────────────────────────────────────────────────
 
   static final AiTool _currentTimeTool = AiTool(
@@ -869,6 +1068,12 @@ class ToolHost {
 
   /// 模型入库（解析仓库 → 存进"我的社区模型"，可选立即下载）。
   static Future<String> Function(String repo, bool download)? saveModel;
+
+  /// 下载状态（进行中/失败/未完成）。
+  static Future<String> Function()? downloadStatus;
+
+  /// 已下载模型清单。
+  static Future<String> Function()? listDownloaded;
 }
 
 /// 是否公网地址（拒绝本机、内网、保留地址）。

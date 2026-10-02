@@ -80,6 +80,8 @@ class AiService {
     String? systemPrompt,
     required List<ApiConfig> configs,
     LocalLlmEngine? localEngine,
+    /// 指定用哪个配置（云端对话页传自己的配置，不看全局设置）。
+    ApiConfig? preferredConfig,
     int maxTokens = 512,
   }) async {
     if (!await isEnabled()) return null;
@@ -102,13 +104,17 @@ class AiService {
             .timeout(const Duration(minutes: 3));
       }
 
-      final configId = prefs.getString(_sourceKey);
-      if (configId == null || configId.isEmpty) return null;
-      ApiConfig? config;
-      for (final candidate in configs) {
-        if (candidate.id == configId) {
-          config = candidate;
-          break;
+      // ① 对话自己指定的配置优先（云端对话页）；
+      // ② 否则按全局"AI 设置"里的来源。
+      var config = preferredConfig;
+      if (config == null) {
+        final configId = prefs.getString(_sourceKey);
+        if (configId == null || configId.isEmpty) return null;
+        for (final candidate in configs) {
+          if (candidate.id == configId) {
+            config = candidate;
+            break;
+          }
         }
       }
       if (config == null) return null;

@@ -9,6 +9,7 @@ import '../../../core/services/ai/tool_registry.dart';
 import '../../../core/services/api_service.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../widgets/chat_code_block.dart';
 import '../widgets/tool_panel.dart';
 import '../../api_management/providers/api_provider.dart';
 import 'conversation_list_screen.dart';
@@ -110,6 +111,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         final result = await agent.AgentRunner.run(
           userPrompt: text,
           configs: configs,
+          // 用本对话自己的配置（不看全局 AI 设置）。
+          cloudConfig: widget.apiConfig,
           history: history.length > 6
               ? history.sublist(history.length - 6)
               : history,
@@ -461,7 +464,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           IconButton(
             icon: Icon(_toolsEnabled ? Icons.extension : Icons.extension_off,
                 color: _toolsEnabled ? AppColors.primary : null),
-            tooltip: _toolsEnabled ? '插件已开启（点击逐项设置）' : '插件已关闭',
+            tooltip: _toolsEnabled ? '插件已开启（点击设置）' : '插件未开启（点击设置）',
             onPressed: () => showToolPanel(
               context,
               toolsEnabled: _toolsEnabled,
@@ -633,17 +636,14 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                 record.thinking != null &&
                 record.thinking!.isNotEmpty)
               _thinkingPanel(record.thinking!, index, isDark),
-            SelectableText(
-              record.text,
-              style: TextStyle(
-                fontSize: 14,
-                height: 1.5,
-                color: isUser
-                    ? Colors.white
-                    : (isDark
-                        ? AppColors.darkTextPrimary
-                        : AppColors.textPrimary),
-              ),
+            ChatMessageBody(
+              text: record.text,
+              isUser: isUser,
+              textColor: isUser
+                  ? Colors.white
+                  : (isDark
+                      ? AppColors.darkTextPrimary
+                      : AppColors.textPrimary),
             ),
           ],
         ),

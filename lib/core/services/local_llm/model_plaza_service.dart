@@ -203,33 +203,65 @@ class ModelPlazaService {
     }
     if (filter.chineseOnly && !PlazaModel._isChinese(name)) return null;
 
-    final files = await CommunityModelService.resolveHuggingFaceRepo(
-        id.split('/').first, id.split('/').sublist(1).join('/'));
-    if (files.isEmpty) return null;
+    // 列表阶段**不逐个仓库拉文件清单**（15 个模型 = 15 次请求，会像卡死）；
+    // 只用名字做家族判断，真实文件在详情页按需解析。
+    final heuristicVision = ModelCapabilities.isVisionFamily(name) ||
+        name.toLowerCase().contains('vl');
+    if (filter.visionOnly && !heuristicVision) return null;
+    if (filter.maxSizeGb > 0) {
+      // 体积筛选在列表阶段只能放宽处理（真实体积要进详情页才知道）。
+      // 这里不拦，详情页会给出真实体积与"装得下吗"。
+    }
 
-    final projector = _pickProjector(files);
-    // 硬事实：仓库有 mmproj → 该仓库这份模型能看图。
-    if (filter.visionOnly && projector == null) return null;
-
-    final mainFiles = files
-        .where((f) => !ModelCapabilities.isProjectorFile(f.fileName))
-        .toList();
-    if (mainFiles.isEmpty) return null;
-    final recommended = CommunityModelService.pickVariant(mainFiles,
-            deviceRamMb: deviceRamMb) ??
-        mainFiles.first;
-
-    double totalGb = (recommended.sizeBytes + (projector?.sizeBytes ?? 0)) /
-        (1024 * 1024 * 1024);
-    // 体积筛选：投影一起算（用户要下就得两个都下）。
-    if (totalGb <= 0) totalGb = 0;
-    if (filter.maxSizeGb > 0 && totalGb > filter.maxSizeGb) return null;
-
+    final downloads = (item['downloads'] as num?)?.toInt() ?? 0;
+    final likes = (item['likes'] as num?)?.toInt() ?? 0;
     return PlazaModel(
       info: LocalModelInfo(
         id: 'hf_$id',
         name: name,
-        description: 'HuggingFace · ${item['downloads'] ?? 0} 次下载'
+        description: 'HuggingFace · $downloads 次下载 · $likes 赞'
+            '（点「详情」查看真实文件与体积）',
+        // 占位地址：进详情页会解析成真实文件清单。
+        downloadUrl: 'https://huggingface.co/$id',
+        sizeBytes: 0,
+        quantization: '待解析',
+        ramRequired: '—',
+        tags: ['HuggingFace'],
+      ),
+      hasProjector: heuristicVision,
+      supportsThinking: ModelCapabilities.supportsThinking(name),
+      downloads: downloads,
+      likes: likes,
+      sourceLabel: 'HuggingFace',
+    );
+  }
+
+  /// 详情页按需解析：拿到真实文件清单与体积（含视觉投影）。
+  static Future<PlazaModel?> resolveDetail(
+    PlazaModel model, {
+    int? deviceRamMb,
+  }) async {
+    final id = model.info.id.replaceFirst('hf_', '');
+    final segments = id.split('/');
+    if (segments.length < 2) return null;
+    final files = await CommunityModelService.resolveHuggingFaceRepo(
+        segments[0], segments.sublist(1).join('/'));
+    if (files.isEmpty) return null;
+    final projector = _pickProjector(files);
+    final mainFiles = files
+        .where((f) => !ModelCapabilities.isProjectorFile(f.fileName))
+        .toList();
+    if (mainFiles.isEmpty) return null;
+    final recommended =
+        CommunityModelService.pickVariant(mainFiles, deviceRamMb: deviceRamMb) ??
+            mainFiles.first;
+    final totalGb = (recommended.sizeBytes + (projector?.sizeBytes ?? 0)) /
+        (1024 * 1024 * 1024);
+    return PlazaModel(
+      info: LocalModelInfo(
+        id: model.info.id,
+        name: model.info.name,
+        description: 'HuggingFace · ${model.downloads} 次下载'
             '${projector != null ? ' · 含视觉投影（可看图）' : ''}'
             ' · ${mainFiles.length} 个版本可选',
         downloadUrl: recommended.downloadUrl,
@@ -244,10 +276,10 @@ class ModelPlazaService {
       ),
       hasProjector: projector != null,
       projector: projector,
-      supportsThinking: ModelCapabilities.supportsThinking(name),
-      downloads: (item['downloads'] as num?)?.toInt() ?? 0,
-      likes: (item['likes'] as num?)?.toInt() ?? 0,
-      sourceLabel: 'HuggingFace',
+      supportsThinking: model.supportsThinking,
+      downloads: model.downloads,
+      likes: model.likes,
+      sourceLabel: model.sourceLabel,
     );
   }
 

@@ -20,8 +20,21 @@ class ModelCapabilities {
     'qwen3', 'qwq', 'deepseek-r1', 'deepseek-v3.1', 'deepseek-v3.2',
     'reasoner', 'reasoning', 'magistral', 'glm-z1', 'glm-4.5', 'glm-4.6',
     'phi-4-reasoning', 'exaone-deep', 'hunyuan-a13b', 'seed-oss',
-    'granite-4', 'nemotron', 'minimax-m',
+    'granite-4', 'nemotron', 'minimax-m', 'spark-x', 'spark2',
+    'gpt-oss', 'kimi-k2', 'step-3', 'ernie-4.5', 'ling-', 'ring-',
+    'gemma-4', 'qwen3.5',
   ];
+
+  /// 只有这些家族认得 `/no_think` 指令（Qwen3 系）。
+  /// 给别的模型硬塞这个字符串会让它反复琢磨"这是不是格式错误"，
+  /// 于是思考打转停不下来（真机实测：Spark-X2.5 就是这样死循环的）。
+  static const _noThinkFamilies = ['qwen3', 'qwen3.5', 'qwq'];
+
+  /// 该模型是否支持 `/no_think` 关闭思考指令。
+  static bool supportsNoThinkDirective(String modelNameOrPath) {
+    final name = _normalize(_baseName(modelNameOrPath));
+    return _noThinkFamilies.any((family) => name.contains(_normalize(family)));
+  }
 
   /// 归一化：小写，并把 `.`/`_`/`-` 统一成 `-`。
   /// 这样 `Qwen2_5_VL`、`qwen2.5-vl`、`qwen2-5-vl` 三种写法都能匹配同一族。

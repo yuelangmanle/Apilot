@@ -13,6 +13,7 @@ class LocalLlmEngine {
   LlamaEngine? _engine;
   String? _loadedModelPath;
   bool _visionAvailable = false;
+  bool _supportsNoThink = false;
   String? _projectorPath;
   String? _pendingProjectorPath;
   String? _projectorError;
@@ -50,6 +51,8 @@ class LocalLlmEngine {
     _loadedModelPath = filePath;
     _visionAvailable = false;
     _projectorError = null;
+    _supportsNoThink =
+        ModelCapabilities.supportsNoThinkDirective(filePath);
     _pendingProjectorPath = mmProjPath ?? _matchingProjector(filePath);
     if (_pendingProjectorPath != null) {
       debugPrint('[LocalLlm] 发现匹配的视觉投影（待启用）: $_pendingProjectorPath');
@@ -58,6 +61,9 @@ class LocalLlmEngine {
 
   /// 是否存在可用的视觉投影候选（界面据此提示"可启用看图"）。
   bool get hasVisionCandidate => _pendingProjectorPath != null;
+
+  /// 当前模型是否认得 `/no_think`（只有 Qwen3 系）。
+  bool get supportsNoThinkDirective => _supportsNoThink;
 
   /// 视觉投影启用失败的原因（界面向用户解释用）。
   String? get projectorError => _projectorError;
@@ -167,10 +173,12 @@ class LocalLlmEngine {
   }) async* {
     final engine = _engine;
     if (engine == null) throw StateError('模型未加载');
-    // "默认就思考"的模型（Qwen3 系）在关闭思考时要在提示里追加 /no_think，
-    // 否则它会把整个 token 预算花在思考上、正文为空——用户看到的就是"没回复"。
+    // 只有认这个指令的家族（Qwen3 系）才追加 /no_think：别的模型会把它当
+    // 可疑文本反复琢磨，导致思考打转（真机实测 Spark-X2.5 死循环）。
     final effectiveMessages =
-        (suppressThinking && !thinkingEnabled) ? _withNoThink(messages) : messages;
+        (suppressThinking && !thinkingEnabled && _supportsNoThink)
+            ? _withNoThink(messages)
+            : messages;
     await for (final chunk in engine.create(
       effectiveMessages,
       params: GenerationParams(

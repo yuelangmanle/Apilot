@@ -45,14 +45,21 @@ class AgentRunner {
 
   static const int maxSteps = 6;
 
-  /// 云端模型 + 本地模型统一入口：[localEngine] 非空且已加载时走本地推理。
+  /// 云端模型 + 本地模型统一入口。
+  ///
+  /// 路由规则（**看当前对话本身，不看全局 AI 设置**）：
+  /// - 传了 [localEngine] 且已加载 → 一律走本地推理（本地对话页）；
+  /// - 否则用 [cloudConfig]（云端对话页自己的配置）→ 再退到 AiService 的全局来源。
+  /// 之前的实现依赖"AI 设置里选的是本地/云端"，在本地对话里会导致
+  /// "AI 未配置、调用失败或没有返回内容"——用户明明正在跟本地模型聊天。
   static Future<AgentResult> run({
     required String userPrompt,
     required List<ApiConfig> configs,
+    ApiConfig? cloudConfig,
     LocalLlmEngine? localEngine,
     List<ChatTurn> history = const [],
     String? extraSystemPrompt,
-    int maxTokens = 900,
+    int maxTokens = 2048,
     void Function(AgentStep step)? onStep,
   }) async {
     final toolDocs = ToolRegistry.describeForPrompt();
@@ -77,6 +84,7 @@ class AgentRunner {
         userPrompt: prompt,
         history: history,
         configs: configs,
+        cloudConfig: cloudConfig,
         localEngine: localEngine,
         maxTokens: maxTokens,
         imagePaths: List<String>.from(pendingImages),
@@ -120,6 +128,7 @@ class AgentRunner {
           '用户问题：$userPrompt\n\n已获得的信息：\n${_summarizeSteps(steps)}',
       history: history,
       configs: configs,
+      cloudConfig: cloudConfig,
       localEngine: localEngine,
       maxTokens: maxTokens,
     );
@@ -145,14 +154,20 @@ class AgentRunner {
     required String userPrompt,
     required List<ChatTurn> history,
     required List<ApiConfig> configs,
+    ApiConfig? cloudConfig,
     LocalLlmEngine? localEngine,
     required int maxTokens,
     List<String> imagePaths = const [],
   }) async {
-    final engine = localEngine ?? AiService.sharedLocalEngine;
-    final useLocal = engine != null &&
-        engine.isLoaded &&
-        await AiService.isLocalSourceSelected();
+    // 本地对话页传了引擎 → 直接用；没有则看全局设置里的本地来源。
+    var engine = localEngine;
+    if (engine == null || !engine.isLoaded) {
+      final shared = AiService.sharedLocalEngine;
+      if (shared != null && await AiService.isLocalSourceSelected()) {
+        engine = shared;
+      }
+    }
+    final useLocal = engine != null && engine.isLoaded;
     if (useLocal) {
       final messages = <LlamaChatMessage>[
         LlamaChatMessage.fromText(
@@ -188,6 +203,8 @@ class AgentRunner {
       systemPrompt: systemPrompt,
       userPrompt: userPrompt,
       configs: configs,
+      // 云端对话页把自己的配置传进来：不再依赖全局"AI 设置"选没选。
+      preferredConfig: cloudConfig,
       maxTokens: maxTokens,
     );
   }

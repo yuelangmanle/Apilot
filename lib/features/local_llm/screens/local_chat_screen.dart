@@ -16,6 +16,7 @@ import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../core/services/local_llm/model_capabilities.dart';
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../widgets/chat_code_block.dart';
 import '../widgets/tool_panel.dart';
 import 'conversation_list_screen.dart';
 
@@ -52,6 +53,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   bool _stopRequested = false;
   bool _enablingVision = false;
   bool _toolsEnabled = false;
+  // ignore: prefer_final_fields
+  int _contextSize = 4096;
   final List<agent.AgentStep> _pendingSteps = [];
   String _streamText = '';
   String _streamThinking = '';
@@ -83,7 +86,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     // 加载模型（复用已加载的引擎则跳过）。
     if (!_engine.isLoaded || _engine.loadedModelPath != widget.modelPath) {
       try {
-        await _engine.loadModel(widget.modelPath);
+        await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -184,6 +187,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       final result = await agent.AgentRunner.run(
         userPrompt: text,
         configs: configs,
+        // 本地对话一律走本地引擎（不再看全局 AI 来源设置）。
         localEngine: _engine,
         history: history.length > 6
             ? history.sublist(history.length - 6)
@@ -232,7 +236,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         topP: _conversation.settings.topP,
         thinkingEnabled: _conversation.settings.thinkingEnabled &&
             ModelCapabilities.supportsThinking(widget.modelName),
-        // 关闭思考时对 Qwen3 系追加 /no_think，避免预算全被思考吃掉。
+        // 只对认得该指令的家族生效（引擎内部还会再判一次）。
         suppressThinking: !_conversation.settings.thinkingEnabled,
       )) {
         if (!mounted) return;
@@ -435,6 +439,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           final settings = _conversation.settings;
           final supportsThinking =
               ModelCapabilities.supportsThinking(widget.modelName);
+          final secondary = Theme.of(sheetContext).brightness == Brightness.dark
+              ? AppColors.darkTextSecondary
+              : AppColors.textSecondary;
           void update(ChatGenerationSettings next) {
             setSheetState(() {});
             setState(() => _conversation.settings = next);
@@ -481,6 +488,27 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       onChanged: (v) => update(
                           settings.copyWith(maxTokens: v.round())),
                     ),
+                    DropdownButtonFormField<int>(
+                      initialValue: _contextSize,
+                      decoration: const InputDecoration(
+                        labelText: '上下文长度（越大记住的越多）',
+                        helperText: '改完下一条消息生效（会重新加载模型）',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 4096, child: Text('4096 · 省内存')),
+                        DropdownMenuItem(value: 8192, child: Text('8192 · 日常')),
+                        DropdownMenuItem(value: 16384, child: Text('16384 · 长对话')),
+                        DropdownMenuItem(value: 32768, child: Text('32768 · 长文档')),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setSheetState(() {});
+                        setState(() => _contextSize = value);
+                      },
+                    ),
+                    const SizedBox(height: 8),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('使用工具（插件）'),
@@ -494,14 +522,22 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       subtitle: Text(
                         supportsThinking
                             ? '推理模型会先输出思考过程（可折叠查看）'
-                            : '当前模型不支持深度思考，开关已禁用',
+                            : '未识别为推理模型；这类模型仍可能自带思考过程，'
+                                '可用下面的开关强制启用思考预算',
                       ),
-                      value: supportsThinking && settings.thinkingEnabled,
-                      onChanged: supportsThinking
-                          ? (v) =>
-                              update(settings.copyWith(thinkingEnabled: v))
-                          : null,
+                      value: settings.thinkingEnabled,
+                      onChanged: (v) =>
+                          update(settings.copyWith(thinkingEnabled: v)),
                     ),
+                    if (!supportsThinking)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          '提示：Spark-X2.5 等模型本身就会输出思考过程，'
+                          '开关关掉也不会消失，只是不再额外给思考预算。',
+                          style: TextStyle(fontSize: 11, color: secondary),
+                        ),
+                      ),
                     const SizedBox(height: 8),
                     const Text('系统提示词', style: TextStyle(fontSize: 13)),
                     const SizedBox(height: 6),
@@ -661,7 +697,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           IconButton(
             icon: Icon(_toolsEnabled ? Icons.extension : Icons.extension_off,
                 color: _toolsEnabled ? AppColors.primary : null),
-            tooltip: _toolsEnabled ? '插件已开启（点击逐项设置）' : '插件已关闭',
+            tooltip: _toolsEnabled ? '插件已开启（点击设置）' : '插件未开启（点击设置）',
             onPressed: () => showToolPanel(
               context,
               toolsEnabled: _toolsEnabled,
@@ -915,17 +951,14 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 record.thinking!.isNotEmpty)
               _thinkingPanel(record.thinking!, index, isDark),
             if (record.text.isNotEmpty)
-              SelectableText(
-                record.text,
-                style: TextStyle(
-                  fontSize: 14,
-                  height: 1.5,
-                  color: isUser
-                      ? Colors.white
-                      : (isDark
-                          ? AppColors.darkTextPrimary
-                          : AppColors.textPrimary),
-                ),
+              ChatMessageBody(
+                text: record.text,
+                isUser: isUser,
+                textColor: isUser
+                    ? Colors.white
+                    : (isDark
+                        ? AppColors.darkTextPrimary
+                        : AppColors.textPrimary),
               ),
           ],
         ),

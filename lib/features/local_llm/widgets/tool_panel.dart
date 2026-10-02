@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../core/services/ai/tool_registry.dart';
@@ -19,6 +21,8 @@ Future<void> showToolPanel(
     isScrollControlled: true,
     builder: (sheetContext) => StatefulBuilder(
       builder: (sheetContext, setSheetState) {
+        // 面板自己的总开关状态：点一下立刻有反馈，落盘在后台完成。
+        var master = toolsEnabled;
         final secondary = Theme.of(sheetContext).brightness == Brightness.dark
             ? AppColors.darkTextSecondary
             : AppColors.textSecondary;
@@ -42,10 +46,10 @@ Future<void> showToolPanel(
                       style: TextStyle(fontSize: 14)),
                   subtitle: const Text('关闭后 AI 只做纯对话',
                       style: TextStyle(fontSize: 12)),
-                  value: toolsEnabled,
+                  value: master,
                   onChanged: (v) {
+                    setSheetState(() => master = v);
                     onToolsChanged(v);
-                    setSheetState(() {});
                   },
                 ),
                 const Divider(height: 8),
@@ -66,14 +70,23 @@ Future<void> showToolPanel(
                                   : category.description,
                               style: TextStyle(fontSize: 12, color: secondary),
                             ),
-                            value: toolsEnabled &&
+                            value: master &&
                                 ToolRegistry.isCategoryEnabled(category.id),
-                            onChanged: !toolsEnabled
+                            onChanged: !master
                                 ? null
-                                : (v) async {
-                                    await ToolRegistry.setCategoryEnabled(
-                                        category.id, v);
-                                    setSheetState(() {});
+                                : (v) {
+                                    // 乐观更新：先反映到界面，再落盘。
+                                    setSheetState(() {
+                                      if (v) {
+                                        ToolRegistry
+                                            .enableCategoryInMemory(category.id);
+                                      } else {
+                                        ToolRegistry
+                                            .disableCategoryInMemory(category.id);
+                                      }
+                                    });
+                                    unawaited(ToolRegistry.setCategoryEnabled(
+                                        category.id, v));
                                   },
                           ),
                         FutureBuilder<List<String>>(
@@ -119,8 +132,5 @@ Future<void> showToolPanel(
         );
       },
     ),
-  ).then((_) {
-    // 面板关闭后，让调用方刷新按钮状态。
-    onToolsChanged(toolsEnabled);
-  });
+  ).then((_) {});
 }

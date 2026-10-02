@@ -15,7 +15,18 @@ import '../../../shared/theme/color_scheme.dart';
 class HtmlEditorScreen extends StatefulWidget {
   final String? initialTitle;
 
-  const HtmlEditorScreen({super.key, this.initialTitle});
+  /// 直接带入的内容（AI 生成 / 从聊天里点"运行预览"）。
+  final String? initialHtml;
+
+  /// 打开即进预览（"运行"语义）。
+  final bool startInPreview;
+
+  const HtmlEditorScreen({
+    super.key,
+    this.initialTitle,
+    this.initialHtml,
+    this.startInPreview = false,
+  });
 
   @override
   State<HtmlEditorScreen> createState() => _HtmlEditorScreenState();
@@ -56,7 +67,8 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _codeController.text = _template;
+    _preview = widget.startInPreview;
+    _codeController.text = widget.initialHtml ?? _template;
     _codeController.addListener(() {
       if (!_dirty) setState(() => _dirty = true);
     });

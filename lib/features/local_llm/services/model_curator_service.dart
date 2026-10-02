@@ -51,7 +51,7 @@ class ModelCuratorService {
         ? '本机内存约 ${(deviceRamMb / 1024).toStringAsFixed(1)} GB，请优先挑选装得下的。'
         : '本机内存未知，优先挑中小尺寸。';
 
-    final answer = await AiService.ask(
+    var answer = await AiService.ask(
       systemPrompt: '你是本地大模型选型助手。给定候选模型清单，挑选最适合普通用户'
           '在手机上离线使用的 $maxPicks 个（兼顾中文能力、体积、活跃度），'
           '并为每个写一句中文介绍（40 字内，说清楚能干什么、大概多大）。'
@@ -67,10 +67,30 @@ class ModelCuratorService {
       return const ModelCuratorResult(
           error: 'AI 未配置或调用失败：可先在「设置 → AI 设置」里选择云端配置或本地模型');
     }
+    // 一次没解析出来就让 AI 按更严的格式重试一遍。
+    if (_parsePicks(answer).isEmpty) {
+      final retry = await AiService.ask(
+        systemPrompt: '只输出一个 JSON 数组，不要任何解释文字、不要 Markdown 围栏。'
+            '每项形如 {"name":"模型名","desc":"一句话介绍","tags":["标签"]}。',
+        userPrompt: '把下面这份候选清单里最适合手机离线使用的 '
+            '$maxPicks 个模型按上述 JSON 格式输出（name 必须与清单完全一致）：\n'
+            '${jsonEncode(catalog)}',
+        configs: configs,
+        maxTokens: 1200,
+      );
+      if (retry != null && _parsePicks(retry).isNotEmpty) {
+        answer = retry;
+      }
+    }
 
     final picks = _parsePicks(answer);
     if (picks.isEmpty) {
-      return const ModelCuratorResult(error: 'AI 返回的内容无法解析，请重试');
+      final preview = answer.replaceAll(RegExp(r'\s+'), ' ').trim();
+      return ModelCuratorResult(
+        error: 'AI 这次没按格式返回（已重试）。请再点一次；'
+            '若持续失败，换一个云端模型做"AI 精选"更稳。'
+            '原始返回片段：${preview.length > 80 ? '${preview.substring(0, 80)}…' : preview}',
+      );
     }
 
     // 把 AI 的选择映射回真实条目（下载地址/大小一律用我们抓到的真实数据）。
@@ -117,24 +137,82 @@ class ModelCuratorService {
     return ModelCuratorResult(entries: entries);
   }
 
-  /// 容错解析 AI 返回的 JSON 数组（允许 ```json 围栏与前后说明文字）。
+  /// 容错解析 AI 返回结果：数组 / 对象包数组 / 单个对象都认；
+  /// 字段名支持 name/model/模型名 + desc/description/介绍 等写法。
   static List<Map<String, dynamic>> _parsePicks(String answer) {
-    var text = answer.replaceAll(RegExp(r'```(?:json)?'), '').trim();
-    final start = text.indexOf('[');
-    final end = text.lastIndexOf(']');
-    if (start < 0 || end <= start) return const [];
-    text = text.substring(start, end + 1);
-    try {
-      final decoded = jsonDecode(text);
-      if (decoded is! List) return const [];
-      return decoded
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList();
-    } catch (e) {
-      debugPrint('[Curator] 解析 AI 结果失败: $e');
+    final text = answer.replaceAll(RegExp(r'```(?:json)?'), '').trim();
+    Iterable<dynamic>? items;
+
+    // ① 先按"数组"找。
+    final arrayStart = text.indexOf('[');
+    final arrayEnd = text.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+      try {
+        final decoded = jsonDecode(text.substring(arrayStart, arrayEnd + 1));
+        if (decoded is List) items = decoded;
+      } catch (_) {}
+    }
+    // ② 再按"对象"找（可能是 {"models":[...]} 或单个 {"name":...}）。
+    if (items == null) {
+      final objStart = text.indexOf('{');
+      final objEnd = text.lastIndexOf('}');
+      if (objStart >= 0 && objEnd > objStart) {
+        try {
+          final decoded = jsonDecode(text.substring(objStart, objEnd + 1));
+          if (decoded is Map) {
+            final listValue = decoded.values.firstWhere(
+              (v) => v is List && v.isNotEmpty,
+              orElse: () => null,
+            );
+            if (listValue is List) {
+              items = listValue;
+            } else if (decoded.containsKey('name') ||
+                decoded.containsKey('model') ||
+                decoded.containsKey('模型名')) {
+              items = [decoded];
+            }
+          }
+        } catch (_) {}
+      }
+    }
+    if (items == null) {
+      debugPrint('[Curator] 未能从 AI 输出里解析出条目：'
+          '${text.length > 200 ? '${text.substring(0, 200)}…' : text}');
       return const [];
     }
+
+    final picks = <Map<String, dynamic>>[];
+    for (final raw in items) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final name = (map['name'] ??
+              map['model'] ??
+              map['modelName'] ??
+              map['模型名'] ??
+              map['模型'] ??
+              '')
+          .toString()
+          .trim();
+      if (name.isEmpty) continue;
+      final desc = (map['desc'] ??
+              map['description'] ??
+              map['介绍'] ??
+              map['简介'] ??
+              '')
+          .toString()
+          .trim();
+      final tagsRaw = map['tags'] ?? map['标签'] ?? const [];
+      final tags = tagsRaw is List
+          ? tagsRaw.whereType<String>().toList()
+          : (tagsRaw is String
+              ? tagsRaw
+                  .split(RegExp(r'[,，、\s]+'))
+                  .where((t) => t.isNotEmpty)
+                  .toList()
+              : <String>[]);
+      picks.add({'name': name, 'desc': desc, 'tags': tags});
+    }
+    return picks;
   }
 
   static LocalModelInfo? _fuzzyMatch(
