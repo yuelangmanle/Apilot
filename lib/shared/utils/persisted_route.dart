@@ -7,6 +7,27 @@ class PersistedRoute {
 
   static const _key = 'apilot_last_route';
   static const _argKey = 'apilot_last_route_arg';
+  static const _enabledKey = 'apilot_restore_route_enabled';
+
+  /// 是否在启动时恢复上次停留的二级页面（用户可在设置里关掉）。
+  static bool _enabled = true;
+
+  static bool get enabled => _enabled;
+
+  static Future<void> loadEnabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _enabled = prefs.getBool(_enabledKey) ?? true;
+    } catch (_) {}
+  }
+
+  static Future<void> setEnabled(bool value) async {
+    _enabled = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_enabledKey, value);
+    } catch (_) {}
+  }
 
   static Future<void> save(String routeKey, [String? arg]) async {
     try {
@@ -17,6 +38,7 @@ class PersistedRoute {
   }
 
   static Future<MapEntry<String, String?>?> load() async {
+    if (!_enabled) return null;
     try {
       final prefs = await SharedPreferences.getInstance();
       final route = prefs.getString(_key);

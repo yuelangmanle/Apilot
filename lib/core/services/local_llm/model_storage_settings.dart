@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -79,6 +80,44 @@ class ModelStorageSettings {
     final dir = Directory(p.join(support.path, 'models'));
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return dir;
+  }
+
+  // ── 主模型 ↔ 视觉投影配对 ──────────────────────────────────────
+  // 投影文件名（mmproj-F16.gguf）通常与主模型名无关，靠名字猜容易配错；
+  // 下载时记录下来最可靠。
+
+  static const _pairKey = 'model_projector_pairs';
+
+  static Future<Map<String, String>> projectorPairs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_pairKey);
+      if (raw == null || raw.isEmpty) return {};
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// 记录"主模型文件 → 视觉投影文件"的配对。
+  static Future<void> pairProjector(
+      String mainFileName, String projectorFileName) async {
+    try {
+      final pairs = await projectorPairs();
+      pairs[mainFileName] = projectorFileName;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_pairKey, jsonEncode(pairs));
+    } catch (e) {
+      debugPrint('[Storage] 记录投影配对失败: $e');
+    }
+  }
+
+  /// 查主模型对应的投影文件名（没有记录则返回 null）。
+  static Future<String?> projectorFor(String mainFileName) async {
+    final pairs = await projectorPairs();
+    return pairs[mainFileName];
   }
 
   /// 把旧目录里的模型搬到新目录（切换存储位置时用，避免"模型看不见了"）。

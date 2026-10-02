@@ -11,7 +11,6 @@ import '../../../shared/utils/clipboard_privacy.dart';
 import '../../local_llm/screens/api_chat_screen.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../../shared/utils/friendly_error.dart';
-import '../../../shared/utils/persisted_route.dart';
 import '../../api_testing/screens/compare_test_screen.dart';
 import '../../api_testing/screens/test_screen.dart';
 import 'api_form_screen.dart';
@@ -40,7 +39,8 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
     // 必须先赋值再使用：late 字段在赋值前读取会抛
     // LateInitializationError，整页渲染成 ErrorWidget（"本区域渲染出错"）。
     _apiConfig = widget.apiConfig;
-    PersistedRoute.save('api-detail', _apiConfig.id);
+    // 刻意不保存"方案详情页"：恢复它会让用户一打开软件就跳进某个方案，
+    // 体感像出错。页面级（网关/回收站/用量…）才恢复。
   }
 
   @override

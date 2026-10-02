@@ -33,7 +33,15 @@ class AgentResult {
   final List<AgentStep> steps;
   final String? error;
 
-  const AgentResult({required this.text, this.steps = const [], this.error});
+  /// 收集到的思考过程（工具模式之前完全不收集，用户就"看不到思考"）。
+  final String thinking;
+
+  const AgentResult({
+    required this.text,
+    this.steps = const [],
+    this.error,
+    this.thinking = '',
+  });
 }
 
 /// 带工具的对话循环：本地模型与云端模型共用同一套机制。
@@ -74,12 +82,13 @@ class AgentRunner {
     ].join('\n\n');
 
     final steps = <AgentStep>[];
+    final thinkingBuffer = StringBuffer();
     var prompt = userPrompt;
     // 截屏工具产出的图片：下一轮作为图片附件回灌（多模态模型才能"看"）。
     final pendingImages = <String>[];
 
     for (var step = 0; step < maxSteps; step++) {
-      final answer = await _ask(
+      final reply = await _ask(
         systemPrompt: systemPrompt,
         userPrompt: prompt,
         history: history,
@@ -90,16 +99,23 @@ class AgentRunner {
         imagePaths: List<String>.from(pendingImages),
       );
       pendingImages.clear();
+      final answer = reply.text;
+      if (reply.thinking.isNotEmpty) thinkingBuffer.write(reply.thinking);
       if (answer == null || answer.trim().isEmpty) {
         return AgentResult(
           text: steps.isEmpty ? '' : _summarizeSteps(steps),
           steps: steps,
           error: 'AI 未配置、调用失败或没有返回内容',
+          thinking: thinkingBuffer.toString(),
         );
       }
       final call = ToolRegistry.parseCall(answer);
       if (call == null) {
-        return AgentResult(text: ToolRegistry.stripCall(answer), steps: steps);
+        return AgentResult(
+          text: ToolRegistry.stripCall(answer),
+          steps: steps,
+          thinking: thinkingBuffer.toString(),
+        );
       }
       final result = await ToolRegistry.execute(call.name, call.args);
       // 截屏 → 图片回灌（引擎支持看图时）。
@@ -122,7 +138,7 @@ class AgentRunner {
     }
 
     // 步数用尽：把已有的工具结果整理成回答。
-    final answer = await _ask(
+    final wrapUp = await _ask(
       systemPrompt: systemPrompt,
       userPrompt: '请直接总结已有信息回答用户，不要再调用工具。'
           '用户问题：$userPrompt\n\n已获得的信息：\n${_summarizeSteps(steps)}',
@@ -132,9 +148,13 @@ class AgentRunner {
       localEngine: localEngine,
       maxTokens: maxTokens,
     );
+    if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
     return AgentResult(
-      text: answer ?? _summarizeSteps(steps),
+      text: (wrapUp.text == null || wrapUp.text!.isEmpty)
+          ? _summarizeSteps(steps)
+          : wrapUp.text!,
       steps: steps,
+      thinking: thinkingBuffer.toString(),
     );
   }
 
@@ -149,7 +169,7 @@ class AgentRunner {
   }
 
   /// 单次问答：优先本地引擎，否则走 AiService（云端）。
-  static Future<String?> _ask({
+  static Future<({String? text, String thinking})> _ask({
     required String systemPrompt,
     required String userPrompt,
     required List<ChatTurn> history,
@@ -191,15 +211,22 @@ class AgentRunner {
               role: LlamaChatRole.user, text: userPrompt),
       ];
       try {
-        return await engine
-            .generate(messages, maxTokens: maxTokens, temp: 0.6)
-            .timeout(const Duration(minutes: 3));
+        // 用流式收集：正文与思考都拿到（工具模式也要能看到思考过程）。
+        final content = StringBuffer();
+        final thinking = StringBuffer();
+        await for (final chunk in engine
+            .generateStream(messages, maxTokens: maxTokens, temp: 0.6)
+            .timeout(const Duration(minutes: 3))) {
+          if (chunk.content != null) content.write(chunk.content);
+          if (chunk.thinking != null) thinking.write(chunk.thinking);
+        }
+        return (text: content.toString(), thinking: thinking.toString());
       } catch (e) {
         debugPrint('[Agent] 本地推理失败: $e');
-        return null;
+        return (text: null, thinking: '');
       }
     }
-    return AiService.ask(
+    final cloud = await AiService.ask(
       systemPrompt: systemPrompt,
       userPrompt: userPrompt,
       configs: configs,
@@ -207,6 +234,7 @@ class AgentRunner {
       preferredConfig: cloudConfig,
       maxTokens: maxTokens,
     );
+    return (text: cloud, thinking: '');
   }
 
   /// 供测试：解析 + 执行的纯函数部分。

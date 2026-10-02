@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'download_task_store.dart';
+import 'model_capabilities.dart';
 import 'model_storage_settings.dart';
 
 /// 下载状态。
@@ -436,16 +437,27 @@ class ModelDownloadService {
     return results;
   }
 
-  /// 列出已下载的模型文件（排除 .part 临时文件）。
+  /// 列出已下载的模型文件。
+  /// **排除 .part 临时文件与 mmproj 视觉投影**：投影是模型的附件，
+  /// 不能当成独立模型列出来（否则会出现"点进去加载失败"的假模型）。
   static Future<List<File>> listDownloadedModels() async {
     final dir = await modelsDir();
     if (!dir.existsSync()) return [];
-    return dir
-        .listSync()
-        .whereType<File>()
-        .where((f) =>
-            f.path.endsWith('.gguf') && !f.path.endsWith('.gguf.part'))
-        .toList();
+    return dir.listSync().whereType<File>().where((f) {
+      if (!f.path.endsWith('.gguf') || f.path.endsWith('.gguf.part')) {
+        return false;
+      }
+      return !ModelCapabilities.isProjectorFile(
+          f.uri.pathSegments.last);
+    }).toList();
+  }
+
+  /// 列出已下载的视觉投影附件。
+  static Future<List<File>> listProjectors() async {
+    final dir = await modelsDir();
+    if (!dir.existsSync()) return [];
+    return dir.listSync().whereType<File>().where((f) =>
+        ModelCapabilities.isProjectorFile(f.uri.pathSegments.last)).toList();
   }
 
   /// 获取指定 URL 对应的本地文件路径。

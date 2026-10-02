@@ -14,6 +14,8 @@ import '../../../core/services/ai/tool_registry.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../core/services/local_llm/model_capabilities.dart';
+import '../../../core/services/local_llm/model_download_service.dart';
+import '../../../core/services/local_llm/model_storage_settings.dart';
 import '../../../core/services/local_llm/local_llm_engine.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../widgets/chat_code_block.dart';
@@ -52,7 +54,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   bool _modelReady = false;
   bool _stopRequested = false;
   bool _enablingVision = false;
-  bool _toolsEnabled = false;
+  bool _toolsEnabled = ToolRegistry.masterEnabled;
+  bool _compressing = false;
   // ignore: prefer_final_fields
   int _contextSize = 4096;
   final List<agent.AgentStep> _pendingSteps = [];
@@ -134,8 +137,19 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         }
       }
       if (!enabled) {
-        final useTextOnly = await _confirmTextOnly();
-        if (useTextOnly != true) return;
+        final action = await _confirmTextOnly();
+        if (action == 'bind') {
+          final bound = await _bindProjector();
+          if (bound && mounted) {
+            setState(() => _pendingAttachments
+                .removeWhere((a) => a.type == 'image'));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('已绑定视觉投影，请重新发送图片'),
+                backgroundColor: AppColors.success));
+          }
+          return;
+        }
+        if (action != 'text') return;
         setState(
             () => _pendingAttachments.removeWhere((a) => a.type == 'image'));
         text = _controller.text.trim();
@@ -147,6 +161,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           return;
         }
       }
+    }
+
+    // 上下文压缩：超过用户设定阈值先把早期消息压成摘要（保留最近 8 条）。
+    if (_needsCompression) {
+      await _compressContext(silent: true);
     }
 
     // 长期记忆：① 用户明确说"记住…"就自动入库；
@@ -203,6 +222,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             text: result.text.isEmpty
                 ? (result.error ?? '（没有返回内容）')
                 : result.text,
+            // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
+            thinking: result.thinking.isEmpty ? null : result.thinking,
             toolSteps: [
               for (final step in result.steps)
                 '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
@@ -300,11 +321,125 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     _scrollToBottom();
   }
 
+  /// 需要压缩时的阈判断（按字符估算 token）。
+  bool get _needsCompression {
+    final limit = _conversation.settings.autoCompressAtChars;
+    if (limit <= 0) return false;
+    return _conversation.messages
+            .fold<int>(0, (sum, m) => sum + m.text.length) >
+        limit;
+  }
+
+  /// 压缩上下文：保留最近 [keepRecent] 条，其余交给模型总结成一段摘要。
+  /// 摘要随对话持久化，之后每次对话都带上它（老消息从发送列表里移除）。
+  Future<void> _compressContext({int keepRecent = 8, bool silent = false}) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final messages = _conversation.messages;
+    if (messages.length <= keepRecent) {
+      if (!silent) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text('消息还不多，不需要压缩'), duration: Duration(seconds: 2)));
+      }
+      return;
+    }
+    final older = messages.sublist(0, messages.length - keepRecent);
+    final recent = messages.sublist(messages.length - keepRecent);
+    setState(() => _compressing = true);
+    try {
+      final transcript = older
+          .map((m) => '${m.role == 'user' ? '用户' : '助手'}：${m.text}')
+          .join('\n');
+      final summary = await _engine
+          .generate([
+            const LlamaChatMessage.fromText(
+              role: LlamaChatRole.system,
+              text: '把下面这段对话压缩成要点摘要，保留人物、偏好、'
+                  '结论、未完成事项与关键数据；不要评论，不要加入新信息。'
+                  '用简洁的中文短句。',
+            ),
+            LlamaChatMessage.fromText(
+                role: LlamaChatRole.user,
+                text: transcript.length > 8000
+                    ? transcript.substring(transcript.length - 8000)
+                    : transcript),
+          ], maxTokens: 400, temp: 0.3)
+          .timeout(const Duration(minutes: 3));
+      final merged = [
+        if (_conversation.summary.isNotEmpty) _conversation.summary,
+        if (summary.trim().isNotEmpty) summary.trim(),
+      ].join('\n');
+      if (!mounted) return;
+      setState(() {
+        _conversation.summary = merged;
+        _conversation.messages
+          ..clear()
+          ..addAll(recent);
+        _compressing = false;
+      });
+      await _store.save(_conversation);
+      messenger.showSnackBar(SnackBar(
+        content: Text('已压缩 ${older.length} 条早期消息为摘要'
+            '（保留最近 ${recent.length} 条）'),
+        backgroundColor: AppColors.success,
+      ));
+    } catch (e) {
+      if (mounted) setState(() => _compressing = false);
+      messenger.showSnackBar(SnackBar(
+          content: Text('压缩失败：$e'), backgroundColor: AppColors.error));
+    }
+  }
+
   String _shorten(String text) =>
       text.length > 160 ? '${text.substring(0, 160)}…' : text;
 
+  /// 手动把磁盘上的视觉投影绑定到当前模型。
+  Future<bool> _bindProjector() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final files = await ModelDownloadService.listProjectors();
+    if (!mounted) return false;
+    if (files.isEmpty) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('设备上还没有视觉投影文件：'
+              '到「模型」页给多模态模型点「补装视觉投影」'),
+      ));
+      return false;
+    }
+    final picked = await showDialog<File>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('选择要绑定的视觉投影'),
+        children: [
+          for (final file in files)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, file),
+              child: Text(file.uri.pathSegments.last,
+                  style: const TextStyle(fontSize: 13)),
+            ),
+        ],
+      ),
+    );
+    if (picked == null) return false;
+    final mainName = widget.modelPath.split('/').last;
+    await ModelStorageSettings.pairProjector(
+        mainName, picked.uri.pathSegments.last);
+    // 重新加载模型，让引擎按新配对挂上投影。
+    try {
+      await _engine
+          .loadModel(widget.modelPath, contextSize: _contextSize)
+          .timeout(const Duration(seconds: 90));
+    } catch (e) {
+      debugPrint('[Chat] 绑定后重载失败: $e');
+      return false;
+    }
+    final visionReady = _engine.hasVisionCandidate
+        ? await _engine.ensureVision()
+        : _engine.supportsVision;
+    return visionReady;
+  }
+
   /// 不能看图时的说明与分流。
-  Future<bool?> _confirmTextOnly() {
+  /// 返回 'text'（移除图片继续）、'bind'（去绑定投影）或 null（取消）。
+  Future<String?> _confirmTextOnly() {
     final isVisionFamily =
         ModelCapabilities.isVisionFamily(widget.modelName);
     final reason = _engine.projectorError != null
@@ -314,24 +449,28 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             ? '这个模型属于多模态家族，但同目录没有找到与它匹配的视觉投影文件'
                 '（mmproj-*.gguf）。投影是模型专用的，不能拿别的模型的来用。'
             : '这个模型是纯文本模型，本身没有视觉能力。';
-    return showDialog<bool>(
+    return showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('这个模型现在看不了图'),
         content: Text(
           '「${widget.modelName}」：$reason\n\n'
           '怎么办：\n'
-          '· 想看图 → 到「模型」页下载多模态模型（Gemma 3 4B / Qwen2.5-VL 等），'
-          '下载它会一起带上匹配的视觉投影；\n'
-          '· 只是想继续聊 → 移除图片，只发文字（文本能力完全不受影响）。',
+          '· 已经下过视觉投影 → 点「绑定视觉投影」选一个文件即可；\n'
+          '· 还没下 → 到「模型」页给多模态模型点「补装视觉投影」；\n'
+          '· 只是想继续聊 → 移除图片，只发文字（文本能力不受影响）。',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('取消'),
           ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, 'bind'),
+            child: const Text('绑定视觉投影'),
+          ),
           FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
+            onPressed: () => Navigator.pop(dialogContext, 'text'),
             child: const Text('移除图片，继续发文字'),
           ),
         ],
@@ -345,6 +484,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     final systemText = [
       if (_conversation.settings.systemPrompt.trim().isNotEmpty)
         _conversation.settings.systemPrompt.trim(),
+      if (_conversation.summary.isNotEmpty)
+        '以下是本次对话更早内容的摘要（请当作已知背景）：\n${_conversation.summary}',
       if (memorySection.isNotEmpty) memorySection,
     ].join('\n\n');
     if (systemText.isNotEmpty) {
@@ -511,10 +652,16 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                     const SizedBox(height: 8),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('使用工具（插件）'),
-                      subtitle: const Text('联网搜索 / 抓网页 / 算术 / 存 HTML / 查 App 数据'),
+                      title: Text(_toolsEnabled ? '使用工具（插件）：已开启' : '使用工具（插件）'),
+                      subtitle: const Text('联网搜索 / 新闻 / 抓网页 / 算术 / HTML / 待办 / 找模型…'
+                          '（与右上角插件面板同一个开关）'),
                       value: _toolsEnabled,
-                      onChanged: (v) => setState(() => _toolsEnabled = v),
+                      onChanged: (v) {
+                        // 先刷新面板本身，再通知页面（否则点了看不到变化）。
+                        setSheetState(() {});
+                        setState(() => _toolsEnabled = v);
+                        unawaited(ToolRegistry.setMasterEnabled(v));
+                      },
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -538,7 +685,46 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           style: TextStyle(fontSize: 11, color: secondary),
                         ),
                       ),
+                    DropdownButtonFormField<int>(
+                      initialValue: settings.autoCompressAtChars,
+                      decoration: const InputDecoration(
+                        labelText: '上下文自动压缩阈值',
+                        helperText: '对话超过这个长度就自动把早期消息压成摘要',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 0, child: Text('不自动压缩')),
+                        DropdownMenuItem(value: 6000, child: Text('6000 字（省内存）')),
+                        DropdownMenuItem(value: 12000, child: Text('12000 字（默认）')),
+                        DropdownMenuItem(value: 24000, child: Text('24000 字')),
+                        DropdownMenuItem(value: 48000, child: Text('48000 字（长会话）')),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        update(settings.copyWith(autoCompressAtChars: value));
+                      },
+                    ),
                     const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: _compressing
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.compress, size: 18),
+                        label: Text(_compressing
+                            ? '压缩中…'
+                            : '立即压缩上下文（保留最近 8 条）'),
+                        onPressed: _compressing
+                            ? null
+                            : () => _compressContext(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     const Text('系统提示词', style: TextStyle(fontSize: 13)),
                     const SizedBox(height: 6),
                     TextFormField(
@@ -695,8 +881,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             onPressed: _openConversationList,
           ),
           IconButton(
-            icon: Icon(_toolsEnabled ? Icons.extension : Icons.extension_off,
-                color: _toolsEnabled ? AppColors.primary : null),
+            // AppBar 是蓝色：开启时用暖色高亮，否则图标会"融进背景"看不见。
+            icon: Icon(
+              _toolsEnabled ? Icons.extension : Icons.extension_off,
+              color: _toolsEnabled ? AppColors.warning : null,
+            ),
             tooltip: _toolsEnabled ? '插件已开启（点击设置）' : '插件未开启（点击设置）',
             onPressed: () => showToolPanel(
               context,
@@ -752,7 +941,24 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           },
                         ),
                 ),
-                if (_enablingVision)
+                if (_compressing)
+              Container(
+                width: double.infinity,
+                color: AppColors.secondary.withValues(alpha: 0.12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: const Row(
+                  children: [
+                    SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(width: 8),
+                    Text('正在压缩上下文…', style: TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ),
+            if (_enablingVision)
                   Container(
                     width: double.infinity,
                     color: AppColors.primary.withValues(alpha: 0.08),

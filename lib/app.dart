@@ -188,6 +188,11 @@ class _AppShellState extends State<AppShell>
   Future<void> _restoreRoute() async {
     final saved = await PersistedRoute.load();
     if (!mounted || saved == null) return;
+    // 历史版本可能存过 'api-detail'：不再恢复（会突然跳进某个方案详情）。
+    if (saved.key == 'api-detail') {
+      await PersistedRoute.clear();
+      return;
+    }
     try {
       final provider = context.read<ApiProvider>();
       await provider.loadApiConfigs();
@@ -451,7 +456,9 @@ class _AppShellState extends State<AppShell>
     registerAppTools();
     // 插件开关持久化（用户逐项控制）+ 模型存储位置。
     unawaited(ToolRegistry.loadEnabledFromPrefs());
+    unawaited(ToolRegistry.loadMasterEnabled());
     unawaited(ModelStorageSettings.load());
+    unawaited(PersistedRoute.loadEnabled());
     ToolHost.visionEnabled = false;
     ToolHost.screenshot = _captureScreenForTools;
     AppToolHost.listApis = () async {

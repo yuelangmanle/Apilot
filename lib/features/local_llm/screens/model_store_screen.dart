@@ -10,6 +10,7 @@ import '../../../core/services/local_llm/community_model_service.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
 import '../../../core/services/local_llm/model_catalog_store.dart';
 import '../../../core/services/local_llm/model_repo_importer.dart';
+import '../../../core/services/local_llm/model_storage_settings.dart';
 import '../services/model_curator_service.dart';
 import '../../../core/services/local_llm/device_capabilities.dart';
 import '../../../core/services/ai/ai_service.dart';
@@ -172,11 +173,15 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   }
 
   /// 下载指定文件（社区模型的多版本/内置模型共用入口）。
+  ///
+  /// [pairWithMain] 非空时表示这是某个主模型的视觉投影：下完记录配对，
+  /// 之后打开那个模型就能自动挂上投影（名字猜不准也没关系）。
   Future<void> _downloadUrl({
     required String taskId,
     required String url,
     required String fileName,
     required String displayName,
+    String? pairWithMain,
   }) async {
     if (_downloads[taskId]?.isActive == true) return;
     setState(() {
@@ -190,6 +195,9 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await _downloader.download(url, taskId, expectedFileName: fileName);
+      if (pairWithMain != null) {
+        await ModelStorageSettings.pairProjector(pairWithMain, fileName);
+      }
       if (mounted) {
         messenger.showSnackBar(
           SnackBar(

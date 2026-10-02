@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 
 import 'model_capabilities.dart';
+import 'model_storage_settings.dart';
 import 'model_catalog.dart';
 
 /// 本地推理引擎封装：加载 GGUF 模型、流式生成、对话会话。
@@ -53,7 +54,9 @@ class LocalLlmEngine {
     _projectorError = null;
     _supportsNoThink =
         ModelCapabilities.supportsNoThinkDirective(filePath);
-    _pendingProjectorPath = mmProjPath ?? _matchingProjector(filePath);
+    _pendingProjectorPath = mmProjPath ??
+        await _pairedProjector(filePath) ??
+        _matchingProjector(filePath);
     if (_pendingProjectorPath != null) {
       debugPrint('[LocalLlm] 发现匹配的视觉投影（待启用）: $_pendingProjectorPath');
     }
@@ -101,6 +104,19 @@ class LocalLlmEngine {
     }
   }
 
+  /// 按下载时记录的主模型↔投影配对查找（最可靠：投影名常与模型名无关）。
+  static Future<String?> _pairedProjector(String modelPath) async {
+    try {
+      final fileName = File(modelPath).uri.pathSegments.last;
+      final projectorName = await ModelStorageSettings.projectorFor(fileName);
+      if (projectorName == null || projectorName.isEmpty) return null;
+      final dir = File(modelPath).parent;
+      final candidate = File('${dir.path}/$projectorName');
+      if (candidate.existsSync()) return candidate.path;
+    } catch (_) {}
+    return null;
+  }
+
   /// 在同目录查找**与主模型匹配**的视觉投影。
   ///
   /// mmproj 不通用（投影层维度必须与主模型隐藏维度一致），所以：
@@ -134,6 +150,9 @@ class LocalLlmEngine {
       if (projectors.length == 1 && mainModels.length == 1) {
         return projectors.first.path;
       }
+      // 目录里只有一个投影文件时也采用：绝大多数用户只有一个视觉模型，
+      // 配错的代价（引擎会拒绝不匹配的投影并回退纯文本）远小于配不上的代价。
+      if (projectors.length == 1) return projectors.first.path;
       return null;
     } catch (_) {}
     return null;

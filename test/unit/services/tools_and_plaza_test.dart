@@ -27,6 +27,45 @@ void main() {
       expect(ToolRegistry.parseCall('提到 @@TOOL 但格式不对'), isNull);
     });
 
+    test('兼容 @@工具名 {参数} 写法（真机实测模型就这么写）', () {
+      ToolRegistry.registerBuiltins();
+      final call = ToolRegistry.parseCall(
+          '@@news_search {"query":"人工智能 国际","limit":8}');
+      expect(call, isNotNull);
+      expect(call!.name, 'news_search');
+      expect(call.args['query'], '人工智能 国际');
+      expect(call.args['limit'], 8);
+    });
+
+    test('兼容裸 JSON（name/tool/tool_name 字段）', () {
+      ToolRegistry.registerBuiltins();
+      final call = ToolRegistry.parseCall(
+          '{"tool":"calculator","arguments":{"expression":"1+2"}}');
+      expect(call, isNotNull);
+      expect(call!.name, 'calculator');
+      expect(call.args['expression'], '1+2');
+    });
+
+    test('参数平铺在顶层也能取到', () {
+      ToolRegistry.registerBuiltins();
+      final call = ToolRegistry.parseCall(
+          '@@current_time {}');
+      expect(call, isNotNull);
+      expect(call!.name, 'current_time');
+    });
+
+    test('不认识的工具名不误判', () {
+      ToolRegistry.registerBuiltins();
+      expect(ToolRegistry.parseCall('@@not_a_real_tool {"x":1}'), isNull);
+    });
+
+    test('stripCall 去掉 @@工具名 形式的调用', () {
+      final text = ToolRegistry.stripCall(
+          '@@news_search {"query":"AI"}\n稍等，我查一下。');
+      expect(text.contains('@@'), isFalse);
+      expect(text, contains('稍等'));
+    });
+
     test('stripCall 去掉协议行后再给用户看', () {
       final text = ToolRegistry.stripCall(
           '@@TOOL {"name":"calculator","args":{"expression":"1+1"}}\n'

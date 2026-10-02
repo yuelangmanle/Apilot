@@ -7,6 +7,7 @@ import '../../../core/services/import_export_service.dart';
 import '../../../core/services/database_service.dart';
 import '../../../core/services/update_service.dart';
 import '../../../shared/theme/color_scheme.dart';
+import '../../../shared/utils/persisted_route.dart';
 import '../../../shared/utils/friendly_error.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../api_management/screens/group_manage_screen.dart';
@@ -85,6 +86,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             context: context,
             title: '数据管理',
             children: [
+              SwitchListTile(
+                secondary: const Icon(Icons.restore_page_outlined),
+                title: const Text('启动时回到上次页面'),
+                subtitle: const Text(
+                    '关闭后每次打开都从主界面开始（不再自动跳进上次的方案页）'),
+                value: PersistedRoute.enabled,
+                onChanged: (value) async {
+                  await PersistedRoute.setEnabled(value);
+                  if (context.mounted) (context as Element).markNeedsBuild();
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.upload_file),
                 title: const Text('备份数据'),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
@@ -51,7 +53,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
   int _requestId = 0;
-  bool _toolsEnabled = false;
+  bool _toolsEnabled = ToolRegistry.masterEnabled;
   final List<agent.AgentStep> _pendingSteps = [];
 
   @override
@@ -127,6 +129,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
             text: result.text.isEmpty
                 ? (result.error ?? '（没有返回内容）')
                 : result.text,
+            // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
+            thinking: result.thinking.isEmpty ? null : result.thinking,
             toolSteps: [
               for (final step in result.steps)
                 '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
@@ -293,10 +297,16 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                     ],
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('使用工具（插件）'),
-                      subtitle: const Text('联网搜索 / 抓网页 / 算术 / 存 HTML / 查 App 数据'),
+                      title: Text(_toolsEnabled ? '使用工具（插件）：已开启' : '使用工具（插件）'),
+                      subtitle: const Text('联网搜索 / 新闻 / 抓网页 / 算术 / HTML / 待办 / 找模型…'
+                          '（与右上角插件面板同一个开关）'),
                       value: _toolsEnabled,
-                      onChanged: (v) => setState(() => _toolsEnabled = v),
+                      onChanged: (v) {
+                        // 先刷新面板本身，再通知页面（否则点了看不到变化）。
+                        setSheetState(() {});
+                        setState(() => _toolsEnabled = v);
+                        unawaited(ToolRegistry.setMasterEnabled(v));
+                      },
                     ),
                     _sliderRow(
                       label: '温度（越高越随机）',
@@ -462,8 +472,11 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
             onPressed: _openConversationList,
           ),
           IconButton(
-            icon: Icon(_toolsEnabled ? Icons.extension : Icons.extension_off,
-                color: _toolsEnabled ? AppColors.primary : null),
+            // AppBar 是蓝色：开启时用暖色高亮，否则图标会"融进背景"看不见。
+            icon: Icon(
+              _toolsEnabled ? Icons.extension : Icons.extension_off,
+              color: _toolsEnabled ? AppColors.warning : null,
+            ),
             tooltip: _toolsEnabled ? '插件已开启（点击设置）' : '插件未开启（点击设置）',
             onPressed: () => showToolPanel(
               context,

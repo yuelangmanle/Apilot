@@ -89,12 +89,17 @@ class ChatGenerationSettings {
   /// 系统提示词（可为空）。设置后作为对话的第一条 system 消息发送。
   final String systemPrompt;
 
+  /// 上下文压缩阈值（按对话字符数估算）：超过后自动把较早的消息
+  /// 压成摘要，保留最近的对话。0 = 不自动压缩。
+  final int autoCompressAtChars;
+
   const ChatGenerationSettings({
     this.temp = 0.8,
     this.topP = 0.9,
     this.maxTokens = 2048,
     this.thinkingEnabled = false,
     this.systemPrompt = '',
+    this.autoCompressAtChars = 12000,
   });
 
   ChatGenerationSettings copyWith({
@@ -103,6 +108,7 @@ class ChatGenerationSettings {
     int? maxTokens,
     bool? thinkingEnabled,
     String? systemPrompt,
+    int? autoCompressAtChars,
   }) =>
       ChatGenerationSettings(
         temp: temp ?? this.temp,
@@ -110,6 +116,8 @@ class ChatGenerationSettings {
         maxTokens: maxTokens ?? this.maxTokens,
         thinkingEnabled: thinkingEnabled ?? this.thinkingEnabled,
         systemPrompt: systemPrompt ?? this.systemPrompt,
+        autoCompressAtChars:
+            autoCompressAtChars ?? this.autoCompressAtChars,
       );
 
   Map<String, dynamic> toJson() => {
@@ -118,6 +126,7 @@ class ChatGenerationSettings {
         'maxTokens': maxTokens,
         'thinkingEnabled': thinkingEnabled,
         if (systemPrompt.isNotEmpty) 'systemPrompt': systemPrompt,
+        'autoCompressAtChars': autoCompressAtChars,
       };
 
   static ChatGenerationSettings fromJson(Map<String, dynamic> json) =>
@@ -127,6 +136,8 @@ class ChatGenerationSettings {
         maxTokens: (json['maxTokens'] as num?)?.toInt() ?? 2048,
         thinkingEnabled: json['thinkingEnabled'] == true,
         systemPrompt: json['systemPrompt'] as String? ?? '',
+        autoCompressAtChars:
+            (json['autoCompressAtChars'] as num?)?.toInt() ?? 12000,
       );
 }
 
@@ -141,6 +152,9 @@ class ChatConversation {
   final List<ChatMessageRecord> messages;
   ChatGenerationSettings settings;
 
+  /// 上下文压缩后的历史摘要（替代被压掉的老消息，随对话持久化）。
+  String summary;
+
   ChatConversation({
     required this.id,
     required this.title,
@@ -150,6 +164,7 @@ class ChatConversation {
     required this.updatedAt,
     required this.messages,
     this.settings = const ChatGenerationSettings(),
+    this.summary = '',
   });
 
   /// 最后一条消息摘要（列表展示用）。
@@ -171,6 +186,7 @@ class ChatConversation {
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
         'settings': settings.toJson(),
+        if (summary.isNotEmpty) 'summary': summary,
         'messages': messages.map((m) => m.toJson()).toList(),
       };
 
@@ -194,6 +210,7 @@ class ChatConversation {
             ? ChatGenerationSettings.fromJson(
                 Map<String, dynamic>.from(json['settings'] as Map))
             : const ChatGenerationSettings(),
+        summary: json['summary'] as String? ?? '',
       );
 }
 

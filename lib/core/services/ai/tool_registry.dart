@@ -142,6 +142,27 @@ class ToolRegistry {
   static bool isCategoryEnabled(String category) =>
       !_disabled.contains(category);
 
+  /// 工具总开关（对话页那个开关，跨重启保留）。
+  static const _masterKey = 'ai_tools_master_enabled';
+  static bool _masterEnabled = false;
+
+  static bool get masterEnabled => _masterEnabled;
+
+  static Future<void> loadMasterEnabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _masterEnabled = prefs.getBool(_masterKey) ?? false;
+    } catch (_) {}
+  }
+
+  static Future<void> setMasterEnabled(bool value) async {
+    _masterEnabled = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_masterKey, value);
+    } catch (_) {}
+  }
+
   /// 从本地偏好加载开关（App 启动时调用一次）。
   static Future<void> loadEnabledFromPrefs() async {
     try {
@@ -203,6 +224,7 @@ class ToolRegistry {
     final buffer = StringBuffer()
       ..writeln('你可以使用以下工具。需要时，**只输出一行**，格式：')
       ..writeln('@@TOOL {"name":"工具名","args":{...}}')
+      ..writeln('（写成 @@工具名 {参数} 也可以，但一行只能有一个调用）')
       ..writeln('宿主会执行并把结果发给你，你再用自然语言回答用户。')
       ..writeln('不需要工具时正常回答，不要输出 @@TOOL。')
       ..writeln('多步任务建议先用 todo_write 列出计划，再逐项执行；'
@@ -218,22 +240,103 @@ class ToolRegistry {
   ///
   /// 花括号配对扫描而非正则：参数常含嵌套对象（`{"args":{...}}`）。
   static ({String name, Map<String, dynamic> args})? parseCall(String text) {
+    // ① 规范写法：@@TOOL {"name":"...","args":{...}}
     final json = _extractToolJson(text);
-    if (json == null) return null;
+    if (json != null) {
+      // 规范写法：只要 JSON 里有 name 就认（未知工具交给 execute 报错）。
+      final parsed = _fromJson(json, requireKnown: false);
+      if (parsed != null) return parsed;
+    }
+    // ② 模型很自然会写成 @@工具名 {参数}（真机实测 Spark 就是这样），
+    //    协议必须认——否则模型明明调对了工具，我们却不执行，只把原文糊到聊天里。
+    final inline = RegExp(r'@@([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{)')
+        .firstMatch(text);
+    if (inline != null) {
+      final name = inline.group(1)!;
+      if (byName(name) != null) {
+        final argsJson = _extractBalancedJson(text, inline.start + inline.group(0)!.length - 1);
+        if (argsJson != null) {
+          final parsed = _fromJson(argsJson, fallbackName: name);
+          if (parsed != null) return parsed;
+        }
+        return (name: name, args: const <String, dynamic>{});
+      }
+    }
+    // ③ 裸 JSON（含 name/tool/tool_name 字段且是我们认识的工具）。
+    final bare = _extractBalancedJson(text, text.indexOf('{'));
+    if (bare != null) {
+      final parsed = _fromJson(bare);
+      if (parsed != null) return parsed;
+    }
+    return null;
+  }
+
+  static ({String name, Map<String, dynamic> args})? _fromJson(
+    String json, {
+    String? fallbackName,
+    bool requireKnown = true,
+  }) {
     try {
       final decoded = jsonDecode(json);
       if (decoded is! Map) return null;
-      final name = decoded['name']?.toString() ?? '';
+      final name = (decoded['name'] ??
+              decoded['tool'] ??
+              decoded['tool_name'] ??
+              fallbackName ??
+              '')
+          .toString();
       if (name.isEmpty) return null;
-      final argsRaw = decoded['args'];
-      final args = argsRaw is Map
-          ? Map<String, dynamic>.from(argsRaw)
-          : <String, dynamic>{};
+      // 宽松写法（@@工具名 / 裸 JSON）要求名字确实是我们注册过的工具，
+      // 否则普通的 JSON 文本会被误判成工具调用。
+      if (requireKnown && byName(name) == null) return null;
+      // 参数可能在 args / arguments / parameters 里，也可能直接平铺在顶层。
+      final argsRaw = decoded['args'] ??
+          decoded['arguments'] ??
+          decoded['parameters'];
+      Map<String, dynamic> args;
+      if (argsRaw is Map) {
+        args = Map<String, dynamic>.from(argsRaw);
+      } else {
+        args = Map<String, dynamic>.from(decoded)
+          ..remove('name')
+          ..remove('tool')
+          ..remove('tool_name');
+      }
       return (name: name, args: args);
     } catch (e) {
       debugPrint('[Tools] 解析工具调用失败: $e');
       return null;
     }
+  }
+
+  /// 从 [start] 位置的 `{` 开始做花括号配对，取出完整 JSON 对象。
+  static String? _extractBalancedJson(String text, int start) {
+    if (start < 0 || start >= text.length || text[start] != '{') return null;
+    var depth = 0;
+    var inString = false;
+    var escaped = false;
+    for (var i = start; i < text.length; i++) {
+      final char = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char == r'\') {
+          escaped = true;
+        } else if (char == '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (char == '"') {
+        inString = true;
+      } else if (char == '{') {
+        depth++;
+      } else if (char == '}') {
+        depth--;
+        if (depth == 0) return text.substring(start, i + 1);
+      }
+    }
+    return null;
   }
 
   static String? _extractToolJson(String text) {
@@ -270,19 +373,21 @@ class ToolRegistry {
 
   static String stripCall(String text) {
     var result = text;
+    // 反复剥掉：@@TOOL {...} 与 @@工具名 {...} 两种写法。
+    final pattern = RegExp(r'@@(?:TOOL\s*)?([a-zA-Z_][a-zA-Z0-9_]*)?\s*\{');
     while (true) {
-      final json = _extractToolJson(result);
-      if (json == null) {
-        if (result.contains('@@TOOL')) {
+      final match = pattern.firstMatch(result);
+      if (match == null) {
+        if (result.contains('@@')) {
           result = result.replaceAll('@@TOOL', '');
-          continue;
         }
         break;
       }
-      final marker = result.indexOf('@@TOOL');
-      final start = result.indexOf(json, marker);
-      result =
-          result.substring(0, marker) + result.substring(start + json.length);
+      final json = _extractBalancedJson(
+          result, result.indexOf('{', match.start));
+      if (json == null) break;
+      final end = result.indexOf(json, match.start) + json.length;
+      result = result.substring(0, match.start) + result.substring(end);
     }
     return result.trim();
   }

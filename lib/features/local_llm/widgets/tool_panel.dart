@@ -16,13 +16,20 @@ Future<void> showToolPanel(
   required ValueChanged<bool> onToolsChanged,
   required bool visionAvailable,
 }) {
+  // 注意：这些状态必须声明在 builder 之外——放在 builder 里会在每次
+  // setState 重建时被重新初始化，表现就是"点了开关没反应"。
+  var master = toolsEnabled;
+  final enabled = <String, bool>{
+    for (final category in ToolRegistry.categories)
+      category.id: ToolRegistry.isCategoryEnabled(category.id),
+  };
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    // 全屏高度时内容会顶到状态栏，导致标题与时间/电量重叠。
+    useSafeArea: true,
     builder: (sheetContext) => StatefulBuilder(
       builder: (sheetContext, setSheetState) {
-        // 面板自己的总开关状态：点一下立刻有反馈，落盘在后台完成。
-        var master = toolsEnabled;
         final secondary = Theme.of(sheetContext).brightness == Brightness.dark
             ? AppColors.darkTextSecondary
             : AppColors.textSecondary;
@@ -50,6 +57,7 @@ Future<void> showToolPanel(
                   onChanged: (v) {
                     setSheetState(() => master = v);
                     onToolsChanged(v);
+                    unawaited(ToolRegistry.setMasterEnabled(v));
                   },
                 ),
                 const Divider(height: 8),
@@ -70,21 +78,13 @@ Future<void> showToolPanel(
                                   : category.description,
                               style: TextStyle(fontSize: 12, color: secondary),
                             ),
-                            value: master &&
-                                ToolRegistry.isCategoryEnabled(category.id),
+                            value: master && (enabled[category.id] ?? true),
                             onChanged: !master
                                 ? null
                                 : (v) {
                                     // 乐观更新：先反映到界面，再落盘。
-                                    setSheetState(() {
-                                      if (v) {
-                                        ToolRegistry
-                                            .enableCategoryInMemory(category.id);
-                                      } else {
-                                        ToolRegistry
-                                            .disableCategoryInMemory(category.id);
-                                      }
-                                    });
+                                    setSheetState(
+                                        () => enabled[category.id] = v);
                                     unawaited(ToolRegistry.setCategoryEnabled(
                                         category.id, v));
                                   },
