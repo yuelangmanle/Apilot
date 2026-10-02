@@ -757,10 +757,14 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (_projectors.isNotEmpty && projectorName == null)
+          // 只有视觉家族的模型才需要投影：投影是模型专用的，
+          // 让纯文本模型也能"套一个"只会得到加载失败与误导。
+          if (_projectors.isNotEmpty &&
+              projectorName == null &&
+              ModelCapabilities.isVisionFamily(model.name))
             IconButton(
               icon: const Icon(Icons.link, color: AppColors.warning),
-              tooltip: '配对视觉投影（多模态模型看图用）',
+              tooltip: '配对视觉投影（仅多模态模型）',
               onPressed: () => _pairProjectorFor(model),
             ),
           IconButton(
@@ -834,24 +838,99 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     );
   }
 
-  /// 手动把一个投影配对给这个模型（配对后条目会折叠显示投影）。
+  /// 手动把一个投影配对给这个模型。
+  ///
+  /// **投影是模型专用的**：维度不匹配会被引擎拒绝（回退纯文本）。所以这里
+  /// ① 把"名字能对上"的排前面并打勾；② 选不匹配的会二次确认并说明后果。
   Future<void> _pairProjectorFor(DownloadedModel model) async {
     final messenger = ScaffoldMessenger.of(context);
+    final modelCore = ModelCapabilities.coreToken(model.fileName);
+
+    bool nameMatches(File file) {
+      final projectorName = file.uri.pathSegments.last.toLowerCase();
+      if (modelCore.isEmpty) return false;
+      return projectorName.contains(modelCore);
+    }
+
+    final sorted = List<File>.from(_projectors)
+      ..sort((a, b) {
+        final aMatch = nameMatches(a) ? 0 : 1;
+        final bMatch = nameMatches(b) ? 0 : 1;
+        return aMatch.compareTo(bMatch);
+      });
+
     final picked = await showDialog<File>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: Text('给「${model.name}」选择视觉投影'),
         children: [
-          for (final file in _projectors)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text(
+              '投影是模型专用的（每个模型独一份）：只有与它配套的那一个才能用。'
+              '名字能对上的已排在前面。',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(dialogContext).brightness == Brightness.dark
+                      ? AppColors.darkTextSecondary
+                      : AppColors.textSecondary),
+            ),
+          ),
+          for (final file in sorted)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(dialogContext, file),
-              child: Text(file.uri.pathSegments.last,
-                  style: const TextStyle(fontSize: 13)),
+              child: Row(
+                children: [
+                  Icon(
+                    nameMatches(file) ? Icons.check_circle : Icons.help_outline,
+                    size: 16,
+                    color: nameMatches(file)
+                        ? AppColors.success
+                        : AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(file.uri.pathSegments.last,
+                        style: const TextStyle(fontSize: 13)),
+                  ),
+                  if (nameMatches(file))
+                    const Text('名字匹配',
+                        style: TextStyle(
+                            fontSize: 10, color: AppColors.success)),
+                ],
+              ),
             ),
         ],
       ),
     );
     if (picked == null) return;
+
+    // 名字对不上：二次确认（说明可能加载失败，会回退纯文本）。
+    if (!nameMatches(picked)) {
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('这个投影可能不配套'),
+          content: Text(
+            '「${picked.uri.pathSegments.last}」的名字与「${model.name}」对不上，'
+            '大概率不是它的投影。投影层维度必须与主模型一致，配错会导致：'
+            '看图用不了（引擎会拒绝加载并回退纯文本），文本对话不受影响。\n\n'
+            '确定要配对吗？',
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('仍要配对')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
     await ModelStorageSettings.pairProjector(
         model.fileName, picked.uri.pathSegments.last);
     await _refreshDownloaded();
@@ -863,20 +942,38 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   /// 找该主模型配套的投影文件名（配对记录优先，其次单投影回退）。
   String? _projectorFor(DownloadedModel model) {
     final name = model.fileName;
+    // 纯文本模型不该显示"投影已装"（它本来就看不到图）。
+    if (!ModelCapabilities.isVisionFamily(model.name)) return null;
     for (final pair in _projectorPairs.entries) {
       if (pair.key == name) return pair.value;
     }
     if (_projectors.length == 1 && _downloaded.length == 1) {
       return _projectors.first.uri.pathSegments.last;
     }
-    // 目录里只有一个投影，且只有一个"视觉家族"模型 → 直接配上
-    // （用户只可能有一个视觉模型时，这是最符合直觉的默认行为）。
+    // 目录里只有一个投影、只有一个视觉家族模型、**且投影名不指向别的模型**
+    // 才自动配上（投影模型专用，宽松配对会把别人的投影套上来）。
     if (_projectors.length == 1) {
+      final projectorName = _projectors.first.uri.pathSegments.last;
       final visionModels = _downloaded
           .where((m) => ModelCapabilities.isVisionFamily(m.name))
           .toList();
-      if (visionModels.length == 1 && visionModels.first.fileName == name) {
-        return _projectors.first.uri.pathSegments.last;
+      final genericName = RegExp(r'^mmproj[-_]?(f16|bf16|f32|q8_0)?\.gguf$',
+              caseSensitive: false)
+          .hasMatch(projectorName);
+      final belongsToOtherModel = _downloaded.any((m) =>
+          m.fileName != name &&
+          ModelCapabilities.isVisionFamily(m.name) &&
+          projectorName
+              .toLowerCase()
+              .contains(ModelCapabilities.coreToken(m.fileName)));
+      if (visionModels.length == 1 &&
+          visionModels.first.fileName == name &&
+          !belongsToOtherModel &&
+          (genericName ||
+              projectorName
+                  .toLowerCase()
+                  .contains(ModelCapabilities.coreToken(name)))) {
+        return projectorName;
       }
     }
     // 名字包含核心词也算（如 mmproj-gemma-3-4b-it-f16.gguf）。

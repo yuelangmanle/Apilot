@@ -7,13 +7,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 本地推理性能档位。
 enum LocalLlmPreset {
   /// 省电：少线程、关 GPU、KV 量化到 4bit（内存最省）。
-  saver('saver', '省电', '速度慢一些，但更省电、内存占用最低'),
+  saver('saver', '省电（更慢）', '线程少、GPU 关、KV 压到最小：最省电省内存，但生成最慢'),
 
   /// 均衡（默认）：大核 4 线程 + 自动 GPU 卸载 + q8_0 KV 量化。
-  balanced('balanced', '均衡', '推荐：速度与发热的平衡点'),
+  balanced('balanced', '均衡（推荐）', '大核 4 线程 + KV q8_0：速度与发热的平衡点，日常用这个'),
 
   /// 性能：全大核 + 尽量 GPU 卸载 + f16 KV（最快，发热明显）。
-  performance('performance', '性能', '最快，但发热与耗电更高，部分机型可能不稳');
+  performance('performance', '性能（最快）', '全大核 + 尽量 GPU 卸载：生成最快，但更热更耗电，个别机型可能不稳');
 
   final String id;
   final String label;

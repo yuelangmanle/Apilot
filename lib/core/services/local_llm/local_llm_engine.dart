@@ -216,6 +216,9 @@ class LocalLlmEngine {
             : messages;
     await for (final chunk in engine.create(
       effectiveMessages,
+      // 关键：enableThinking 默认 true，模型会先把思考跑完再吐正文——
+      // 用户看到的就是"不是流式、还慢"。关掉开关时必须真的传给模板。
+      enableThinking: thinkingEnabled,
       params: GenerationParams(
         maxTokens: maxTokens,
         temp: temp,

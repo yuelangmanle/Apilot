@@ -25,7 +25,11 @@ class AiService {
   static const String _useLocalKey = 'apilot_ai_use_local';
   static const String _enabledKey = 'apilot_ai_enabled';
   static const String _localModelKey = 'apilot_ai_local_model';
-  static const Duration _timeout = Duration(seconds: 30);
+  // 工具模式要带工具说明 + 可能 2048 输出，30 秒经常不够（尤其国内中转站）。
+  static const Duration _timeout = Duration(seconds: 90);
+
+  /// 最近一次失败的原因（界面据此给出可读提示，而不是笼统的"调用失败"）。
+  static String? lastError;
 
   /// 已加载的本地引擎共享给全部 AI 功能：
   /// 聊天页加载模型后注册到这里，AI 诊断/分析等无需重复加载。
@@ -132,8 +136,11 @@ class AiService {
       return await _askCloud(config, userPrompt, systemPrompt, maxTokens)
           .timeout(_timeout);
     } on TimeoutException {
+      lastError = '请求超时（${_timeout.inSeconds}s）：模型/中转站太慢或网络不通';
       return null;
-    } catch (_) {
+    } catch (e) {
+      lastError = '$e';
+      debugPrint('[AiService] ask 失败: $e');
       return null;
     }
   }

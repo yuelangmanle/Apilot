@@ -281,7 +281,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
             text: finalText.isEmpty
-                ? (result.error ?? '（没有返回内容）')
+                ? '${result.error ?? '（没有返回内容）'}'
+                    '${AiService.lastError == null ? '' : '\n原因：${AiService.lastError}'}'
                 : finalText,
                 // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
             thinking: result.thinking.isEmpty ? null : result.thinking,
@@ -918,7 +919,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                             : const Icon(Icons.compress, size: 18),
                         label: Text(_compressing
                             ? '压缩中…'
-                            : '立即压缩上下文（保留最近 8 条）'),
+                            : '立即整理上下文（折叠旧工具输出 + 增量摘要）'),
                         onPressed: _compressing
                             ? null
                             : () => _compressContext(),
@@ -1271,6 +1272,19 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (_isGenerating &&
+                _streamText.isEmpty &&
+                _streamThinking.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('思考中…（已 ${_streamThinking.length} 字，'
+                    '点击气泡上方「查看思考过程」可展开）',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? AppColors.darkTextSecondary
+                            : AppColors.textSecondary)),
+              ),
             if (_pendingSteps.isNotEmpty)
               _thinkingPanel(
                 [
@@ -1388,7 +1402,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 思考过程面板：默认折叠，点击展开/收起。
   Widget _thinkingPanel(String thinking, int index, bool isDark,
       {String? title}) {
-    final expanded = _expandedThinking.contains(index);
+    // 生成中的思考面板（index == -1）默认展开：否则用户只看到"没动静"。
+    final expanded =
+        index == -1 ? !_expandedThinking.contains(-1) : _expandedThinking.contains(index);
     final color =
         isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
     return Container(
