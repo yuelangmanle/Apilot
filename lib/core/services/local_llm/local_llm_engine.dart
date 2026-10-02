@@ -52,17 +52,27 @@ class LocalLlmEngine {
     debugPrint('[LocalLlm] 加载参数: ${LocalLlmTuning.describe()}');
     await engine.loadModelSource(
       ModelSource.path(filePath),
-      modelParams: ModelParams(
-        contextSize: contextSize,
-        numberOfThreads: threads,
-        numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
-        // 负值 = 交给底层自动（“尽量卸载”），0 = 纯 CPU。
-        gpuLayers: gpuLayers < 0 ? -1 : gpuLayers,
-        useMmap: true,
-        flashAttention: LocalLlmTuning.resolveFlashAttention(),
-        cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
-        cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
-      ),
+      // gpuLayers == null → 用库默认（能卸就卸，最快）；0 → 纯 CPU（省电档）。
+      modelParams: gpuLayers == null
+          ? ModelParams(
+              contextSize: contextSize,
+              numberOfThreads: threads,
+              numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
+              useMmap: true,
+              flashAttention: LocalLlmTuning.resolveFlashAttention(),
+              cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
+              cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
+            )
+          : ModelParams(
+              contextSize: contextSize,
+              numberOfThreads: threads,
+              numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
+              gpuLayers: gpuLayers,
+              useMmap: true,
+              flashAttention: LocalLlmTuning.resolveFlashAttention(),
+              cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
+              cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
+            ),
     );
     _engine = engine;
     _loadedModelPath = filePath;
@@ -141,6 +151,8 @@ class LocalLlmEngine {
   /// 2) 通用名（`mmproj-F16.gguf`）只在目录里只有这一个主模型时接受；
   /// 3) 匹配不上的投影一律忽略（绝不猜）。
   static String? _matchingProjector(String modelPath) {
+    // 纯文本模型根本不需要投影：先按家族判断，避免"每个模型都显示多模态"。
+    if (!ModelCapabilities.isVisionFamily(modelPath)) return null;
     try {
       final file = File(modelPath);
       final dir = file.parent;
@@ -166,9 +178,9 @@ class LocalLlmEngine {
       if (projectors.length == 1 && mainModels.length == 1) {
         return projectors.first.path;
       }
-      // 目录里只有一个投影文件时也采用：绝大多数用户只有一个视觉模型，
-      // 配错的代价（引擎会拒绝不匹配的投影并回退纯文本）远小于配不上的代价。
-      if (projectors.length == 1) return projectors.first.path;
+      // 注意：这里**故意不再**"只要目录里有一个投影就用"——
+      // 那条规则会让每个模型（包括纯文本的 gemma-3-1b）都被判定"多模态已就绪"，
+      // 而投影是模型专用的，套上去也用不了。
       return null;
     } catch (_) {}
     return null;

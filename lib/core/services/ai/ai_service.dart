@@ -89,6 +89,8 @@ class AiService {
     String? systemPrompt,
     required List<ApiConfig> configs,
     LocalLlmEngine? localEngine,
+    /// 流式增量回调（云端工具模式用它显示进度）。
+    void Function(String delta)? onDelta,
     /// 指定用哪个配置（云端对话页传自己的配置，不看全局设置）。
     ApiConfig? preferredConfig,
     int maxTokens = 512,
@@ -133,7 +135,8 @@ class AiService {
       }
       if (config == null) return null;
 
-      return await _askCloud(config, userPrompt, systemPrompt, maxTokens)
+      return await _askCloud(config, userPrompt, systemPrompt, maxTokens,
+              onDelta: onDelta)
           .timeout(_timeout);
     } on TimeoutException {
       lastError = '请求超时（${_timeout.inSeconds}s）：模型/中转站太慢或网络不通';
@@ -149,8 +152,9 @@ class AiService {
     ApiConfig config,
     String userPrompt,
     String? systemPrompt,
-    int maxTokens,
-  ) async {
+    int maxTokens, {
+    void Function(String delta)? onDelta,
+  }) async {
     final model = config.selectedModel ??
         (config.models.isEmpty ? '' : config.models.first);
     if (model.isEmpty) return null;
@@ -161,17 +165,38 @@ class AiService {
       {'role': 'user', 'content': userPrompt},
     ];
 
-    final result = await ApiService().sendRequest(
-      apiConfig: config,
-      model: model,
-      endpoint: '',
-      requestBody: {
-        'messages': messages,
-        'max_tokens': maxTokens,
-        'temperature': 0.3,
-      },
-    );
-    return extractAssistantText(result['body']);
+    // 走流式：文本边到边显示（onDelta），且失败马上暴露——
+    // 之前用非流式 sendRequest，遇到慢中转站会一直转圈、停止按钮也没用。
+    final buffer = StringBuffer();
+    Object? streamError;
+    try {
+      await for (final event in ApiService().sendRequestStream(
+        apiConfig: config,
+        model: model,
+        requestBody: {
+          'messages': messages,
+          'max_tokens': maxTokens,
+          'temperature': 0.3,
+        },
+      )) {
+        if (event.delta != null && event.delta!.isNotEmpty) {
+          buffer.write(event.delta);
+          onDelta?.call(event.delta!);
+        }
+        if (event.isDone && event.response != null) {
+          final text = extractAssistantText(event.response!['body']);
+          if (text != null && text.isNotEmpty) return text;
+        }
+      }
+    } catch (e) {
+      streamError = e;
+    }
+    if (buffer.isNotEmpty) return buffer.toString();
+    if (streamError != null) {
+      lastError = '$streamError';
+      debugPrint('[AiService] 云端流式失败: $streamError');
+    }
+    return null;
   }
 
   static Future<String?> _askLocal(

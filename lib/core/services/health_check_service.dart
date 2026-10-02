@@ -123,6 +123,11 @@ class HealthCheckService {
 
   HealthCheckResult? resultFor(String configId) => _results[configId];
 
+  /// 等待缓存加载完成（界面在 initState 里 await 它，再 setState 刷新）。
+  /// 之前缓存是"构造即异步加载"且不通知界面，导致重启后详情页一直显示
+  /// "未体检/无余额"，看起来像没有持久化。
+  Future<void> ensureLoaded() => _ensureLoaded();
+
   /// 记录一次单体检结果并立即落盘。
   /// （详情页"立即体检"之前只更新界面、不写缓存，返回后又会显示旧值——
   /// 余额这类信息尤其明显。）

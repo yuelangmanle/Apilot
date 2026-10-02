@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -45,7 +43,7 @@ class LocalLlmTuning {
   static int? _gpuLayersOverride;
   static int? _threadsOverride;
   static bool _flashAttention = true;
-  static bool _kvQuantized = true;
+  static bool _kvQuantized = false;
 
   static LocalLlmPreset get preset => _preset;
   static int? get gpuLayersOverride => _gpuLayersOverride;
@@ -60,7 +58,7 @@ class LocalLlmTuning {
       _gpuLayersOverride = prefs.getInt(_gpuLayersKey);
       _threadsOverride = prefs.getInt(_threadsKey);
       _flashAttention = prefs.getBool(_flashKey) ?? true;
-      _kvQuantized = prefs.getBool(_kvQuantKey) ?? true;
+      _kvQuantized = prefs.getBool(_kvQuantKey) ?? false;
     } catch (e) {
       debugPrint('[Tuning] 读取失败: $e');
     }
@@ -107,23 +105,26 @@ class LocalLlmTuning {
     if (_threadsOverride != null && _threadsOverride! > 0) {
       return _threadsOverride!;
     }
-    if (Platform.isAndroid || Platform.isIOS) {
-      return switch (_preset) {
-        LocalLlmPreset.saver => 2,
-        LocalLlmPreset.balanced => 4,
-        LocalLlmPreset.performance => 6,
-      };
-    }
-    return 0; // 桌面交给 llama.cpp 自动
+    // 0 = 交给 llama.cpp 自动（它按 CPU 拓扑选，通常比硬编码更好）。
+    // 只在"省电档"才主动压线程，性能档交给自动（避免超出大核数反而更慢）。
+    return switch (_preset) {
+      LocalLlmPreset.saver => 2,
+      LocalLlmPreset.balanced => 0,
+      LocalLlmPreset.performance => 0,
+    };
   }
 
-  /// GPU 卸载层数：0 = 不卸载；负值 = 让底层自动。
-  static int resolveGpuLayers() {
-    if (_gpuLayersOverride != null) return _gpuLayersOverride!;
+  /// GPU 卸载层数：null = 用库默认（= 能卸就卸，之前就是这样，最快）；
+  /// 0 = 强制纯 CPU（省电档）；>0 = 指定层数。
+  ///
+  /// 注意：上一版把均衡档设成 0（纯 CPU）是我引入的**性能回归**——
+  /// 之前一直用的是库默认（尽量卸载），关掉后自然"哪个档都慢"。
+  static int? resolveGpuLayers() {
+    if (_gpuLayersOverride != null) return _gpuLayersOverride;
     return switch (_preset) {
       LocalLlmPreset.saver => 0,
-      LocalLlmPreset.balanced => 0, // 均衡档保守：GPU 在部分机型不稳
-      LocalLlmPreset.performance => -1, // -1 = 尽量全部卸载（依赖底层解释）
+      LocalLlmPreset.balanced => null, // 库默认（能卸就卸）
+      LocalLlmPreset.performance => null, // 同上，靠线程数拉满
     };
   }
 
@@ -132,7 +133,9 @@ class LocalLlmTuning {
     return FlashAttention.auto;
   }
 
-  /// KV 量化：q8_0 省一半内存，几乎不掉质量（要求 flash attention 打开）。
+  /// KV 量化：**默认关闭（f16）**。
+  /// q8_0 省内存但需要 flash attention，且部分机型/后端上会变慢——
+  /// 作为高级开关由用户显式打开，先保证"默认不比以前慢"。
   static KvCacheType resolveKvCacheType() {
     if (!_kvQuantized) return KvCacheType.f16;
     return _flashAttention ? KvCacheType.q8_0 : KvCacheType.f16;
@@ -142,7 +145,7 @@ class LocalLlmTuning {
     final parts = <String>[
       _preset.label,
       '线程 ${resolveThreads() == 0 ? '自动' : resolveThreads()}',
-      'GPU 层 ${resolveGpuLayers() == 0 ? '关' : (resolveGpuLayers() < 0 ? '自动' : resolveGpuLayers())}',
+      'GPU ${resolveGpuLayers() == null ? '自动' : (resolveGpuLayers() == 0 ? '关' : resolveGpuLayers())}',
       _flashAttention ? 'FlashAttn 开' : 'FlashAttn 关',
       _kvQuantized ? 'KV q8_0' : 'KV f16',
     ];
