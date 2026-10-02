@@ -67,8 +67,10 @@ class AgentRunner {
     LocalLlmEngine? localEngine,
     List<ChatTurn> history = const [],
     String? extraSystemPrompt,
-    int maxTokens = 2048,
+    int maxTokens = 0,
     void Function(AgentStep step)? onStep,
+    /// 流式增量回调：工具模式也能边生成边显示（不再"全想完才吐字"）。
+    void Function(String delta)? onDelta,
   }) async {
     final toolDocs = ToolRegistry.describeForPrompt();
     if (toolDocs.isEmpty) {
@@ -81,6 +83,9 @@ class AgentRunner {
       toolDocs,
     ].join('\n\n');
 
+    // 动态预算：写 HTML/长文给大预算，普通问答给小预算（快且省）。
+    final effectiveMaxTokens =
+        maxTokens > 0 ? maxTokens : budgetFor(userPrompt);
     final steps = <AgentStep>[];
     final thinkingBuffer = StringBuffer();
     var prompt = userPrompt;
@@ -95,8 +100,9 @@ class AgentRunner {
         configs: configs,
         cloudConfig: cloudConfig,
         localEngine: localEngine,
-        maxTokens: maxTokens,
+        maxTokens: effectiveMaxTokens,
         imagePaths: List<String>.from(pendingImages),
+        onDelta: onDelta,
       );
       pendingImages.clear();
       final answer = reply.text;
@@ -146,7 +152,7 @@ class AgentRunner {
       configs: configs,
       cloudConfig: cloudConfig,
       localEngine: localEngine,
-      maxTokens: maxTokens,
+      maxTokens: effectiveMaxTokens,
     );
     if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
     return AgentResult(
@@ -169,6 +175,47 @@ class AgentRunner {
   }
 
   /// 单次问答：优先本地引擎，否则走 AiService（云端）。
+  /// 按任务类型给生成预算：长产出（网页/代码/文章）给大预算，否则小预算。
+  /// 用户反馈的"写 HTML 最后报没有返回内容"就是固定预算被截断导致的。
+  static int budgetFor(String prompt) {
+    final lower = prompt.toLowerCase();
+    final isLongForm = lower.contains('html') ||
+        lower.contains('网页') ||
+        lower.contains('页面') ||
+        lower.contains('代码') ||
+        lower.contains('脚本') ||
+        lower.contains('写一篇') ||
+        lower.contains('文章') ||
+        lower.contains('摘要长') ||
+        lower.contains('完整');
+    if (isLongForm) return 4096;
+    if (prompt.length > 200) return 2048;
+    return 1024;
+  }
+
+  /// 判断输出是否明显被截断（写代码/HTML 时标签不闭合、或以未完成符号结尾）。
+  static bool looksTruncated(String text, String prompt) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return false;
+    final lower = prompt.toLowerCase();
+    final isCode = lower.contains('html') ||
+        lower.contains('网页') ||
+        lower.contains('页面') ||
+        trimmed.contains('```') ||
+        trimmed.contains('<!DOCTYPE') ||
+        trimmed.contains('<html');
+    if (!isCode) return false;
+    if (trimmed.endsWith('```')) return false; // 正常收尾
+    if (trimmed.contains('</html>')) return false;
+    // 以半个标记/悬空连接符结尾 → 判定截断。
+    return trimmed.endsWith('<') ||
+        trimmed.endsWith('</') ||
+        trimmed.endsWith('-') ||
+        trimmed.endsWith(',') ||
+        trimmed.endsWith('、') ||
+        (trimmed.contains('<html') && !trimmed.contains('</html>'));
+  }
+
   static Future<({String? text, String thinking})> _ask({
     required String systemPrompt,
     required String userPrompt,
@@ -178,6 +225,7 @@ class AgentRunner {
     LocalLlmEngine? localEngine,
     required int maxTokens,
     List<String> imagePaths = const [],
+    void Function(String delta)? onDelta,
   }) async {
     // 本地对话页传了引擎 → 直接用；没有则看全局设置里的本地来源。
     var engine = localEngine;
@@ -216,8 +264,11 @@ class AgentRunner {
         final thinking = StringBuffer();
         await for (final chunk in engine
             .generateStream(messages, maxTokens: maxTokens, temp: 0.6)
-            .timeout(const Duration(minutes: 3))) {
-          if (chunk.content != null) content.write(chunk.content);
+            .timeout(const Duration(minutes: 4))) {
+          if (chunk.content != null) {
+            content.write(chunk.content);
+            onDelta?.call(chunk.content!);
+          }
           if (chunk.thinking != null) thinking.write(chunk.thinking);
         }
         return (text: content.toString(), thinking: thinking.toString());

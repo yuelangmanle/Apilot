@@ -173,6 +173,35 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
+        // 网关前台服务通道：Flutter 启动/停止网关时同步开关常驻通知与唤醒锁。
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            GATEWAY_FOREGROUND_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "start" -> {
+                        val port = call.argument<Int>("port") ?: 8787
+                        val intent = Intent(this, GatewayForegroundService::class.java)
+                            .putExtra("port", port)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(true)
+                    }
+                    "stop" -> {
+                        stopService(Intent(this, GatewayForegroundService::class.java))
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                result.error("GATEWAY_SERVICE", e.message, null)
+            }
+        }
+
         qrScannerChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             QR_SCANNER_CHANNEL_NAME
@@ -543,6 +572,7 @@ class MainActivity : FlutterFragmentActivity() {
         private const val CHANNEL_NAME = "com.apilot/third_party_import"
         private const val API_CONFIG_PICK_CHANNEL_NAME = "com.apilot/third_party_api_config_pick"
         private const val GATEWAY_GRANT_CHANNEL_NAME = "com.apilot/third_party_gateway_grant"
+        private const val GATEWAY_FOREGROUND_CHANNEL = "com.apilot/gateway_foreground"
         private const val ACTION_GRANT_GATEWAY = "com.apilot.intent.action.GRANT_GATEWAY"
         private const val EXTRA_GATEWAY_GRANT_JSON = "com.apilot.extra.GATEWAY_GRANT_JSON"
         private const val EXTRA_REQUESTED_SCOPE = "com.apilot.extra.REQUESTED_SCOPE"

@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+
 import 'dart:async';
 
 import 'package:llamadart/llamadart.dart';
@@ -20,6 +24,7 @@ class AiService {
   static const String _sourceKey = 'apilot_ai_source';
   static const String _useLocalKey = 'apilot_ai_use_local';
   static const String _enabledKey = 'apilot_ai_enabled';
+  static const String _localModelKey = 'apilot_ai_local_model';
   static const Duration _timeout = Duration(seconds: 30);
 
   /// 已加载的本地引擎共享给全部 AI 功能：
@@ -176,13 +181,44 @@ class AiService {
 
   /// 自动加载本机已下载的模型（优先最小的，加载最快）。
   /// 加载成功的引擎会注册为共享引擎，后续 AI 调用直接复用。
+  /// 用户在「AI 设置」里指定的本地模型（重启后仍生效）。
+  static Future<void> setPreferredLocalModel(String filePath) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_localModelKey, filePath);
+      // 立刻换掉共享引擎，让下一次调用就用新模型。
+      final previous = _sharedEngine;
+      _sharedEngine = null;
+      await previous?.dispose();
+    } catch (e) {
+      debugPrint('[AiService] 保存本地模型选择失败: $e');
+    }
+  }
+
   static Future<LocalLlmEngine?> _tryAutoLoadLocalEngine() async {
     try {
       final files = await ModelDownloadService.listDownloadedModels();
       if (files.isEmpty) return null;
-      files.sort((a, b) => a.lengthSync().compareTo(b.lengthSync()));
+      // 优先用户指定的模型；否则最小的那个（加载最快）。
+      String? preferred;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        preferred = prefs.getString(_localModelKey);
+      } catch (_) {}
+      File? target;
+      if (preferred != null && preferred.isNotEmpty) {
+        for (final file in files) {
+          if (file.path == preferred) {
+            target = file;
+            break;
+          }
+        }
+      }
+      target ??= (files
+            ..sort((a, b) => a.lengthSync().compareTo(b.lengthSync())))
+          .first;
       final engine = LocalLlmEngine();
-      await engine.loadModel(files.first.path);
+      await engine.loadModel(target.path);
       _sharedEngine = engine;
       return engine;
     } catch (_) {

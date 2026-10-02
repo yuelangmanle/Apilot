@@ -7,6 +7,7 @@ class ModelCapabilities {
 
   /// 多模态（视觉）模型家族关键字。
   static const _visionFamilies = [
+    'qwen3.5', 'qwen3-5', 'mimo-vl', 'gemma-3n', 'gemma3n', 'lfm2-vl',
     'gemma-3', 'gemma3', 'qwen2-vl', 'qwen2.5-vl', 'qwen3-vl',
     'llava', 'bakllava', 'moondream', 'minicpm-v', 'minicpm-o',
     'phi-3.5-vision', 'phi-4-multimodal', 'smolvlm', 'internvl',

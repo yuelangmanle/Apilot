@@ -34,6 +34,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   final Map<String, DownloadProgress> _downloads = {};
   List<DownloadedModel> _downloaded = [];
   List<PartialDownload> _partials = [];
+  List<File> _projectors = [];
+  Map<String, String> _projectorPairs = {};
   List<LocalModelInfo> _communityModels = [];
   List<SavedModelEntry> _savedModels = [];
   final ModelCatalogStore _catalogStore = ModelCatalogStore();
@@ -160,6 +162,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   Future<void> _refreshDownloaded() async {
     final files = await ModelDownloadService.listDownloadedModels();
     final partials = await ModelDownloadService.listPartialDownloads();
+    final projectors = await ModelDownloadService.listProjectors();
+    final pairs = await ModelStorageSettings.projectorPairs();
     await _loadSavedModels();
     if (!mounted) return;
     setState(() {
@@ -168,6 +172,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
       _partials = partials;
+      _projectors = projectors;
+      _projectorPairs = pairs;
       _loading = false;
     });
   }
@@ -562,34 +568,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                       fontSize: 15,
                       color: secondary)),
                   const SizedBox(height: 8),
-                  for (final model in _downloaded)
-                    Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: const Icon(Icons.memory, color: AppColors.success),
-                        title: Text(model.name,
-                            style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text('点击开始对话 · ${model.sizeMb}',
-                            style: TextStyle(fontSize: 12, color: secondary)),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.chat_bubble_outline,
-                                  color: AppColors.primary),
-                              tooltip: '开始对话',
-                              onPressed: () => _openChat(model),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline,
-                                  color: AppColors.error),
-                              onPressed: () => _deleteModel(model),
-                            ),
-                          ],
-                        ),
-                        onTap: () => _openChat(model),
-                      ),
-                    ),
+                  for (final model in _downloaded) _buildDownloadedTile(model),
                   const Divider(height: 24),
                   Text('可下载模型',
                       style: TextStyle(
@@ -756,6 +735,114 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
         displayName: parsed.modelName,
       );
     }
+  }
+
+  /// 已下载模型（若有配套的视觉投影，**收在同一条目里**，点箭头展开）。
+  Widget _buildDownloadedTile(DownloadedModel model) {
+    final projectorName = _projectorFor(model);
+    final tile = ListTile(
+      leading: const Icon(Icons.memory, color: AppColors.success),
+      title: Text(model.name,
+          style: const TextStyle(fontWeight: FontWeight.bold)),
+      subtitle: Text(
+        '点击开始对话 · ${model.sizeMb}'
+        '${projectorName != null ? ' · 视觉投影已装（可看图）' : ''}',
+        style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).brightness == Brightness.dark
+                ? AppColors.darkTextSecondary
+                : AppColors.textSecondary),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.chat_bubble_outline,
+                color: AppColors.primary),
+            tooltip: '开始对话',
+            onPressed: () => _openChat(model),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: AppColors.error),
+            onPressed: () => _deleteModel(model),
+          ),
+        ],
+      ),
+      onTap: () => _openChat(model),
+    );
+    if (projectorName == null) {
+      return Card(margin: const EdgeInsets.only(bottom: 8), child: tile);
+    }
+    // 有投影：默认收起，点开能看到投影文件（附件式展示，不单列成模型）。
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ExpansionTile(
+        shape: const Border(),
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+        childrenPadding: const EdgeInsets.only(left: 16, right: 8, bottom: 8),
+        leading: const Icon(Icons.memory, color: AppColors.success),
+        title: Text(model.name,
+            style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text('点击开始对话 · ${model.sizeMb} · 多模态（投影已装）',
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? AppColors.darkTextSecondary
+                    : AppColors.textSecondary)),
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.visibility_outlined,
+                  size: 16, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text('视觉投影：$projectorName',
+                    style: const TextStyle(fontSize: 12)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline,
+                    size: 18, color: AppColors.error),
+                tooltip: '删除投影（主模型保留）',
+                onPressed: () async {
+                  final files =
+                      await ModelDownloadService.listProjectors();
+                  for (final file in files) {
+                    if (file.uri.pathSegments.last == projectorName) {
+                      await ModelDownloadService.deleteModelFile(file.path);
+                    }
+                  }
+                  await _refreshDownloaded();
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.chat_bubble_outline,
+                    size: 18, color: AppColors.primary),
+                tooltip: '开始对话',
+                onPressed: () => _openChat(model),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 找该主模型配套的投影文件名（配对记录优先，其次单投影回退）。
+  String? _projectorFor(DownloadedModel model) {
+    final name = model.fileName;
+    for (final pair in _projectorPairs.entries) {
+      if (pair.key == name) return pair.value;
+    }
+    if (_projectors.length == 1 && _downloaded.length == 1) {
+      return _projectors.first.uri.pathSegments.last;
+    }
+    // 名字包含核心词也算（如 mmproj-gemma-3-4b-it-f16.gguf）。
+    final core = model.name.toLowerCase().split(RegExp(r'-(?=q\d|iq\d)')).first;
+    for (final projector in _projectors) {
+      final pName = projector.uri.pathSegments.last.toLowerCase();
+      if (core.isNotEmpty && pName.contains(core)) return pName;
+    }
+    return null;
   }
 
   /// 未完成下载卡片：绑实时进度（续传后立刻能看到进度与已下大小）。

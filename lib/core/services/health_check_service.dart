@@ -123,6 +123,40 @@ class HealthCheckService {
 
   HealthCheckResult? resultFor(String configId) => _results[configId];
 
+  /// 记录一次单体检结果并立即落盘。
+  /// （详情页"立即体检"之前只更新界面、不写缓存，返回后又会显示旧值——
+  /// 余额这类信息尤其明显。）
+  Future<void> recordResult(
+      String configId, HealthCheckResult result) async {
+    _results[configId] = result;
+    _lastCheckedAt[configId] = DateTime.now();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _prefsKey,
+        jsonEncode({
+          for (final entry in _results.entries)
+            entry.key: entry.value.toPrefsJson(),
+        }),
+      );
+      await prefs.setString(
+        _checkedAtKey,
+        jsonEncode({
+          for (final entry in _lastCheckedAt.entries)
+            entry.key: entry.value.toIso8601String(),
+        }),
+      );
+    } catch (e) {
+      debugPrint('[Health] 保存体检结果失败: $e');
+    }
+  }
+
+  /// 上次体检时间（界面显示"更新于 …"）。
+  DateTime? lastCheckedAt(String configId) => _lastCheckedAt[configId];
+
+  final Map<String, DateTime> _lastCheckedAt = {};
+  static const _checkedAtKey = 'apilot_health_checked_at';
+
   Future<void> _ensureLoaded() async {
     if (_loaded) return;
     try {

@@ -40,6 +40,7 @@ import 'core/services/local_llm/community_model_service.dart';
 import 'core/services/local_llm/download_task_store.dart';
 import 'core/services/local_llm/model_download_service.dart';
 import 'core/services/local_llm/model_repo_importer.dart';
+import 'core/services/local_llm/local_llm_tuning.dart';
 import 'core/services/local_llm/model_storage_settings.dart';
 import 'core/services/ai/tool_registry.dart';
 import 'core/services/usage_aggregator.dart';
@@ -457,6 +458,7 @@ class _AppShellState extends State<AppShell>
     // 插件开关持久化（用户逐项控制）+ 模型存储位置。
     unawaited(ToolRegistry.loadEnabledFromPrefs());
     unawaited(ToolRegistry.loadMasterEnabled());
+    unawaited(LocalLlmTuning.load());
     unawaited(ModelStorageSettings.load());
     unawaited(PersistedRoute.loadEnabled());
     ToolHost.visionEnabled = false;

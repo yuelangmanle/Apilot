@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/services/ai/ai_service.dart';
+import '../../../core/services/local_llm/local_llm_engine.dart';
+import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../../api_management/providers/api_provider.dart';
 
@@ -19,6 +21,8 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
   static const _aiEnabledKey = 'apilot_ai_enabled';
 
   String? _selectedConfigId;
+  String? _selectedLocalModelName;
+  List<DownloadedModel> _localModels = [];
   bool _useLocalModel = false;
   bool _aiEnabled = true;
   bool _loading = true;
@@ -34,6 +38,17 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
       final prefs = await SharedPreferences.getInstance();
       _selectedConfigId = prefs.getString(_aiSourceKey);
       _useLocalModel = prefs.getBool('apilot_ai_use_local') ?? false;
+      final savedLocal = prefs.getString('apilot_ai_local_model');
+      final files = await ModelDownloadService.listDownloadedModels();
+      _localModels = files.map((f) => DownloadedModel.fromFile(f)).toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+      _selectedLocalModelName = savedLocal ??
+          (_localModels.isEmpty ? null : _localModels.first.fileName);
+      if (_selectedLocalModelName != null &&
+          !_localModels.any((m) => m.fileName == _selectedLocalModelName)) {
+        _selectedLocalModelName =
+            _localModels.isEmpty ? null : _localModels.first.fileName;
+      }
       _aiEnabled = prefs.getBool(_aiEnabledKey) ?? true;
     } catch (_) {}
     if (mounted) setState(() => _loading = false);
@@ -159,6 +174,49 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                   ),
                   onTap: () => setState(() => _useLocalModel = true),
                 ),
+                if (_useLocalModel)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16, bottom: 8),
+                    child: _localModels.isEmpty
+                        ? Text('还没有已下载的本地模型：先到「模型」页下载',
+                            style: TextStyle(fontSize: 12, color: secondary))
+                        : DropdownButtonFormField<String>(
+                            initialValue: _selectedLocalModelName,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: '使用哪个本地模型（实时生效）',
+                              helperText: '选择后 AI 功能会立刻改用这个模型',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                            items: [
+                              for (final model in _localModels)
+                                DropdownMenuItem(
+                                  value: model.fileName,
+                                  child: Text(
+                                      '${model.name} · ${model.sizeMb}',
+                                      overflow: TextOverflow.ellipsis),
+                                ),
+                            ],
+                            onChanged: (value) async {
+                              if (value == null) return;
+                              setState(() => _selectedLocalModelName = value);
+                              final picked = _localModels
+                                  .firstWhere((m) => m.fileName == value);
+                              final messenger = ScaffoldMessenger.of(context);
+                              await AiService.setPreferredLocalModel(
+                                  picked.filePath);
+                              if (mounted) {
+                                messenger.showSnackBar(
+                                  SnackBar(
+                                      content: Text(
+                                          '已切换到 ${picked.name}（下次调用生效）'),
+                                      backgroundColor: AppColors.success),
+                                );
+                              }
+                            },
+                          ),
+                  ),
                 const SizedBox(height: 16),
                 Text('使用说明',
                     style: TextStyle(

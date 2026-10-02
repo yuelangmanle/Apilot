@@ -15,12 +15,16 @@ class ChatMessageRecord {
   /// 工具调用过程（每条形如"web_search(query=…)：结果摘要"，可折叠展示）。
   final List<String> toolSteps;
 
+  /// 生成速度行（如 "28 tok/s · 3.2s · 首字 0.6s"），本地与云端都记录。
+  final String? speed;
+
   const ChatMessageRecord({
     required this.role,
     required this.text,
     this.thinking,
     this.attachments = const [],
     this.toolSteps = const [],
+    this.speed,
   });
 
   Map<String, dynamic> toJson() => {
@@ -30,6 +34,7 @@ class ChatMessageRecord {
         if (attachments.isNotEmpty)
           'attachments': attachments.map((a) => a.toJson()).toList(),
         if (toolSteps.isNotEmpty) 'toolSteps': toolSteps,
+        if (speed != null && speed!.isNotEmpty) 'speed': speed,
       };
 
   static ChatMessageRecord fromJson(Map<String, dynamic> json) =>
@@ -47,6 +52,7 @@ class ChatMessageRecord {
                 ?.whereType<String>()
                 .toList() ??
             const [],
+        speed: json['speed'] as String?,
       );
 }
 

@@ -239,7 +239,10 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
       if (record.role == 'assistant' && record.text.startsWith('请求失败：')) {
         continue; // 失败提示不进上下文。
       }
-      messages.add({'role': record.role, 'content': record.text});
+      // 工具协议行不进历史：否则云端模型会照着模仿（"回复 current_time"）。
+      final cleaned = ToolRegistry.stripCall(record.text).trim();
+      if (cleaned.isEmpty) continue;
+      messages.add({'role': record.role, 'content': cleaned});
     }
     return messages;
   }

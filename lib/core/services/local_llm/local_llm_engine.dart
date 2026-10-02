@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 
+import 'local_llm_tuning.dart';
 import 'model_capabilities.dart';
 import 'model_storage_settings.dart';
 import 'model_catalog.dart';
@@ -44,9 +46,23 @@ class LocalLlmEngine {
     if (_disposed) throw StateError('引擎已释放');
     await unload();
     final engine = LlamaEngine(LlamaBackend());
+    // 应用性能档位（线程 / GPU 卸载 / FlashAttention / KV 量化）。
+    final threads = LocalLlmTuning.resolveThreads();
+    final gpuLayers = LocalLlmTuning.resolveGpuLayers();
+    debugPrint('[LocalLlm] 加载参数: ${LocalLlmTuning.describe()}');
     await engine.loadModelSource(
       ModelSource.path(filePath),
-      modelParams: ModelParams(contextSize: contextSize),
+      modelParams: ModelParams(
+        contextSize: contextSize,
+        numberOfThreads: threads,
+        numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
+        // 负值 = 交给底层自动（“尽量卸载”），0 = 纯 CPU。
+        gpuLayers: gpuLayers < 0 ? -1 : gpuLayers,
+        useMmap: true,
+        flashAttention: LocalLlmTuning.resolveFlashAttention(),
+        cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
+        cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
+      ),
     );
     _engine = engine;
     _loadedModelPath = filePath;

@@ -261,8 +261,20 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
             width: 80,
             child: Text('体检', style: TextStyle(color: secondary, fontSize: 14))),
         Expanded(
-          child: Text(badge,
-              style: TextStyle(fontSize: 14, color: color)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(badge, style: TextStyle(fontSize: 14, color: color)),
+              if (result?.balanceText != null)
+                Text('余额 ${result!.balanceText}',
+                    style: TextStyle(fontSize: 12, color: secondary)),
+              if (_healthService.lastCheckedAt(_apiConfig.id) != null)
+                Text(
+                  '更新于 ${_formatCheckedAt(_healthService.lastCheckedAt(_apiConfig.id)!)}',
+                  style: TextStyle(fontSize: 11, color: secondary),
+                ),
+            ],
+          ),
         ),
         TextButton(
           onPressed: _isCheckingHealth ? null : _checkHealthNow,
@@ -277,10 +289,23 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
     );
   }
 
+  String _formatCheckedAt(DateTime time) {
+    final now = DateTime.now();
+    if (now.difference(time).inMinutes < 1) return '刚刚';
+    if (now.difference(time).inHours < 1) {
+      return '${now.difference(time).inMinutes} 分钟前';
+    }
+    return '${time.month}-${time.day} '
+        '${time.hour.toString().padLeft(2, '0')}:'
+        '${time.minute.toString().padLeft(2, '0')}';
+  }
+
   Future<void> _checkHealthNow() async {
     setState(() => _isCheckingHealth = true);
     try {
       final result = await _healthService.checkOne(_apiConfig);
+      // 落盘：返回/重启后显示的仍是最新一次结果（含余额）。
+      await _healthService.recordResult(_apiConfig.id, result);
       if (!mounted) return;
       setState(() => _health = result);
       ScaffoldMessenger.of(context).showSnackBar(

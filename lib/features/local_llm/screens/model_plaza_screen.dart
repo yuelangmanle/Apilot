@@ -1,6 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../../api_management/providers/api_provider.dart';
+import '../../../core/services/ai/ai_service.dart';
+import 'package:provider/provider.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/services/local_llm/device_capabilities.dart';
 import '../../../core/services/local_llm/model_plaza_service.dart';
@@ -37,6 +41,9 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
   String? _error;
   int? _deviceRamMb;
   String? _resolvingDetail;
+  bool _selectMode = false;
+  final Set<String> _selected = {};
+  bool _researching = false;
   Timer? _debounce;
 
   @override
@@ -131,7 +138,38 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('模型广场'),
+        title: _selectMode
+            ? Text('已选 ${_selected.length} 个')
+            : const Text('模型广场'),
+        actions: [
+          if (_selectMode) ...[
+            IconButton(
+              icon: _researching
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.psychology_outlined),
+              tooltip: '交给 AI 调研（这些是什么/区别/推荐哪个版本）',
+              onPressed: (_selected.isEmpty || _researching)
+                  ? null
+                  : _researchSelected,
+            ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: '退出选择',
+              onPressed: () => setState(() {
+                _selectMode = false;
+                _selected.clear();
+              }),
+            ),
+          ] else
+            IconButton(
+              icon: const Icon(Icons.checklist),
+              tooltip: '多选（可交给 AI 调研）',
+              onPressed: () => setState(() => _selectMode = true),
+            ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(108),
           child: Padding(
@@ -246,10 +284,31 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
           children: [
             Row(
               children: [
+                if (_selectMode) ...[
+                  Icon(
+                    _selected.contains(model.info.id)
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    size: 18,
+                    color: _selected.contains(model.info.id)
+                        ? AppColors.primary
+                        : secondary,
+                  ),
+                  const SizedBox(width: 6),
+                ],
                 Expanded(
-                  child: Text(model.info.name,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 14)),
+                  child: GestureDetector(
+                    onTap: _selectMode
+                        ? () => setState(() {
+                              if (!_selected.remove(model.info.id)) {
+                                _selected.add(model.info.id);
+                              }
+                            })
+                        : null,
+                    child: Text(model.info.name,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 14)),
+                  ),
                 ),
                 if (canFit != null)
                   Container(
@@ -368,6 +427,73 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
         fileName: model.projector!.fileName,
         displayName: '${model.info.name} 视觉投影',
       );
+    }
+  }
+
+  /// 把选中的模型交给 AI 调研：这是干什么的 / 各版本区别 / 推荐哪个。
+  Future<void> _researchSelected() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final picked = _models
+        .where((m) => _selected.contains(m.info.id))
+        .take(6)
+        .toList();
+    if (picked.isEmpty) return;
+    setState(() => _researching = true);
+    try {
+      final configs = context.read<ApiProvider>().allApiConfigs;
+      final lines = picked
+          .map((m) => '- ${m.info.name}｜${m.info.sizeMb}｜'
+              '${m.info.quantization}｜下载 ${m.downloads} 次'
+              '${m.hasProjector ? '｜疑似多模态' : ''}'
+              '${m.supportsThinking ? '｜支持深度思考' : ''}')
+          .join('\n');
+      final ramNote = _deviceRamMb != null
+          ? '用户设备内存约 ${(_deviceRamMb! / 1024).toStringAsFixed(1)} GB。'
+          : '设备内存未知。';
+      final answer = await AiService.ask(
+        systemPrompt: '你是模型选型顾问。用户会给你一批候选模型，请输出：\n'
+            '1) 每个模型一句话说明它能干什么、适合什么场景；\n'
+            '2) 它们之间的关键区别（能力/体积/语言/量化）；\n'
+            '3) 明确推荐一个（结合用户设备内存），并说明理由；\n'
+            '4) 如果要下载，推荐选哪个量化版本。\n'
+            '用简洁中文，不要 Markdown 标题，控制在 400 字内。',
+        userPrompt: '$ramNote\n候选：\n$lines',
+        configs: configs,
+        maxTokens: 900,
+      );
+      if (!mounted) return;
+      setState(() => _researching = false);
+      if (answer == null || answer.trim().isEmpty) {
+        messenger.showSnackBar(const SnackBar(
+            content: Text('AI 未配置或调用失败：可先在「设置 → AI 设置」配置来源')));
+        return;
+      }
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('AI 调研（${picked.length} 个模型）'),
+          content: SingleChildScrollView(
+              child: SelectableText(answer,
+                  style: const TextStyle(fontSize: 13, height: 1.6))),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: answer));
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('复制'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) setState(() => _researching = false);
+      messenger.showSnackBar(SnackBar(
+          content: Text('调研失败：$e'), backgroundColor: AppColors.error));
     }
   }
 

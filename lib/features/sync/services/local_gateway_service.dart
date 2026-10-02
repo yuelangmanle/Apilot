@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:llamadart/llamadart.dart';
 
 import '../../../core/models/api_config.dart';
@@ -78,6 +79,8 @@ class LocalGatewayService {
         (request) => unawaited(_handle(request)),
         onError: (Object e) => debugPrint('[Gateway] 通道错误: $e'),
       );
+      // 安卓：拉起前台服务（常驻通知 + 唤醒锁），否则切后台就被冻结。
+      await _setForegroundService(running: true, port: _port);
     } catch (e) {
       _server = null;
       rethrow;
@@ -88,10 +91,31 @@ class LocalGatewayService {
     final server = _server;
     _server = null;
     await server?.close(force: true);
+    await _setForegroundService(running: false, port: _port);
     final engine = _localEngine;
     _localEngine = null;
     _localTarget = null;
     await engine?.dispose();
+  }
+
+  static const MethodChannel _foregroundChannel =
+      MethodChannel('com.apilot/gateway_foreground');
+
+  /// 开关安卓前台服务（桌面/其他平台是空操作）。
+  static Future<void> _setForegroundService({
+    required bool running,
+    required int port,
+  }) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _foregroundChannel.invokeMethod<void>(
+        running ? 'start' : 'stop',
+        running ? {'port': port} : null,
+      );
+      debugPrint('[Gateway] 前台服务 ${running ? '已启动' : '已停止'}');
+    } catch (e) {
+      debugPrint('[Gateway] 前台服务调用失败: $e');
+    }
   }
 
   static Future<void> _handle(HttpRequest request) async {

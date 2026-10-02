@@ -13,6 +13,7 @@ import '../../../core/services/ai/memory_store.dart';
 import '../../../core/services/ai/tool_registry.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
+import '../../../core/services/local_llm/local_llm_tuning.dart';
 import '../../../core/services/local_llm/model_capabilities.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../core/services/local_llm/model_storage_settings.dart';
@@ -163,8 +164,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       }
     }
 
-    // 上下文压缩：超过用户设定阈值先把早期消息压成摘要（保留最近 8 条）。
-    if (_needsCompression) {
+    // 上下文管理（分层，对齐业界共识）：
+    // ① 70% 先做免费折叠；② 85%（或用户阈值）才调模型做增量摘要。
+    if (_needsPrune) _pruneOldContent();
+    if (_needsSummarize) {
       await _compressContext(silent: true);
     }
 
@@ -174,6 +177,21 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       final explicit = MemoryStore.extractExplicitMemory(text);
       if (explicit != null) {
         await MemoryStore.save(explicit);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('已记住：$explicit（可在「记忆」里查看/删除）'),
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: '查看',
+              onPressed: () => showToolPanel(
+                context,
+                toolsEnabled: _toolsEnabled,
+                onToolsChanged: (v) => setState(() => _toolsEnabled = v),
+                visionAvailable: _engine.supportsVision,
+              ),
+            ),
+          ));
+        }
       }
     }
 
@@ -194,8 +212,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     _scrollToBottom();
 
     // 工具模式：走 Agent 循环（搜索/抓网页/算术/存 HTML/查 App）。
+    // 关键：把增量回调接到界面上——边生成边显示，不再"全想完才吐字"。
     if (_toolsEnabled) {
       _pendingSteps.clear();
+      final stopwatch = Stopwatch()..start();
+      var firstTokenMs = -1;
+      final streamed = StringBuffer();
+      var isToolProtocol = false;
       final history = <agent.ChatTurn>[
         for (final record in _conversation.messages
             .where((m) => m.role == 'user' || m.role == 'assistant')
@@ -211,19 +234,58 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         history: history.length > 6
             ? history.sublist(history.length - 6)
             : history,
+        // 增量回调：边生成边显示（工具协议文本不显示给用户）。
+        onDelta: (delta) {
+          if (!mounted) return;
+          if (firstTokenMs < 0) firstTokenMs = stopwatch.elapsedMilliseconds;
+          streamed.write(delta);
+          if (streamed.toString().contains('@@')) isToolProtocol = true;
+          if (!isToolProtocol) {
+            setState(() => _streamText = streamed.toString());
+          }
+        },
         onStep: (step) {
-          if (mounted) setState(() => _pendingSteps.add(step));
+          if (mounted) {
+            setState(() {
+              _pendingSteps.add(step);
+              // 工具开始执行后清掉流式草稿（那是协议文本）。
+              _streamText = '';
+            });
+          }
         },
       );
+      stopwatch.stop();
       if (mounted) {
+        // 截断兜底：写代码/HTML 以未闭合结尾时自动续写一次。
+        var finalText = result.text;
+        var continueCount = 0;
+        while (continueCount < 2 &&
+            agent.AgentRunner.looksTruncated(finalText, text)) {
+          continueCount++;
+          final more = await _engine.generate([
+            const LlamaChatMessage.fromText(
+                role: LlamaChatRole.user,
+                text: '继续输出，从断掉的地方接着写，不要重复已输出的内容、'
+                    '不要解释，直接接着写：'),
+          ], maxTokens: 3072, temp: 0.4);
+          if (more.trim().isEmpty) break;
+          finalText = '$finalText$more';
+        }
+        final speed = _formatSpeed(
+          chars: finalText.length,
+          firstTokenMs: firstTokenMs,
+          totalMs: stopwatch.elapsedMilliseconds,
+        );
         setState(() {
+          _streamText = '';
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
-            text: result.text.isEmpty
+            text: finalText.isEmpty
                 ? (result.error ?? '（没有返回内容）')
-                : result.text,
-            // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
+                : finalText,
+                // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
             thinking: result.thinking.isEmpty ? null : result.thinking,
+            speed: speed,
             toolSteps: [
               for (final step in result.steps)
                 '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
@@ -237,6 +299,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       return;
     }
 
+    final plainStopwatch = Stopwatch()..start();
+    var plainFirstTokenMs = -1;
     try {
       // 相关记忆注入（仅在记忆插件开启时）。
       var memorySection = '';
@@ -262,6 +326,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       )) {
         if (!mounted) return;
         if (_stopRequested) break;
+        if (plainFirstTokenMs < 0) {
+          plainFirstTokenMs = plainStopwatch.elapsedMilliseconds;
+        }
         if (chunk.thinking != null && chunk.thinking!.isNotEmpty) {
           thinking.write(chunk.thinking);
         }
@@ -283,6 +350,12 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
 
       debugPrint('[CHAT-DIAG] stream done: chunks=$chunkCount '
           'buffer=${buffer.length} stopped=$_stopRequested mounted=$mounted');
+      plainStopwatch.stop();
+      final plainSpeed = _formatSpeed(
+        chars: buffer.length,
+        firstTokenMs: plainFirstTokenMs,
+        totalMs: plainStopwatch.elapsedMilliseconds,
+      );
       if (mounted) {
         final stopped = _stopRequested;
         // 正文为空但有思考内容 = 模型把预算花在思考上了：给出可操作的说明，
@@ -300,6 +373,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                     ? '（已停止生成）'
                     : buffer.toString()),
             thinking: thinking.toString(),
+            speed: plainSpeed,
           ));
           _streamText = '';
           _streamThinking = '';
@@ -321,13 +395,78 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     _scrollToBottom();
   }
 
-  /// 需要压缩时的阈判断（按字符估算 token）。
-  bool get _needsCompression {
-    final limit = _conversation.settings.autoCompressAtChars;
-    if (limit <= 0) return false;
-    return _conversation.messages
-            .fold<int>(0, (sum, m) => sum + m.text.length) >
-        limit;
+  /// 粗粒度 token 估算：中文约 1.5 字符/token，英文约 4 字符/token。
+  /// （比纯字数准得多；本地拿不到精确 tokenizer 时的业界常规做法。）
+  static int _estimateTokens(String text) {
+    if (text.isEmpty) return 0;
+    var cjk = 0;
+    var other = 0;
+    for (final rune in text.runes) {
+      if (rune >= 0x4E00 && rune <= 0x9FFF) {
+        cjk++;
+      } else {
+        other++;
+      }
+    }
+    return (cjk / 1.5 + other / 4).ceil();
+  }
+
+  int _contextTokens() {
+    var total = _estimateTokens(_conversation.summary);
+    for (final message in _conversation.messages) {
+      total += _estimateTokens(message.text);
+      total += _estimateTokens(message.thinking ?? '');
+      for (final attachment in message.attachments) {
+        total += _estimateTokens(attachment.content ?? '');
+      }
+    }
+    return total;
+  }
+
+  /// 触发"摘要"的水位：用户可调阈值（token），或上下文长度的 85%。
+  int get _summarizeWatermark {
+    final configured = _conversation.settings.autoCompressAtChars;
+    if (configured > 0) return configured;
+    return (_contextSize * 0.85).round();
+  }
+
+  /// 触发"轻量折叠"的水位：上下文长度的 70%（不调 LLM，零成本）。
+  int get _pruneWatermark => (_contextSize * 0.70).round();
+
+  bool get _needsPrune => _contextTokens() > _pruneWatermark;
+  bool get _needsSummarize => _contextTokens() > _summarizeWatermark;
+
+  /// 第一层：轻量折叠（零成本，不调模型）。
+  /// 把较早消息里的大块内容（工具输出、思考、附件正文）截短，
+  /// 保留用户消息的首行——业界共识：用户诉求最后才动。
+  void _pruneOldContent({int keepRecent = 6}) {
+    if (_conversation.messages.length <= keepRecent) return;
+    final cutoff = _conversation.messages.length - keepRecent;
+    var changed = false;
+    for (var i = 0; i < cutoff; i++) {
+      final message = _conversation.messages[i];
+      if (message.text.length <= 400 &&
+          (message.thinking == null || message.thinking!.length <= 400)) {
+        continue;
+      }
+      // 用户消息只保留开头（保住诉求），助手长文折叠成摘要行。
+      final keep = message.role == 'user' ? 400 : 200;
+      final folded = message.text.length > keep
+          ? '${message.text.substring(0, keep)}…（已折叠 ${message.text.length - keep} 字）'
+          : message.text;
+      _conversation.messages[i] = ChatMessageRecord(
+        role: message.role,
+        text: folded,
+        thinking: null,
+        attachments: const [],
+        toolSteps: const [],
+        speed: message.speed,
+      );
+      changed = true;
+    }
+    if (changed) {
+      debugPrint('[Context] 轻量折叠完成，约 ${_contextTokens()} tokens');
+    }
   }
 
   /// 压缩上下文：保留最近 [keepRecent] 条，其余交给模型总结成一段摘要。
@@ -349,13 +488,20 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       final transcript = older
           .map((m) => '${m.role == 'user' ? '用户' : '助手'}：${m.text}')
           .join('\n');
+      // 用户诉求原样保留（压缩也不能丢用户说过什么）。
+      final userIntents = older
+          .where((m) => m.role == 'user')
+          .map((m) => '- ${m.text.replaceAll(RegExp(r'\s+'), ' ').trim()}'
+              '${m.text.length > 120 ? '…' : ''}')
+          .join('\n');
       final summary = await _engine
           .generate([
             const LlamaChatMessage.fromText(
               role: LlamaChatRole.system,
               text: '把下面这段对话压缩成要点摘要，保留人物、偏好、'
                   '结论、未完成事项与关键数据；不要评论，不要加入新信息。'
-                  '用简洁的中文短句。',
+                  '用简洁的中文短句。这是**增量压缩**：如果已有摘要，'
+                  '请与它合并去重，不要写成"摘要的摘要"。',
             ),
             LlamaChatMessage.fromText(
                 role: LlamaChatRole.user,
@@ -368,9 +514,12 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         if (_conversation.summary.isNotEmpty) _conversation.summary,
         if (summary.trim().isNotEmpty) summary.trim(),
       ].join('\n');
+      final withIntents = userIntents.isEmpty
+          ? merged
+          : '$merged\n\n用户此前提过的诉求：\n$userIntents';
       if (!mounted) return;
       setState(() {
-        _conversation.summary = merged;
+        _conversation.summary = withIntents;
         _conversation.messages
           ..clear()
           ..addAll(recent);
@@ -387,6 +536,23 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       messenger.showSnackBar(SnackBar(
           content: Text('压缩失败：$e'), backgroundColor: AppColors.error));
     }
+  }
+
+  /// 速度行：tok/s（按字符估算，CJK 约 1.6 字符/token）× 耗时 × 首字延迟。
+  String _formatSpeed({
+    required int chars,
+    required int firstTokenMs,
+    required int totalMs,
+  }) {
+    if (chars <= 0 || totalMs <= 0) return '';
+    final tokens = (chars / 1.6).clamp(1, 1 << 30);
+    final seconds = totalMs / 1000;
+    final rate = seconds > 0 ? tokens / seconds : 0;
+    final first = firstTokenMs >= 0
+        ? ' · 首字 ${(firstTokenMs / 1000).toStringAsFixed(2)}s'
+        : '';
+    return '${rate.toStringAsFixed(1)} tok/s · ${seconds.toStringAsFixed(1)}s'
+        '$first';
   }
 
   String _shorten(String text) =>
@@ -629,6 +795,34 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       onChanged: (v) => update(
                           settings.copyWith(maxTokens: v.round())),
                     ),
+                    DropdownButtonFormField<LocalLlmPreset>(
+                      initialValue: LocalLlmTuning.preset,
+                      decoration: InputDecoration(
+                        labelText: '性能档位（改完下一条消息生效）',
+                        helperText: LocalLlmTuning.describe(),
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: [
+                        for (final preset in LocalLlmPreset.values)
+                          DropdownMenuItem(
+                              value: preset, child: Text(preset.label)),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setSheetState(() {});
+                        LocalLlmTuning.setPreset(value).then((_) async {
+                          // 重新加载模型让新参数生效。
+                          try {
+                            await _engine.loadModel(widget.modelPath,
+                                contextSize: _contextSize);
+                          } catch (e) {
+                            debugPrint('[Tuning] 重载失败: $e');
+                          }
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
                     DropdownButtonFormField<int>(
                       initialValue: _contextSize,
                       decoration: const InputDecoration(
@@ -688,17 +882,21 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                     DropdownButtonFormField<int>(
                       initialValue: settings.autoCompressAtChars,
                       decoration: const InputDecoration(
-                        labelText: '上下文自动压缩阈值',
+                        labelText: '上下文摘要阈值（0=按上下文 85% 自动）',
                         helperText: '对话超过这个长度就自动把早期消息压成摘要',
                         border: OutlineInputBorder(),
                         isDense: true,
                       ),
                       items: const [
-                        DropdownMenuItem(value: 0, child: Text('不自动压缩')),
-                        DropdownMenuItem(value: 6000, child: Text('6000 字（省内存）')),
-                        DropdownMenuItem(value: 12000, child: Text('12000 字（默认）')),
-                        DropdownMenuItem(value: 24000, child: Text('24000 字')),
-                        DropdownMenuItem(value: 48000, child: Text('48000 字（长会话）')),
+                        DropdownMenuItem(
+                            value: 0, child: Text('自动（上下文 85%）')),
+                        DropdownMenuItem(
+                            value: 1500, child: Text('1500 tokens（省内存）')),
+                        DropdownMenuItem(
+                            value: 3000, child: Text('3000 tokens（默认）')),
+                        DropdownMenuItem(value: 6000, child: Text('6000 tokens')),
+                        DropdownMenuItem(
+                            value: 12000, child: Text('12000 tokens（长会话）')),
                       ],
                       onChanged: (value) {
                         if (value == null) return;
@@ -862,7 +1060,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 overflow: TextOverflow.ellipsis),
             Text(
                 '$modelName'
-                '${_modelReady ? ' · ${_engine.supportsVision ? '多模态' : '纯文本'}' : ''}'
+                '${_modelReady ? (_engine.supportsVision ? ' · 多模态' : (_engine.hasVisionCandidate ? ' · 多模态（投影已就绪）' : ' · 纯文本')) : ''}'
+                '${_modelReady ? ' · 上下文 ${(_contextTokens() / _contextSize * 100).clamp(0, 999).toStringAsFixed(0)}%' : ''}'
                 '${ModelCapabilities.supportsThinking(widget.modelName) ? ' · 支持思考' : ''}',
                 style: TextStyle(fontSize: 11, color: secondary),
                 maxLines: 1,
@@ -920,8 +1119,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                               Text(
                                   _engine.supportsVision
                                       ? '多模态模型：支持附加图片和文本文件'
-                                      : '纯文本模型：支持附加文本文件'
-                                          '（txt / md / json / csv…）',
+                                      : _engine.hasVisionCandidate
+                                          ? '多模态模型（视觉投影已就绪）：发图片时会自动启用看图'
+                                          : '纯文本模型：支持附加文本文件'
+                                              '（txt / md / json / csv…）',
                                   style: TextStyle(
                                       fontSize: 11, color: secondary)),
                             ],
@@ -1156,6 +1357,16 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 record.thinking != null &&
                 record.thinking!.isNotEmpty)
               _thinkingPanel(record.thinking!, index, isDark),
+            if (!isUser && (record.speed ?? '').isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 4),
+                child: Text(record.speed!,
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? AppColors.darkTextSecondary
+                            : AppColors.textSecondary)),
+              ),
             if (record.text.isNotEmpty)
               ChatMessageBody(
                 text: record.text,

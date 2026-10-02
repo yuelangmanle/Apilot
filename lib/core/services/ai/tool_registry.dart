@@ -262,10 +262,17 @@ class ToolRegistry {
         return (name: name, args: const <String, dynamic>{});
       }
     }
-    // ③ 裸 JSON（含 name/tool/tool_name 字段且是我们认识的工具）。
-    final bare = _extractBalancedJson(text, text.indexOf('{'));
-    if (bare != null) {
-      final parsed = _fromJson(bare);
+    // ③ 回复"恰好就是工具名"（云端模型常见）：当作无参调用执行，
+    //    否则用户会收到一条内容只有 "current_time" 的回复。
+    final nameOnly =
+        text.trim().replaceAll(RegExp(r'[`。.!！?？\s]+$'), '');
+    if (nameOnly.isNotEmpty && byName(nameOnly) != null) {
+      return (name: nameOnly, args: const <String, dynamic>{});
+    }
+    // ④ 裸 JSON（含 name/tool/tool_name 字段且是我们认识的工具）。
+    final bareJson = _extractBalancedJson(text, text.indexOf('{'));
+    if (bareJson != null) {
+      final parsed = _fromJson(bareJson);
       if (parsed != null) return parsed;
     }
     return null;

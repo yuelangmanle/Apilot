@@ -156,6 +156,190 @@ class LocalModelCatalog {
       recommended: true,
       license: 'Apache-2.0',
     ),
+    // ── Qwen3.5 系列（会思考 + 能看图） ─────────────────────────
+    LocalModelInfo(
+      id: 'qwen3.5-0.8b-q4km',
+      name: 'Qwen3.5 0.8B (Q4_K_M)',
+      description: '通义千问 3.5 超小杯（0.5GB）。会思考、能看图（含视觉投影），'
+          '低配手机的救星。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
+      sizeBytes: 536870912,
+      quantization: 'Q4_K_M',
+      ramRequired: '~1.0 GB',
+      tags: ['中文', '超轻量', '多模态', '可深度思考', '最新'],
+      recommended: true,
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
+    LocalModelInfo(
+      id: 'qwen3.5-2b-q4km',
+      name: 'Qwen3.5 2B (Q4_K_M)',
+      description: '通义千问 3.5 2B（1.19GB）。会思考 + 能看图，'
+          '2B 档最均衡的选择。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf',
+      sizeBytes: 1277752771,
+      quantization: 'Q4_K_M',
+      ramRequired: '~1.8 GB',
+      tags: ['中文', '多模态', '可深度思考', '最新'],
+      recommended: true,
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
+    LocalModelInfo(
+      id: 'qwen3.5-4b-q4km',
+      name: 'Qwen3.5 4B (Q4_K_M)',
+      description: '通义千问 3.5 4B（2.55GB）。会思考 + 能看图，'
+          '主力机首选。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
+      sizeBytes: 2738041651,
+      quantization: 'Q4_K_M',
+      ramRequired: '~3.7 GB',
+      tags: ['中文', '多模态', '可深度思考', '最新'],
+      recommended: true,
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
+    LocalModelInfo(
+      id: 'qwen3.5-9b-q4km',
+      name: 'Qwen3.5 9B (Q4_K_M)',
+      description: '通义千问 3.5 9B（5.29GB）。旗舰小杯：会思考 + 能看图，'
+          '适合 13GB+ 内存设备。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
+      sizeBytes: 5680046080,
+      quantization: 'Q4_K_M',
+      ramRequired: '~7.7 GB',
+      tags: ['中文', '多模态', '可深度思考', '最新'],
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
+    // ── MiMo 蒸馏 / 扩展系列 ───────────────────────────────────
+    LocalModelInfo(
+      id: 'mimo-v2.6-distill-qwen-9b-q4km',
+      name: 'MiMo-V2.6-Distill-Qwen-9B (Q4_K_M)',
+      description: '小米 MiMo 用 Qwen3.5 蒸馏的 9B（5.44GB）。'
+          '推理与中文表达比原版更利落，带视觉投影可看图。',
+      downloadUrl:
+          'https://huggingface.co/bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF/resolve/main/MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf',
+      sizeBytes: 5841155523,
+      quantization: 'Q4_K_M',
+      ramRequired: '~7.9 GB',
+      tags: ['中文', '推理', '多模态', 'MiMo'],
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF/resolve/main/mmproj-MiMo-V2.6-Distill-Qwen-9B-bf16.gguf',
+    ),
+    // ── 视觉专项（小体积优先） ──────────────────────────────────
+    LocalModelInfo(
+      id: 'qwen3-vl-2b-instruct-q4km',
+      name: 'Qwen3-VL 2B Instruct (Q4_K_M)',
+      description: '通义千问 3 视觉 2B（1.03GB）。手机上最小最好用的中文视觉模型，'
+          '看图、识别截图文字都行。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3-VL-2B-Instruct-Q4_K_M.gguf',
+      sizeBytes: 1105956864,
+      quantization: 'Q4_K_M',
+      ramRequired: '~1.6 GB',
+      tags: ['中文', '多模态', '视觉', '轻量', '最新'],
+      recommended: true,
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
+    LocalModelInfo(
+      id: 'qwen3-vl-4b-instruct-q4km',
+      name: 'Qwen3-VL 4B Instruct (Q4_K_M)',
+      description: '通义千问 3 视觉 4B（2.33GB）。图文理解更细，'
+          '适合看图表、长截图。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3-VL-4B-Instruct-Q4_K_M.gguf',
+      sizeBytes: 2501820416,
+      quantization: 'Q4_K_M',
+      ramRequired: '~3.4 GB',
+      tags: ['中文', '多模态', '视觉', '最新'],
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
+    LocalModelInfo(
+      id: 'smolvlm2-2.2b-q4km',
+      name: 'SmolVLM2 2.2B (Q4_K_M)',
+      description: 'HuggingFace 出品的小视觉模型（1.04GB）。英文为主，'
+          '极致轻量的看图选择。',
+      downloadUrl:
+          'https://huggingface.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF/resolve/main/SmolVLM2-2.2B-Instruct-Q4_K_M.gguf',
+      sizeBytes: 1116691496,
+      quantization: 'Q4_K_M',
+      ramRequired: '~1.7 GB',
+      tags: ['英文', '多模态', '视觉', '轻量'],
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf',
+    ),
+    LocalModelInfo(
+      id: 'minicpm-v-4.5-q4km',
+      name: 'MiniCPM-V 4.5 (Q4_K_M)',
+      description: '面壁智能 MiniCPM-V 4.5（4.68GB）。中文图文/OCR 口碑极好，'
+          '适合拍文档、表格识别。',
+      downloadUrl:
+          'https://huggingface.co/openbmb/MiniCPM-V-4_5-gguf/resolve/main/MiniCPM-V-4_5-Q4_K_M.gguf',
+      sizeBytes: 5025116160,
+      quantization: 'Q4_K_M',
+      ramRequired: '~6.8 GB',
+      tags: ['中文', '多模态', '视觉', 'OCR'],
+      license: 'Apache-2.0',
+      mmProjUrl:
+          'https://huggingface.co/openbmb/MiniCPM-V-4_5-gguf/resolve/main/mmproj-MiniCPM-V-4_5-f16.gguf',
+    ),
+    // ── 通用大杯 ────────────────────────────────────────────────
+    LocalModelInfo(
+      id: 'qwen3-8b-q4km',
+      name: 'Qwen3 8B (Q4_K_M)',
+      description: '通义千问 3 8B（4.68GB）。纯文本主力：中文写作、'
+          '推理、代码都够用，适合 12GB+ 内存。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
+      sizeBytes: 5025116160,
+      quantization: 'Q4_K_M',
+      ramRequired: '~6.8 GB',
+      tags: ['中文', '推理', '可深度思考'],
+      license: 'Apache-2.0',
+    ),
+    LocalModelInfo(
+      id: 'deepseek-r1-0528-qwen3-8b-q4km',
+      name: 'DeepSeek-R1-0528-Qwen3-8B (Q4_K_M)',
+      description: 'DeepSeek R1-0528 蒸馏到 Qwen3 8B（4.68GB）。'
+          '中文数学与多步推理强，思考过程可折叠查看。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/main/DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
+      sizeBytes: 5025116160,
+      quantization: 'Q4_K_M',
+      ramRequired: '~6.8 GB',
+      tags: ['中文', '推理', '可深度思考'],
+      license: 'MIT',
+    ),
+    LocalModelInfo(
+      id: 'gemma-3-4b-qat-q4km',
+      name: 'Gemma 3 4B QAT (Q4_K_M)',
+      description: 'Google 官方量化感知训练的 Gemma 3 4B（2.32GB）。'
+          '量化损失更小、能看图（带视觉投影）。',
+      downloadUrl:
+          'https://huggingface.co/unsloth/gemma-3-4b-it-qat-GGUF/resolve/main/gemma-3-4b-it-qat-Q4_K_M.gguf',
+      sizeBytes: 2491081032,
+      quantization: 'Q4_K_M',
+      ramRequired: '~3.4 GB',
+      tags: ['英文', '多模态', 'Google', 'QAT'],
+      license: 'Gemma Terms',
+      mmProjUrl:
+          'https://huggingface.co/unsloth/gemma-3-4b-it-qat-GGUF/resolve/main/mmproj-BF16.gguf',
+    ),
     LocalModelInfo(
       id: 'spark-x2.5-1.7b-q4km',
       name: 'Spark-X2.5 1.7B (Q4_K_M)',

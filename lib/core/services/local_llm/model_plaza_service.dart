@@ -205,8 +205,14 @@ class ModelPlazaService {
 
     // 列表阶段**不逐个仓库拉文件清单**（15 个模型 = 15 次请求，会像卡死）；
     // 只用名字做家族判断，真实文件在详情页按需解析。
+    // 宽名单：新家族（Qwen3.5 / MiMo-VL / Gemma 3n…）也要能筛出来；
+    // 详情页会用仓库里的 mmproj 文件做最终确认。
+    final lowerName = name.toLowerCase();
     final heuristicVision = ModelCapabilities.isVisionFamily(name) ||
-        name.toLowerCase().contains('vl');
+        lowerName.contains('vl') ||
+        lowerName.contains('vision') ||
+        lowerName.contains('mmproj') ||
+        lowerName.contains('vlm');
     if (filter.visionOnly && !heuristicVision) return null;
     if (filter.maxSizeGb > 0) {
       // 体积筛选在列表阶段只能放宽处理（真实体积要进详情页才知道）。
