@@ -49,43 +49,60 @@ class LocalLlmEngine {
     // 应用性能档位（线程 / GPU 卸载 / FlashAttention / KV 量化）。
     final threads = LocalLlmTuning.resolveThreads();
     final gpuLayers = LocalLlmTuning.resolveGpuLayers();
-    debugPrint('[LocalLlm] 加载参数: ${LocalLlmTuning.describe()}');
-    await engine.loadModelSource(
-      ModelSource.path(filePath),
-      // gpuLayers == null → 用库默认（能卸就卸，最快）；0 → 纯 CPU（省电档）。
-      modelParams: gpuLayers == null
-          ? ModelParams(
-              contextSize: contextSize,
-              numberOfThreads: threads,
-              numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
-              useMmap: true,
-              flashAttention: LocalLlmTuning.resolveFlashAttention(),
-              cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
-              cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
-            )
-          : ModelParams(
-              contextSize: contextSize,
-              numberOfThreads: threads,
-              numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
-              gpuLayers: gpuLayers,
-              useMmap: true,
-              flashAttention: LocalLlmTuning.resolveFlashAttention(),
-              cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
-              cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
-            ),
-    );
-    _engine = engine;
+    // 关键：llamadart 在 Android 上把 GpuBackend.auto 解析成 **CPU**，
+    // 所以"能卸就卸"其实从未生效（实测性能档=省电档）。
+    // 这里显式给出后端；失败自动回退 CPU，绝不因此让模型加载不了。
+    final backend = LocalLlmTuning.resolveBackend();
+    debugPrint('[LocalLlm] 加载参数: ${LocalLlmTuning.describe()}'
+        ' backend=${backend.name}');
+    try {
+      await _loadWithBackend(engine, filePath, contextSize, threads, gpuLayers,
+          backend);
+    } catch (e) {
+      if (backend == GpuBackend.cpu) rethrow;
+      debugPrint('[LocalLlm] ${backend.name} 加载失败，回退 CPU: $e');
+      await _loadWithBackend(engine, filePath, contextSize, threads, 0,
+          GpuBackend.cpu);
+    }
     _loadedModelPath = filePath;
     _visionAvailable = false;
     _projectorError = null;
     _supportsNoThink =
         ModelCapabilities.supportsNoThinkDirective(filePath);
-    _pendingProjectorPath = mmProjPath ??
-        await _pairedProjector(filePath) ??
-        _matchingProjector(filePath);
+    _pendingProjectorPath =
+        mmProjPath ?? await _pairedProjector(filePath) ?? _matchingProjector(filePath);
     if (_pendingProjectorPath != null) {
       debugPrint('[LocalLlm] 发现匹配的视觉投影（待启用）: $_pendingProjectorPath');
     }
+    return;
+  }
+
+  /// 用指定后端加载；后端不被支持时会抛错，由调用方回退。
+  Future<void> _loadWithBackend(
+    LlamaEngine engine,
+    String filePath,
+    int contextSize,
+    int threads,
+    int? gpuLayers,
+    GpuBackend backend,
+  ) async {
+    await engine.loadModelSource(
+      ModelSource.path(filePath),
+      modelParams: ModelParams(
+        contextSize: contextSize,
+        numberOfThreads: threads,
+        numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
+        // 预填充批量：给足 batch，首字更快（内存紧张时库会自动收紧）。
+        batchSize: 512,
+        preferredBackend: backend,
+        // null → 999（= 库默认"能卸就卸"）；0 → 纯 CPU（省电档）。
+        gpuLayers: gpuLayers ?? ModelParams.maxGpuLayers,
+        useMmap: true,
+        flashAttention: LocalLlmTuning.resolveFlashAttention(),
+        cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
+        cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
+      ),
+    );
   }
 
   /// 是否存在可用的视觉投影候选（界面据此提示"可启用看图"）。
@@ -96,6 +113,16 @@ class LocalLlmEngine {
 
   /// 视觉投影启用失败的原因（界面向用户解释用）。
   String? get projectorError => _projectorError;
+
+  /// 取消当前生成（停止按钮用）。
+  /// 之前工具模式只是"忽略后续 chunk"，底层推理仍在跑（费电、发热、还慢）。
+  void cancelGeneration() {
+    try {
+      _engine?.cancelGeneration();
+    } catch (e) {
+      debugPrint('[LocalLlm] 取消失败: $e');
+    }
+  }
 
   /// 按需启用视觉投影（用户要发图片时调用）。
   ///

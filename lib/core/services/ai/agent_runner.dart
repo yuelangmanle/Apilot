@@ -68,6 +68,9 @@ class AgentRunner {
     List<ChatTurn> history = const [],
     String? extraSystemPrompt,
     int maxTokens = 0,
+    double? temp,
+    double? topP,
+    bool thinkingEnabled = false,
     void Function(AgentStep step)? onStep,
     /// 流式增量回调：工具模式也能边生成边显示（不再"全想完才吐字"）。
     void Function(String delta)? onDelta,
@@ -103,7 +106,10 @@ class AgentRunner {
         maxTokens: effectiveMaxTokens,
         imagePaths: List<String>.from(pendingImages),
         onDelta: onDelta,
-        allowCloudStreaming: true,
+        // 只有云端对话（传了 cloudConfig）才走云端流式；
+        // 本地对话必须走本地引擎，否则开插件后会去问全局 AI 设置
+        // （表现为「AI 未配置」或偷偷花用户的云端额度）。
+        allowCloudStreaming: cloudConfig != null,
       );
       pendingImages.clear();
       final answer = reply.text;
@@ -154,6 +160,9 @@ class AgentRunner {
       cloudConfig: cloudConfig,
       localEngine: localEngine,
       maxTokens: effectiveMaxTokens,
+      temp: temp,
+      topP: topP,
+      thinkingEnabled: thinkingEnabled,
     );
     if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
     return AgentResult(
@@ -228,13 +237,16 @@ class AgentRunner {
     List<String> imagePaths = const [],
     void Function(String delta)? onDelta,
     bool allowCloudStreaming = false,
+    double? temp,
+    double? topP,
+    bool thinkingEnabled = false,
   }) async {
     // 路由规则（严格）：
     // · 云端对话页传了 cloudConfig → 一律走那个云端配置（绝不被本地引擎劫持）；
     // · 本地对话页传了引擎 → 用本地；
     // · 两者都没有（AI 诊断等功能）→ 按全局"AI 设置"选来源。
     var engine = localEngine;
-    if (allowCloudStreaming) {
+    if (allowCloudStreaming && cloudConfig != null) {
       // 云端对话：直接流式调用，不再经过本地引擎判定。
       final cloud = await AiService.ask(
         systemPrompt: systemPrompt,
@@ -280,7 +292,14 @@ class AgentRunner {
         final content = StringBuffer();
         final thinking = StringBuffer();
         await for (final chunk in engine
-            .generateStream(messages, maxTokens: maxTokens, temp: 0.6)
+            .generateStream(
+              messages,
+              maxTokens: maxTokens,
+              temp: temp ?? 0.6,
+              topP: topP ?? 0.9,
+              // 会话里的"深度思考"开关在工具模式下也要生效。
+              thinkingEnabled: thinkingEnabled,
+            )
             .timeout(const Duration(minutes: 4))) {
           if (chunk.content != null) {
             content.write(chunk.content);

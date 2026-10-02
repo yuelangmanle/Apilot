@@ -57,6 +57,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   bool _enablingVision = false;
   bool _toolsEnabled = ToolRegistry.masterEnabled;
   bool _compressing = false;
+  String? _memorySectionCache;
+  String? _loadError;
   // ignore: prefer_final_fields
   int _contextSize = 4096;
   final List<agent.AgentStep> _pendingSteps = [];
@@ -92,11 +94,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       try {
         await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
       } catch (e) {
+        // 之前只弹一句 SnackBar，页面永远停在转圈（大模型加载几十秒~几分钟，
+        // 失败了也没有出路）。现在记录错误，渲染错误页 + 重试按钮。
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('模型加载失败: $e'),
-            backgroundColor: AppColors.error,
-          ));
+          setState(() => _loadError = '$e');
         }
         return;
       }
@@ -231,6 +232,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         configs: configs,
         // 本地对话一律走本地引擎（不再看全局 AI 来源设置）。
         localEngine: _engine,
+        temp: _conversation.settings.temp,
+        topP: _conversation.settings.topP,
+        thinkingEnabled: _conversation.settings.thinkingEnabled &&
+            ModelCapabilities.supportsThinking(widget.modelName),
         history: history.length > 6
             ? history.sublist(history.length - 6)
             : history,
@@ -303,11 +308,14 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     final plainStopwatch = Stopwatch()..start();
     var plainFirstTokenMs = -1;
     try {
-      // 相关记忆注入（仅在记忆插件开启时）。
-      var memorySection = '';
-      if (ToolRegistry.isCategoryEnabled('memory')) {
-        memorySection = await MemoryStore.buildPromptSection(text);
+      // 记忆注入：**每个会话只算一次**并缓存。
+      // 之前每轮都按当前输入重新检索并拼进 system 提示词 → system 段每轮变化，
+      // 前缀缓存（KV 复用）全部失效，每轮都要全量重新 prefill（明显变慢）。
+      if (ToolRegistry.isCategoryEnabled('memory') &&
+          _memorySectionCache == null) {
+        _memorySectionCache = await MemoryStore.buildPromptSection(text);
       }
+      final memorySection = _memorySectionCache ?? '';
       final messages = _buildEngineMessages(memorySection: memorySection);
       debugPrint('[CHAT-DIAG] messages=${messages.length} roles='
           '${messages.map((m) => m.role).toList()}');
@@ -385,11 +393,23 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       }
     } catch (e, st) {
       debugPrint('[CHAT-DIAG] send threw: $e\n$st');
+      final message = e.toString();
+      final tooLong = message.contains('too long') ||
+          message.contains('Tokenization failed') ||
+          message.contains('context');
       if (mounted) {
         setState(() {
           _isGenerating = false;
-          _conversation.messages.add(
-              ChatMessageRecord(role: 'assistant', text: '生成失败: $e'));
+          _conversation.messages.add(ChatMessageRecord(
+            role: 'assistant',
+            text: tooLong
+                ? '这次请求超出上下文长度了。可以：\n'
+                    '· 点参数面板里的「立即整理上下文」（把旧内容折叠+摘要）；\n'
+                    '· 或把「上下文长度」调大一档；\n'
+                    '· 或开一个新对话继续这个话题。\n'
+                    '（原始错误：$message）'
+                : '生成失败: $message',
+          ));
         });
       }
     }
@@ -426,8 +446,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
 
   /// 触发"摘要"的水位：用户可调阈值（token），或上下文长度的 85%。
   int get _summarizeWatermark {
+    // 上限硬约束在上下文 90%：无论用户设多少，都不允许把提示词堆到超限
+    // （超限会直接抛 "prompt too long"，之后整段对话都用不了）。
+    final ceiling = (_contextSize * 0.9).round();
     final configured = _conversation.settings.autoCompressAtChars;
-    if (configured > 0) return configured;
+    if (configured > 0) return configured < ceiling ? configured : ceiling;
     return (_contextSize * 0.85).round();
   }
 
@@ -840,10 +863,17 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                         DropdownMenuItem(value: 16384, child: Text('16384 · 长对话')),
                         DropdownMenuItem(value: 32768, child: Text('32768 · 长文档')),
                       ],
-                      onChanged: (value) {
+                      onChanged: (value) async {
                         if (value == null) return;
                         setSheetState(() {});
                         setState(() => _contextSize = value);
+                        // 之前只改状态不重载 → helperText 说"会重新加载"但实际没生效。
+                        try {
+                          await _engine.loadModel(widget.modelPath,
+                              contextSize: value);
+                        } catch (e) {
+                          debugPrint('[Chat] 切换上下文长度失败: $e');
+                        }
                       },
                     ),
                     const SizedBox(height: 8),
@@ -1103,7 +1133,37 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           ),
         ],
       ),
-      body: !_modelReady
+      body: _loadError != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error_outline,
+                        size: 44, color: AppColors.error),
+                    const SizedBox(height: 12),
+                    const Text('模型加载失败',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Text(_loadError!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 12)),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('重试'),
+                      onPressed: () {
+                        setState(() => _loadError = null);
+                        _init();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : !_modelReady
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
@@ -1244,7 +1304,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                                 size: 20),
                             tooltip: _isGenerating ? '停止生成' : '发送',
                             onPressed: _isGenerating
-                                ? () => setState(() => _stopRequested = true)
+                                ? () {
+                                    setState(() => _stopRequested = true);
+                                    // 真正中断底层推理（工具模式也生效）。
+                                    _engine.cancelGeneration();
+                                  }
                                 : _send,
                           ),
                         ),

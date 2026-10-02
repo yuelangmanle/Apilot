@@ -16,6 +16,7 @@ import '../services/model_curator_service.dart';
 import '../../../core/services/local_llm/device_capabilities.dart';
 import '../../../core/services/ai/ai_service.dart';
 import '../../api_management/providers/api_provider.dart';
+import '../../../core/services/local_llm/download_task_store.dart';
 import '../../../core/services/local_llm/model_download_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 import 'download_manager_screen.dart';
@@ -66,6 +67,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     _loadDeviceAndCommunity();
     // AI 通过插件找到的模型也在本页下载（同一条进度/续传链路）。
     ModelRepoImporter.onDownload = (url, fileName) async {
+      if (!mounted) return;
       await _downloadUrl(
         taskId: fileName,
         url: url,
@@ -421,6 +423,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
 
   Future<void> _deletePartial(PartialDownload partial) async {
     try {
+      // 同步清掉任务记录，否则下载管理里会长期留一张空的"失败/中断"卡片。
+      await DownloadTaskStore.remove(partial.fileName);
       final file = File(partial.partialPath);
       if (file.existsSync()) await file.delete();
       final sidecar = File('${partial.partialPath}.meta.json');
@@ -466,11 +470,25 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     );
     if (confirmed != true) return;
     await ModelDownloadService.deleteModelFile(model.filePath);
+    // 清掉配对记录，并连带删除配套的视觉投影（否则条目会继续谎报"已装"，
+    // 而且投影文件会变成没人管的孤儿，白白占空间）。
+    final paired = _projectorPairs[model.fileName];
+    await ModelStorageSettings.unpairProjector(model.fileName);
+    if (paired != null) {
+      for (final file in _projectors) {
+        if (file.uri.pathSegments.last == paired) {
+          await ModelDownloadService.deleteModelFile(file.path);
+        }
+      }
+    }
     await _refreshDownloaded();
   }
 
   @override
   void dispose() {
+    // 复位静态下载回调：否则它一直指向已销毁的页面，AI 触发下载时会
+    // 在已 dispose 的 State 上 setState。
+    ModelRepoImporter.onDownload = null;
     _progressSubscription?.cancel();
     super.dispose();
   }
@@ -1235,6 +1253,9 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     final isDownloading = download?.status == DownloadStatus.downloading;
     final isDownloaded = _downloaded.any(
         (d) => d.fileName == model.downloadUrl.split('/').last);
+    // 投影已安装要看"投影清单"（listDownloadedModels 已明确排除 mmproj，
+    // 之前用它判断 → 永远显示"补装视觉投影"，点第二次会重下）。
+    final projectorName = model.mmProjUrl?.split('/').last;
     // 设备内存未知时不做判断（不编造“适合你的设备”）。
     final fitsDevice = _deviceRamMb == null
         ? null
@@ -1365,17 +1386,18 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                     model.tags.any((t) => visionTags.contains(t)) ||
                         model.mmProjUrl != null;
                 if (!isVision) return const SizedBox.shrink();
-                final projectorName = model.mmProjUrl!.split('/').last;
-                final installed = _downloaded
-                    .any((d) => d.fileName == projectorName);
+                final installed = _projectors
+                    .any((f) => f.uri.pathSegments.last == projectorName);
                 return TextButton.icon(
                   onPressed: installed
                       ? null
                       : () => _downloadUrl(
-                            taskId: projectorName,
+                            taskId: projectorName!,
                             url: model.mmProjUrl!,
                             fileName: projectorName,
                             displayName: '$projectorName（视觉投影）',
+                            // 下载时记录"主模型↔投影"配对：之后自动挂载。
+                            pairWithMain: model.downloadUrl.split('/').last,
                           ),
                   icon: Icon(
                       installed ? Icons.check : Icons.visibility_outlined,

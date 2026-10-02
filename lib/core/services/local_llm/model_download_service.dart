@@ -139,14 +139,20 @@ class ModelDownloadService {
     String taskId, {
     void Function(int received, int total)? onProgress,
     String? expectedFileName,
+    int retryCount = 0,
   }) async {
     // 清除上次可能残留的取消标记。
     _cancelRequested.remove(taskId);
-    _attempt = 0;
+    // 注意：**不能**在这里把 _attempt 归零——自动重试是递归调用本函数的，
+    // 归零会导致断网时无限重试（之前的写法永远进不到 failed 状态）。
+    _attempt = retryCount;
 
     final dir = await modelsDir();
-    final fileName = expectedFileName ??
+    // 仓库里的文件可能带子目录（如 Q4_K_M/xxx.gguf）：只取文件名，
+    // 否则 p.join 会拼出不存在的父目录、openWrite 直接 ENOENT。
+    final rawName = expectedFileName ??
         url.split('/').last.replaceAll(RegExp(r'[?#].*$'), '');
+    final fileName = p.basename(rawName);
     final finalPath = p.join(dir.path, fileName);
     final partPath = '$finalPath.part';
     final partFile = File(partPath);
@@ -349,7 +355,9 @@ class ModelDownloadService {
         _notify(taskId);
         await Future<void>.delayed(Duration(seconds: 2 * _attempt));
         return download(url, taskId,
-            onProgress: onProgress, expectedFileName: fileName);
+            onProgress: onProgress,
+            expectedFileName: fileName,
+            retryCount: _attempt);
       }
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,

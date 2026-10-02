@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'model_capabilities.dart';
 import 'model_catalog.dart';
 
 /// 从 HuggingFace / ModelScope 社区实时获取模型列表。
@@ -367,7 +368,13 @@ class CommunityModelService {
     if (!lower.endsWith('.gguf')) return null;
     // 分片模型需要多文件合并，App 内不支持 → 跳过。
     if (RegExp(r'-\d{5}-of-\d{5}\.gguf$').hasMatch(lower)) return null;
-    // 未量化的全精度权重体积过大（fp16/f32/bf16），不作为候选。
+    // mmproj（视觉投影）**必须保留**：它本来就以 F16/BF16 命名
+    // （mmproj-F16.gguf 是最常见形式），被这里的全精度过滤误杀掉之后，
+    // 广场的"看图"标签、投影自动解析就全都拿不到东西了。
+    if (ModelCapabilities.isProjectorFile(fileName)) {
+      return 'F16';
+    }
+    // 主模型的全精度权重体积过大（fp16/f32/bf16），不作为候选。
     if (RegExp(r'(^|[-_.])(f16|fp16|f32|bf16|fp32)([-_.]|$)')
         .hasMatch(lower)) {
       return null;

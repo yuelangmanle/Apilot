@@ -114,6 +114,18 @@ class ModelStorageSettings {
     }
   }
 
+  /// 解除某主模型的投影配对（删除模型/投影时调用，避免界面谎报"已装"）。
+  static Future<void> unpairProjector(String mainFileName) async {
+    try {
+      final pairs = await projectorPairs();
+      if (pairs.remove(mainFileName) == null) return;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_pairKey, jsonEncode(pairs));
+    } catch (e) {
+      debugPrint('[Storage] 解除投影配对失败: $e');
+    }
+  }
+
   /// 查主模型对应的投影文件名（没有记录则返回 null）。
   static Future<String?> projectorFor(String mainFileName) async {
     final pairs = await projectorPairs();

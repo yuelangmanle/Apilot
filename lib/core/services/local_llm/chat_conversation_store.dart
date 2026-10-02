@@ -105,7 +105,10 @@ class ChatGenerationSettings {
     this.maxTokens = 2048,
     this.thinkingEnabled = false,
     this.systemPrompt = '',
-    this.autoCompressAtChars = 12000,
+    // 0 = 自动（按当前上下文长度的 85% 触发摘要）。
+    // 之前默认 12000 而默认上下文只有 4096 → 摘要永不触发，
+    // 累计超限后 llamadart 直接抛 "prompt too long"，之后每条消息都失败。
+    this.autoCompressAtChars = 0,
   });
 
   ChatGenerationSettings copyWith({
@@ -143,7 +146,7 @@ class ChatGenerationSettings {
         thinkingEnabled: json['thinkingEnabled'] == true,
         systemPrompt: json['systemPrompt'] as String? ?? '',
         autoCompressAtChars:
-            (json['autoCompressAtChars'] as num?)?.toInt() ?? 12000,
+            (json['autoCompressAtChars'] as num?)?.toInt() ?? 0,
       );
 }
 

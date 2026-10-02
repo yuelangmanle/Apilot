@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -128,6 +130,19 @@ class LocalLlmTuning {
     };
   }
 
+  /// 推理后端。**安卓必须显式给 vulkan**：库把 auto 解析成 CPU，
+  /// 于是 GPU 卸载永远不生效（用户反馈的"三个档位都慢"就是这个）。
+  static GpuBackend resolveBackend() {
+    if (Platform.isAndroid) {
+      return switch (_preset) {
+        LocalLlmPreset.saver => GpuBackend.cpu,
+        LocalLlmPreset.balanced => GpuBackend.vulkan,
+        LocalLlmPreset.performance => GpuBackend.vulkan,
+      };
+    }
+    return GpuBackend.auto;
+  }
+
   static FlashAttention resolveFlashAttention() {
     if (!_flashAttention) return FlashAttention.disabled;
     return FlashAttention.auto;
@@ -145,7 +160,8 @@ class LocalLlmTuning {
     final parts = <String>[
       _preset.label,
       '线程 ${resolveThreads() == 0 ? '自动' : resolveThreads()}',
-      'GPU ${resolveGpuLayers() == null ? '自动' : (resolveGpuLayers() == 0 ? '关' : resolveGpuLayers())}',
+      'GPU ${resolveBackend() == GpuBackend.cpu ? '关(CPU)' : resolveBackend().name}'
+          '${resolveGpuLayers() == null ? '' : '/${resolveGpuLayers()}层'}',
       _flashAttention ? 'FlashAttn 开' : 'FlashAttn 关',
       _kvQuantized ? 'KV q8_0' : 'KV f16',
     ];
