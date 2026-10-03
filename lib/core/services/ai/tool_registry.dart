@@ -2,10 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'html_project_store.dart';
 import 'memory_store.dart';
 
 /// 插件分类（界面上一类一个开关）。
@@ -60,6 +59,7 @@ class ToolRegistry {
 
   static final List<AiTool> _tools = [];
   static final Set<String> _disabled = {};
+  static HtmlProjectStore _htmlProjects = HtmlProjectStore();
 
   static List<AiTool> get tools => List.unmodifiable(_tools);
 
@@ -215,11 +215,20 @@ class ToolRegistry {
   static void resetForTest() {
     _tools.clear();
     _disabled.clear();
+    _htmlProjects = HtmlProjectStore();
+  }
+
+  @visibleForTesting
+  static void setHtmlProjectStoreForTesting(HtmlProjectStore store) {
+    _htmlProjects = store;
   }
 
   /// 给模型的工具说明（只包含已启用的分类）。
-  static String describeForPrompt() {
-    final enabled = enabledTools;
+  ///
+  /// 本地模型默认使用紧凑、按任务筛选的清单，避免把十几个工具的说明
+  /// 每轮塞进上下文；云端保持完整清单，兼容已有行为。
+  static String describeForPrompt({String? task, bool compact = false}) {
+    final enabled = _toolsForTask(task, compact);
     if (enabled.isEmpty) return '';
     // 精简版工具说明：只给"名字 + 一句话 + 参数键名"。
     // 之前把每个工具的完整参数说明都塞进系统提示词，预填充变长、工具模式明显变慢；
@@ -241,6 +250,32 @@ class ToolRegistry {
     return buffer.toString();
   }
 
+  static List<AiTool> _toolsForTask(String? task, bool compact) {
+    final all = enabledTools;
+    if (!compact || task == null || task.trim().isEmpty) return all;
+    final lower = task.toLowerCase();
+    final categories = <String>{'calc', 'time', 'memory'};
+    if (RegExp(r'html|网页|页面|前端|css|javascript|脚本|代码').hasMatch(lower)) {
+      categories.addAll(['html', 'todo']);
+    }
+    if (RegExp(r'搜索|查一下|查找|网址|网页内容|联网|新闻|百科|github|仓库').hasMatch(lower)) {
+      categories.addAll(['search', 'web', 'news', 'github']);
+    }
+    if (RegExp(r'模型|量化|下载|gguf|投影|mmproj').hasMatch(lower)) {
+      categories.addAll(['models', 'downloads']);
+    }
+    if (RegExp(r'apilot|配置|api|接口|用量|请求').hasMatch(lower)) {
+      categories.add('app');
+    }
+    if (RegExp(r'待办|计划|步骤|任务').hasMatch(lower)) {
+      categories.add('todo');
+    }
+    if (RegExp(r'截屏|截图|屏幕|看一下界面').hasMatch(lower)) {
+      categories.add('screen');
+    }
+    return all.where((tool) => categories.contains(tool.category)).toList();
+  }
+
   /// 解析模型输出里的工具调用（只取第一条）。
   ///
   /// 花括号配对扫描而非正则：参数常含嵌套对象（`{"args":{...}}`）。
@@ -254,12 +289,13 @@ class ToolRegistry {
     }
     // ② 模型很自然会写成 @@工具名 {参数}（真机实测 Spark 就是这样），
     //    协议必须认——否则模型明明调对了工具，我们却不执行，只把原文糊到聊天里。
-    final inline = RegExp(r'@@([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{)')
-        .firstMatch(text);
+    final inline =
+        RegExp(r'@@([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{)').firstMatch(text);
     if (inline != null) {
       final name = inline.group(1)!;
       if (byName(name) != null) {
-        final argsJson = _extractBalancedJson(text, inline.start + inline.group(0)!.length - 1);
+        final argsJson = _extractBalancedJson(
+            text, inline.start + inline.group(0)!.length - 1);
         if (argsJson != null) {
           final parsed = _fromJson(argsJson, fallbackName: name);
           if (parsed != null) return parsed;
@@ -269,8 +305,7 @@ class ToolRegistry {
     }
     // ③ 回复"恰好就是工具名"（云端模型常见）：当作无参调用执行，
     //    否则用户会收到一条内容只有 "current_time" 的回复。
-    final nameOnly =
-        text.trim().replaceAll(RegExp(r'[`。.!！?？\s]+$'), '');
+    final nameOnly = text.trim().replaceAll(RegExp(r'[`。.!！?？\s]+$'), '');
     if (nameOnly.isNotEmpty && byName(nameOnly) != null) {
       return (name: nameOnly, args: const <String, dynamic>{});
     }
@@ -302,9 +337,8 @@ class ToolRegistry {
       // 否则普通的 JSON 文本会被误判成工具调用。
       if (requireKnown && byName(name) == null) return null;
       // 参数可能在 args / arguments / parameters 里，也可能直接平铺在顶层。
-      final argsRaw = decoded['args'] ??
-          decoded['arguments'] ??
-          decoded['parameters'];
+      final argsRaw =
+          decoded['args'] ?? decoded['arguments'] ?? decoded['parameters'];
       Map<String, dynamic> args;
       if (argsRaw is Map) {
         args = Map<String, dynamic>.from(argsRaw);
@@ -395,8 +429,8 @@ class ToolRegistry {
         }
         break;
       }
-      final json = _extractBalancedJson(
-          result, result.indexOf('{', match.start));
+      final json =
+          _extractBalancedJson(result, result.indexOf('{', match.start));
       if (json == null) break;
       final end = result.indexOf(json, match.start) + json.length;
       result = result.substring(0, match.start) + result.substring(end);
@@ -413,7 +447,9 @@ class ToolRegistry {
     }
     try {
       final result = await tool.run(args).timeout(const Duration(seconds: 45));
-      return result.length > 6000 ? '${result.substring(0, 6000)}…（已截断）' : result;
+      return result.length > 6000
+          ? '${result.substring(0, 6000)}…（已截断）'
+          : result;
     } catch (e) {
       return '工具 $name 执行失败：$e';
     }
@@ -426,6 +462,9 @@ class ToolRegistry {
     register(_calculatorTool);
     register(_htmlCheckTool);
     register(_saveHtmlTool);
+    register(_listHtmlProjectsTool);
+    register(_readHtmlProjectTool);
+    register(_deleteHtmlProjectTool);
     register(_todoWriteTool);
     register(_todoReadTool);
     register(_screenshotTool);
@@ -593,9 +632,13 @@ class ToolRegistry {
     category: 'html',
     description: '自检 HTML：报出未闭合标签、缺 DOCTYPE、'
         'script/style 括号不平衡、属性引号未闭合等问题。写完页面先自检。',
-    parameters: '{"html":"<!DOCTYPE html>..."}',
+    parameters: '{"html":"<!DOCTYPE html>...","name":"已有项目名"}',
     run: (args) async {
-      final html = args['html']?.toString() ?? '';
+      var html = args['html']?.toString() ?? '';
+      if (html.trim().isEmpty) {
+        final name = args['name']?.toString().trim() ?? '';
+        if (name.isNotEmpty) html = await _htmlProjects.read(name) ?? '';
+      }
       if (html.trim().isEmpty) return '错误：html 不能为空';
       final issues = checkHtml(html);
       if (issues.isEmpty) return '自检通过：没有发现结构性问题。';
@@ -614,14 +657,50 @@ class ToolRegistry {
       final title = args['title']?.toString().trim() ?? '未命名';
       final html = args['html']?.toString() ?? '';
       if (html.trim().isEmpty) return '错误：html 不能为空';
-      final dir = await _snippetsDir();
-      final safeName = title.replaceAll(RegExp(r'[^\w\u4e00-\u9fa5\-]+'), '_');
-      final file = File(p.join(dir.path, '$safeName.html'));
-      await file.writeAsString(html, flush: true);
+      final file = await _htmlProjects.save(title, html);
       final issues = checkHtml(html);
-      return '已保存草稿「$title」（${html.length} 字符）。'
+      return '已保存项目「${file.uri.pathSegments.last}」（${html.length} 字符）。'
           '${issues.isEmpty ? '结构自检通过。' : '注意仍有 ${issues.length} 个问题：${issues.first}'}'
           '用户可在「设置 → 工具箱 → HTML 编辑器」打开预览或导出。';
+    },
+  );
+
+  static final AiTool _listHtmlProjectsTool = AiTool(
+    name: 'html_project_list',
+    category: 'html',
+    description: '列出已经保存的 HTML 项目，供继续编辑或调试。',
+    parameters: '{}',
+    run: (args) async {
+      final projects = await _htmlProjects.list();
+      if (projects.isEmpty) return '还没有保存的 HTML 项目。';
+      return 'HTML 项目：\n${projects.map((p) => '- ${p.name}（${p.sizeBytes} 字节）').join('\n')}';
+    },
+  );
+
+  static final AiTool _readHtmlProjectTool = AiTool(
+    name: 'html_project_read',
+    category: 'html',
+    description: '读取一个已保存的 HTML 项目，继续修改或调试。',
+    parameters: '{"name":"项目名"}',
+    run: (args) async {
+      final name = args['name']?.toString().trim() ?? '';
+      if (name.isEmpty) return '错误：name 不能为空';
+      final html = await _htmlProjects.read(name);
+      return html ?? '没有找到 HTML 项目「$name」。';
+    },
+  );
+
+  static final AiTool _deleteHtmlProjectTool = AiTool(
+    name: 'html_project_delete',
+    category: 'html',
+    description: '删除一个已保存的 HTML 项目。',
+    parameters: '{"name":"项目名"}',
+    run: (args) async {
+      final name = args['name']?.toString().trim() ?? '';
+      if (name.isEmpty) return '错误：name 不能为空';
+      return await _htmlProjects.delete(name)
+          ? '已删除 HTML 项目「$name」。'
+          : '没有找到 HTML 项目「$name」。';
     },
   );
 
@@ -635,23 +714,46 @@ class ToolRegistry {
     if (!lower.contains('<html')) issues.add('缺少 <html> 根标签。');
     if (!lower.contains('<body')) issues.add('缺少 <body> 标签。');
 
-    const pairs = ['html', 'head', 'body', 'div', 'span', 'p', 'ul', 'ol',
-        'li', 'table', 'tr', 'td', 'th', 'section', 'header', 'footer',
-        'main', 'nav', 'style', 'script', 'title', 'h1', 'h2', 'h3', 'button'];
+    const pairs = [
+      'html',
+      'head',
+      'body',
+      'div',
+      'span',
+      'p',
+      'ul',
+      'ol',
+      'li',
+      'table',
+      'tr',
+      'td',
+      'th',
+      'section',
+      'header',
+      'footer',
+      'main',
+      'nav',
+      'style',
+      'script',
+      'title',
+      'h1',
+      'h2',
+      'h3',
+      'button'
+    ];
     for (final tag in pairs) {
       final opens = RegExp('<$tag(\\s[^>]*)?>', caseSensitive: false)
           .allMatches(html)
           .length;
-      final closes = RegExp('</$tag\\s*>', caseSensitive: false)
-          .allMatches(html)
-          .length;
+      final closes =
+          RegExp('</$tag\\s*>', caseSensitive: false).allMatches(html).length;
       if (opens != closes) {
         issues.add('<$tag> 开合不匹配：$opens 个开始标签 vs $closes 个结束标签。');
       }
     }
     for (final tag in ['script', 'style']) {
-      final blocks = RegExp('<$tag[^>]*>(.*?)</$tag>',
-          dotAll: true, caseSensitive: false);
+      final blocks =
+          RegExp('<$tag[^>]*>(.*?)</$tag>', dotAll: true, caseSensitive: false);
       for (final block in blocks.allMatches(html)) {
         final body = block.group(1) ?? '';
         final open = '{'.allMatches(body).length;
@@ -753,12 +855,18 @@ class ToolRegistry {
 
       // 依次尝试：Bing 新闻 RSS → Google 新闻 RSS → 百度新闻 RSS。
       final feeds = <(String, String)>[
-        ('Bing 新闻',
-            'https://www.bing.com/news/search?q=${Uri.encodeQueryComponent(query)}&format=RSS'),
-        ('Google 新闻',
-            'https://news.google.com/rss/search?q=${Uri.encodeQueryComponent(query)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans'),
-        ('百度新闻',
-            'https://news.baidu.com/ns?word=${Uri.encodeQueryComponent(query)}&tn=newsrss&sr=0&cl=2&rn=20'),
+        (
+          'Bing 新闻',
+          'https://www.bing.com/news/search?q=${Uri.encodeQueryComponent(query)}&format=RSS'
+        ),
+        (
+          'Google 新闻',
+          'https://news.google.com/rss/search?q=${Uri.encodeQueryComponent(query)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans'
+        ),
+        (
+          '百度新闻',
+          'https://news.baidu.com/ns?word=${Uri.encodeQueryComponent(query)}&tn=newsrss&sr=0&cl=2&rn=20'
+        ),
       ];
       for (final (engine, url) in feeds) {
         final xml = await _httpGet(Uri.parse(url));
@@ -1019,14 +1127,6 @@ class ToolRegistry {
   );
 
   // ── 基础设施 ────────────────────────────────────────────────────
-
-  static Future<Directory> _snippetsDir() async {
-    final support = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(support.path, 'snippets'));
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return dir;
-  }
-
   static Future<String?> _httpGet(Uri uri) async {
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
@@ -1059,8 +1159,9 @@ class ToolRegistry {
                 dotAll: true, caseSensitive: false),
             ' ')
         .replaceAll(RegExp(r'<!--.*?-->', dotAll: true), ' ')
-        .replaceAll(RegExp(r'<(br|/p|/div|/li|/h[1-6])[^>]*>',
-            caseSensitive: false), '\n')
+        .replaceAll(
+            RegExp(r'<(br|/p|/div|/li|/h[1-6])[^>]*>', caseSensitive: false),
+            '\n')
         .replaceAll(RegExp(r'<[^>]+>'), ' ');
     text = _unescape(text);
     return text

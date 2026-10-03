@@ -9,6 +9,8 @@ import 'package:llamadart/llamadart.dart';
 
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_protocol_adapter.dart';
+import '../../../core/services/ai/tool_registry.dart';
+import '../../../core/services/local_llm/download_task_store.dart';
 import '../../../core/services/local_llm/local_llm_engine.dart';
 
 /// 网关的本机模型后端：直接用已下载的 GGUF 推理，
@@ -41,8 +43,11 @@ class LocalGatewayService {
   static String? _token;
   static bool _lanEnabled = false;
   static LocalLlmEngine? _localEngine;
+
   /// 本地推理串行化：单引擎不能并发生成。
   static Future<void> _localQueue = Future<void>.value();
+  static DateTime? _lastRequestAt;
+  static String? _lastRequestPath;
 
   static bool get isRunning => _server != null;
   static int get port => _port;
@@ -76,6 +81,7 @@ class LocalGatewayService {
         lanEnabled ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4,
         _port,
       );
+      _port = _server!.port;
       _server!.listen(
         (request) => unawaited(_handle(request)),
         onError: (Object e) => debugPrint('[Gateway] 通道错误: $e'),
@@ -193,6 +199,8 @@ class LocalGatewayService {
 
   static Future<void> _handle(HttpRequest request) async {
     handledRequests++;
+    _lastRequestAt = DateTime.now();
+    _lastRequestPath = request.uri.path;
     unawaited(refreshOverlay());
     final localModel = _localTarget;
     final target = _target;
@@ -213,9 +221,13 @@ class LocalGatewayService {
         return;
       }
     }
+    final path = request.uri.path.replaceFirst(RegExp(r'^/v1'), '');
+    if (path == '/health' || path == '/diagnostics') {
+      await _respondDiagnostics(request, detailed: path == '/diagnostics');
+      return;
+    }
     // 本地模型后端：/v1/models 与 /v1/chat/completions 本地处理。
     if (localModel != null) {
-      final path = request.uri.path.replaceFirst(RegExp(r'^/v1'), '');
       if (path == '/models') {
         await _respondModels(request, localModel);
         return;
@@ -272,6 +284,91 @@ class LocalGatewayService {
     }
   }
 
+  /// 只读诊断接口，供调试脚本、模拟器和第三方客户端检查每一步状态。
+  /// 不执行任意工具，也不返回 API Key 或完整本地路径；局域网模式仍受
+  /// 网关 Token 保护。`/health` 返回精简状态，`/diagnostics` 返回细节。
+  static Future<void> _respondDiagnostics(
+    HttpRequest request, {
+    required bool detailed,
+  }) async {
+    if (request.method != 'GET' && request.method != 'HEAD') {
+      request.response.statusCode = HttpStatus.methodNotAllowed;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({'error': '诊断接口只支持 GET'}));
+      await request.response.close();
+      return;
+    }
+    final local = _localTarget;
+    final localFile = local == null ? null : File(local.filePath);
+    final file = localFile;
+    final engine = _localEngine;
+    final tasks = await DownloadTaskStore.list();
+    final modelReady = local == null ||
+        (file != null && file.existsSync() && file.lengthSync() > 0);
+    final body = <String, dynamic>{
+      'ok': isRunning && modelReady,
+      'object': detailed ? 'apilot.diagnostics' : 'apilot.health',
+      'service': {
+        'running': isRunning,
+        'port': _port,
+        'lanEnabled': _lanEnabled,
+        'mode': local == null ? 'cloud_proxy' : 'local_model',
+        'handledRequests': handledRequests,
+        'lastRequestAt': _lastRequestAt?.toIso8601String(),
+        'lastRequestPath': _lastRequestPath,
+      },
+      'model': {
+        'id': local?.id,
+        'name': local?.name,
+        'fileName': file?.uri.pathSegments.last,
+        'fileExists': file?.existsSync() ?? false,
+        'fileSizeBytes': file?.existsSync() == true ? file!.lengthSync() : 0,
+        'ready': modelReady,
+      },
+      'engine': {
+        'loaded': engine?.isLoaded ?? false,
+        'loading': engine?.isLoading ?? false,
+        'generating': engine?.isGenerating ?? false,
+        'loadedModel': _baseName(engine?.loadedModelPath),
+        'visionEnabled': engine?.supportsVision ?? false,
+        'projector': _baseName(engine?.projectorPath),
+        'projectorCandidate': engine?.hasVisionCandidate ?? false,
+        'projectorError': engine?.projectorError,
+      },
+      if (detailed)
+        'tools': {
+          'masterEnabled': ToolRegistry.masterEnabled,
+          'enabled':
+              ToolRegistry.enabledTools.map((tool) => tool.name).toList(),
+        },
+      if (detailed)
+        'downloads': {
+          'active': tasks.where((task) => task.status == 'downloading').length,
+          'failed': tasks.where((task) => task.status == 'failed').length,
+          'completed': tasks.where((task) => task.status == 'completed').length,
+          'recent': [
+            for (final task in tasks.take(10))
+              {
+                'id': task.id,
+                'fileName': task.fileName,
+                'status': task.status,
+                'receivedBytes': task.receivedBytes,
+                'totalBytes': task.totalBytes,
+                'error': task.error,
+              },
+          ],
+        },
+    };
+    request.response.headers.contentType = ContentType.json;
+    if (request.method != 'HEAD') request.response.write(jsonEncode(body));
+    await request.response.close();
+  }
+
+  static String? _baseName(String? path) {
+    if (path == null || path.isEmpty) return null;
+    return File(path).uri.pathSegments.last;
+  }
+
   /// 本地模型：/v1/models 返回当前加载的模型。
   static Future<void> _respondModels(
       HttpRequest request, GatewayLocalModel model) async {
@@ -301,8 +398,9 @@ class LocalGatewayService {
     } catch (e) {
       request.response.statusCode = HttpStatus.badRequest;
       request.response.headers.contentType = ContentType.json;
-      request.response
-          .write(jsonEncode({'error': {'message': '请求体不是合法 JSON: $e'}}));
+      request.response.write(jsonEncode({
+        'error': {'message': '请求体不是合法 JSON: $e'}
+      }));
       await request.response.close();
       return;
     }
@@ -333,7 +431,8 @@ class LocalGatewayService {
         'assistant' => LlamaChatRole.assistant,
         _ => LlamaChatRole.user,
       };
-      messages.add(LlamaChatMessage.fromText(role: role, text: buffer.toString()));
+      messages
+          .add(LlamaChatMessage.fromText(role: role, text: buffer.toString()));
     }
     if (hasImage) {
       request.response.statusCode = HttpStatus.badRequest;
@@ -350,8 +449,9 @@ class LocalGatewayService {
     if (messages.isEmpty) {
       request.response.statusCode = HttpStatus.badRequest;
       request.response.headers.contentType = ContentType.json;
-      request.response
-          .write(jsonEncode({'error': {'message': 'messages 不能为空'}}));
+      request.response.write(jsonEncode({
+        'error': {'message': 'messages 不能为空'}
+      }));
       await request.response.close();
       return;
     }
@@ -458,7 +558,9 @@ class LocalGatewayService {
       debugPrint('[Gateway] 本地推理失败: $e');
       try {
         request.response.statusCode = HttpStatus.internalServerError;
-        request.response.write(jsonEncode({'error': {'message': '本地推理失败: $e'}}));
+        request.response.write(jsonEncode({
+          'error': {'message': '本地推理失败: $e'}
+        }));
         await request.response.close();
       } catch (_) {}
     } finally {
@@ -469,7 +571,9 @@ class LocalGatewayService {
   /// 确保引擎指向目标模型（同一实例复用；切换模型时重新加载）。
   static Future<LocalLlmEngine?> _ensureEngine(GatewayLocalModel model) async {
     var engine = _localEngine;
-    if (engine != null && engine.isLoaded && engine.loadedModelPath == model.filePath) {
+    if (engine != null &&
+        engine.isLoaded &&
+        engine.loadedModelPath == model.filePath) {
       return engine;
     }
     if (!File(model.filePath).existsSync()) return null;
@@ -484,13 +588,12 @@ class LocalGatewayService {
     return engine;
   }
 
-
   /// 拼上游 URL：保留路径与查询，按协议与 base 形态归一。
   static Uri _upstreamUri(ApiConfig config, Uri requestUri) {
-    final endpoint =
-        requestUri.path.replaceFirst(RegExp(r'^/v1'), '');
+    final endpoint = requestUri.path.replaceFirst(RegExp(r'^/v1'), '');
     final base = config.baseUrl.trim();
-    final trimmed = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+    final trimmed =
+        base.endsWith('/') ? base.substring(0, base.length - 1) : base;
     final needsV1 = !trimmed.endsWith('/v1') &&
         !trimmed.endsWith('/v2') &&
         !trimmed.endsWith('/v3') &&
@@ -503,8 +606,8 @@ class LocalGatewayService {
   static void _applyAuth(HttpClientRequest request, ApiConfig config) {
     if (ApiProtocolAdapter.isAnthropic(config.protocolId)) {
       request.headers.set('x-api-key', config.apiKey);
-      request.headers.set('anthropic-version',
-          ApiProtocolAdapter.anthropicVersion);
+      request.headers
+          .set('anthropic-version', ApiProtocolAdapter.anthropicVersion);
     } else {
       request.headers.set('Authorization', 'Bearer ${config.apiKey}');
     }

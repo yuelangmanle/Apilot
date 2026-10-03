@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../../../core/services/local_llm/device_capabilities.dart';
 import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/model_plaza_service.dart';
+import '../../../core/services/local_llm/model_storage_settings.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 /// 模型广场：像真正的社区一样翻模型。
@@ -21,11 +22,13 @@ class ModelPlazaScreen extends StatefulWidget {
   /// 供外部传入的下载回调（复用商店页的下载服务，保证进度统一）。
   /// [pairWithMain] 非空时表示本次下载的是视觉投影，下载完成会把它
   /// 配对到指定主模型（主模型文件名），之后打开该模型自动挂上看图。
-  final void Function({
+  final Future<void> Function({
     required String url,
     required String fileName,
     required String displayName,
     String? pairWithMain,
+    String? projectorShareGroup,
+    Future<void>? pairAfter,
   })? onDownloadRequested;
 
   const ModelPlazaScreen({super.key, this.onDownloadRequested});
@@ -142,9 +145,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: _selectMode
-            ? Text('已选 ${_selected.length} 个')
-            : const Text('模型广场'),
+        title:
+            _selectMode ? Text('已选 ${_selected.length} 个') : const Text('模型广场'),
         actions: [
           if (_selectMode) ...[
             IconButton(
@@ -207,18 +209,23 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                     children: [
                       _chip('看图', _filter.visionOnly,
                           (v) => _applyFilter(_filter.copyWith(visionOnly: v))),
-                      _chip('深度思考', _filter.thinkingOnly,
+                      _chip(
+                          '深度思考',
+                          _filter.thinkingOnly,
                           (v) =>
                               _applyFilter(_filter.copyWith(thinkingOnly: v))),
-                      _chip('中文', _filter.chineseOnly,
-                          (v) => _applyFilter(_filter.copyWith(chineseOnly: v))),
+                      _chip(
+                          '中文',
+                          _filter.chineseOnly,
+                          (v) =>
+                              _applyFilter(_filter.copyWith(chineseOnly: v))),
                       _chip(
                           _filter.maxSizeGb > 0
                               ? '≤${_filter.maxSizeGb.toStringAsFixed(0)}GB'
                               : '体积不限',
                           _filter.maxSizeGb > 0,
-                          (v) => _applyFilter(_filter.copyWith(
-                              maxSizeGb: v ? 6 : 0))),
+                          (v) => _applyFilter(
+                              _filter.copyWith(maxSizeGb: v ? 6 : 0))),
                       _chip(
                           _filter.sort == 'likes' ? '按点赞' : '按下载',
                           false,
@@ -316,8 +323,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                 ),
                 if (canFit != null)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: (canFit ? AppColors.primary : AppColors.error)
                           .withValues(alpha: 0.1),
@@ -326,9 +333,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                     child: Text(canFit ? '装得下' : '可能装不下',
                         style: TextStyle(
                             fontSize: 10,
-                            color: canFit
-                                ? AppColors.primary
-                                : AppColors.error)),
+                            color:
+                                canFit ? AppColors.primary : AppColors.error)),
                   ),
               ],
             ),
@@ -339,8 +345,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
               children: [
                 for (final tag in model.capabilityTags)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.secondary.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(4),
@@ -407,31 +413,39 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
   Future<void> _download(PlazaModel model) async {
     final handler = widget.onDownloadRequested;
     if (handler == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('当前入口未接入下载（请从模型商店进入）')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('当前入口未接入下载（请从模型商店进入）')));
       return;
     }
     // 列表阶段拿到的条目还没解析真实文件：先解析（含视觉投影一起下）。
     if (model.info.sizeBytes <= 0) {
       final primary = widget.onDownloadRequested;
       if (primary == null) return;
-      await _showDetail(model, Theme.of(context).brightness == Brightness.dark
-          ? AppColors.darkTextSecondary
-          : AppColors.textSecondary);
+      await _showDetail(
+          model,
+          Theme.of(context).brightness == Brightness.dark
+              ? AppColors.darkTextSecondary
+              : AppColors.textSecondary);
       return;
     }
-    handler(
+    final mainDownload = handler(
       url: model.info.downloadUrl,
       fileName: model.info.downloadUrl.split('/').last,
       displayName: model.info.name,
     );
     if (model.projector != null) {
-      handler(
+      final projectorDownload = handler(
         url: model.projector!.downloadUrl,
-        fileName: model.projector!.fileName,
+        fileName: ModelStorageSettings.scopedProjectorFileName(
+            model.info.id, model.projector!.fileName),
         displayName: '${model.info.name} 视觉投影',
         pairWithMain: model.info.downloadUrl.split('/').last,
+        projectorShareGroup: model.info.id,
+        pairAfter: mainDownload,
       );
+      await Future.wait([mainDownload, projectorDownload]);
+    } else {
+      await mainDownload;
     }
   }
 
@@ -442,9 +456,11 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
     if (handler == null) return;
     // 未解析（列表项）：走详情解析流程。
     if (model.info.sizeBytes <= 0) {
-      await _showDetail(model, Theme.of(context).brightness == Brightness.dark
-          ? AppColors.darkTextSecondary
-          : AppColors.textSecondary);
+      await _showDetail(
+          model,
+          Theme.of(context).brightness == Brightness.dark
+              ? AppColors.darkTextSecondary
+              : AppColors.textSecondary);
       return;
     }
     ModelFileVariant? chosen;
@@ -455,28 +471,35 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
       chosen = model.info.variants.isEmpty ? null : model.info.variants.first;
     }
     final variant = chosen;
-    final mainName = variant?.fileName ??
-        model.info.downloadUrl.split('/').last;
-    handler(
+    final mainName =
+        variant?.fileName ?? model.info.downloadUrl.split('/').last;
+    final mainDownload = handler(
       url: variant?.downloadUrl ?? model.info.downloadUrl,
       fileName: mainName,
       displayName: '${model.info.name} '
           '${variant?.quantization ?? model.info.quantization}',
     );
     if (model.projector != null) {
-      handler(
+      final projectorDownload = handler(
         url: model.projector!.downloadUrl,
-        fileName: model.projector!.fileName,
+        fileName: ModelStorageSettings.scopedProjectorFileName(
+            model.info.id, model.projector!.fileName),
         displayName: '${model.info.name} 视觉投影',
         pairWithMain: mainName,
+        projectorShareGroup: model.info.id,
+        pairAfter: mainDownload,
       );
+      await Future.wait([mainDownload, projectorDownload]);
+    } else {
+      await mainDownload;
     }
   }
 
   /// 版本选择对话框（量化版本清单，带体积；推荐项排前由服务层排好序）。
   Future<ModelFileVariant?> _pickVariant(PlazaModel model) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final secondary = dark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+    final secondary =
+        dark ? AppColors.darkTextSecondary : AppColors.textSecondary;
     return showModalBottomSheet<ModelFileVariant>(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -508,10 +531,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
   /// 把选中的模型交给 AI 调研：这是干什么的 / 各版本区别 / 推荐哪个。
   Future<void> _researchSelected() async {
     final messenger = ScaffoldMessenger.of(context);
-    final picked = _models
-        .where((m) => _selected.contains(m.info.id))
-        .take(6)
-        .toList();
+    final picked =
+        _models.where((m) => _selected.contains(m.info.id)).take(6).toList();
     if (picked.isEmpty) return;
     setState(() => _researching = true);
     try {
@@ -539,8 +560,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
       if (!mounted) return;
       setState(() => _researching = false);
       if (answer == null || answer.trim().isEmpty) {
-        messenger.showSnackBar(const SnackBar(
-            content: Text('AI 未配置或调用失败：可先在「设置 → AI 设置」配置来源')));
+        messenger.showSnackBar(
+            const SnackBar(content: Text('AI 未配置或调用失败：可先在「设置 → AI 设置」配置来源')));
         return;
       }
       await showDialog<void>(
@@ -567,8 +588,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
       );
     } catch (e) {
       if (mounted) setState(() => _researching = false);
-      messenger.showSnackBar(SnackBar(
-          content: Text('调研失败：$e'), backgroundColor: AppColors.error));
+      messenger.showSnackBar(
+          SnackBar(content: Text('调研失败：$e'), backgroundColor: AppColors.error));
     }
   }
 
@@ -578,8 +599,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
     setState(() => _resolvingDetail = model.info.id);
     PlazaModel? resolved;
     try {
-      resolved = await ModelPlazaService.resolveDetail(
-          model, deviceRamMb: _deviceRamMb);
+      resolved = await ModelPlazaService.resolveDetail(model,
+          deviceRamMb: _deviceRamMb);
     } catch (e) {
       debugPrint('[Plaza] 详情解析失败: $e');
     }
@@ -627,7 +648,8 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               const SizedBox(height: 4),
               if (detail.projector != null)
-                const Text('「型号 + 投影」= 下载后自动配对，打开即可看图；'
+                const Text(
+                    '「型号 + 投影」= 下载后自动配对，打开即可看图；'
                     '“只下模型”则不含看图能力。',
                     style: TextStyle(fontSize: 11, color: AppColors.primary)),
               for (final variant in detail.info.variants.take(12))
@@ -636,42 +658,49 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                   contentPadding: EdgeInsets.zero,
                   title: Text(variant.quantization,
                       style: const TextStyle(fontSize: 13)),
-                  subtitle: Text(
-                      '${variant.fileName} · ${variant.sizeLabel}',
+                  subtitle: Text('${variant.fileName} · ${variant.sizeLabel}',
                       style: const TextStyle(fontSize: 11)),
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                     if (detail.projector != null)
                       IconButton(
                         icon: const Icon(Icons.link, size: 18),
                         tooltip: '下这个版本 + 配套投影（自动配对）',
-                        onPressed: () {
+                        onPressed: () async {
                           final handler = widget.onDownloadRequested;
-                          handler?.call(
+                          if (handler == null) return;
+                          final mainDownload = handler(
                             url: variant.downloadUrl,
                             fileName: variant.fileName,
                             displayName: '${detail.info.name} '
                                 '${variant.quantization}（含投影）',
                           );
-                          handler?.call(
+                          final projectorDownload = handler(
                             url: detail.projector!.downloadUrl,
-                            fileName: detail.projector!.fileName,
-                            displayName:
-                                '${detail.info.name} 视觉投影',
+                            fileName:
+                                ModelStorageSettings.scopedProjectorFileName(
+                              detail.info.id,
+                              detail.projector!.fileName,
+                            ),
+                            displayName: '${detail.info.name} 视觉投影',
                             pairWithMain: variant.fileName,
+                            projectorShareGroup: detail.info.id,
+                            pairAfter: mainDownload,
                           );
                           Navigator.pop(sheetContext);
+                          await Future.wait([mainDownload, projectorDownload]);
                         },
                       ),
                     IconButton(
                       icon: const Icon(Icons.download, size: 18),
                       tooltip: '只下这个版本',
-                      onPressed: () {
-                        widget.onDownloadRequested?.call(
+                      onPressed: () async {
+                        final download = widget.onDownloadRequested?.call(
                           url: variant.downloadUrl,
                           fileName: variant.fileName,
                           displayName: variant.quantization,
                         );
                         Navigator.pop(sheetContext);
+                        await download;
                       },
                     ),
                   ]),
@@ -717,13 +746,14 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
               if (detail.projector != null) ...[
                 const SizedBox(height: 8),
                 OutlinedButton(
-                  onPressed: () {
-                    widget.onDownloadRequested?.call(
+                  onPressed: () async {
+                    final download = widget.onDownloadRequested?.call(
                       url: detail.info.downloadUrl,
                       fileName: detail.info.downloadUrl.split('/').last,
                       displayName: detail.info.name,
                     );
                     Navigator.pop(sheetContext);
+                    await download;
                   },
                   child: const Text('只要文本模型（不要看图）'),
                 ),

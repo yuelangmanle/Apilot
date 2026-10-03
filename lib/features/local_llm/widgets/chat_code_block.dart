@@ -1,10 +1,7 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
+import '../../../core/services/ai/html_project_store.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../screens/html_editor_screen.dart';
 
@@ -18,7 +15,8 @@ class ChatCodeBlock extends StatelessWidget {
 
   const ChatCodeBlock({super.key, required this.language, required this.code});
 
-  bool get _isHtml => language.toLowerCase() == 'html' ||
+  bool get _isHtml =>
+      language.toLowerCase() == 'html' ||
       code.trimLeft().toLowerCase().startsWith('<!doctype html') ||
       code.trimLeft().toLowerCase().startsWith('<html');
 
@@ -36,8 +34,7 @@ class ChatCodeBlock extends StatelessWidget {
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1B1B1F) : const Color(0xFFF6F7FB),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-            color: AppColors.primary.withValues(alpha: 0.15)),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.15)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -118,18 +115,14 @@ class ChatCodeBlock extends StatelessWidget {
   Future<void> _saveDraft(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final support = await getApplicationSupportDirectory();
-      final dir = Directory(p.join(support.path, 'snippets'));
-      if (!dir.existsSync()) dir.createSync(recursive: true);
       final name = 'AI生成_${DateTime.now().millisecondsSinceEpoch}';
-      final file = File(p.join(dir.path, '$name.html'));
-      await file.writeAsString(code, flush: true);
+      await HtmlProjectStore().save(name, code);
       messenger.showSnackBar(const SnackBar(
-          content: Text('已存到草稿（设置 → 工具箱 → HTML 编辑器）'),
+          content: Text('已存到 HTML 项目（设置 → 工具箱 → HTML 编辑器）'),
           backgroundColor: AppColors.success));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(
-          content: Text('保存失败：$e'), backgroundColor: AppColors.error));
+      messenger.showSnackBar(
+          SnackBar(content: Text('保存失败：$e'), backgroundColor: AppColors.error));
     }
   }
 }
@@ -147,6 +140,12 @@ class MessageSegment {
 
   /// 解析 ``` 围栏（支持 ```html 这类语言标注）。
   static List<MessageSegment> parse(String content) {
+    final trimmed = content.trim();
+    if (RegExp(r'^<!doctype\s+html\b', caseSensitive: false)
+            .hasMatch(trimmed) ||
+        RegExp(r'^<html(?:\s|>)', caseSensitive: false).hasMatch(trimmed)) {
+      return [MessageSegment.code(trimmed, 'html')];
+    }
     final segments = <MessageSegment>[];
     final pattern = RegExp(r'```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)(?:```|$)');
     var last = 0;
@@ -196,8 +195,7 @@ class ChatMessageBody extends StatelessWidget {
       children: [
         for (final segment in segments)
           segment.isCode
-              ? ChatCodeBlock(
-                  language: segment.language, code: segment.text)
+              ? ChatCodeBlock(language: segment.language, code: segment.text)
               : Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: SelectableText(segment.text,

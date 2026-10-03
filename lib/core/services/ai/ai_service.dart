@@ -12,6 +12,8 @@ import '../api_service.dart';
 import '../local_llm/local_llm_engine.dart';
 import '../local_llm/model_download_service.dart';
 
+enum AiRoute { cloud, local, unavailable }
+
 /// AI 功能统一入口：按"AI 设置"选择的后端（云端配置 / 本地模型）执行任务。
 ///
 /// 设计原则：
@@ -31,6 +33,21 @@ class AiService {
   /// 最近一次失败的原因（界面据此给出可读提示，而不是笼统的"调用失败"）。
   static String? lastError;
 
+  /// 解析一次 AI 调用的最终路由。
+  ///
+  /// 对话页传入的配置/引擎是显式路由，必须优先于设置页的全局来源；
+  /// 否则用户在云端对话页打开工具时，可能被全局“使用本地模型”开关劫持。
+  @visibleForTesting
+  static AiRoute resolveRoute({
+    required bool globalUseLocal,
+    required bool hasPreferredCloudConfig,
+    required bool localEngineLoaded,
+  }) {
+    if (hasPreferredCloudConfig) return AiRoute.cloud;
+    if (localEngineLoaded) return AiRoute.local;
+    return globalUseLocal ? AiRoute.local : AiRoute.cloud;
+  }
+
   /// 已加载的本地引擎共享给全部 AI 功能：
   /// 聊天页加载模型后注册到这里，AI 诊断/分析等无需重复加载。
   static LocalLlmEngine? _sharedEngine;
@@ -38,6 +55,11 @@ class AiService {
   static void registerLocalEngine(LocalLlmEngine? engine) {
     _sharedEngine = engine;
   }
+
+  /// 返回已注册的引擎，即使它正在加载中。
+  /// 聊天页初始化时也要复用这个实例，否则会在同一模型上并发创建两个
+  /// native 引擎；真正用于推理的调用仍使用 [sharedLocalEngine] 的已加载判断。
+  static LocalLlmEngine? get registeredLocalEngine => _sharedEngine;
 
   static LocalLlmEngine? get sharedLocalEngine =>
       (_sharedEngine?.isLoaded ?? false) ? _sharedEngine : null;
@@ -89,12 +111,15 @@ class AiService {
     String? systemPrompt,
     required List<ApiConfig> configs,
     LocalLlmEngine? localEngine,
+
     /// 流式增量回调（云端工具模式用它显示进度）。
     void Function(String delta)? onDelta,
+
     /// 指定用哪个配置（云端对话页传自己的配置，不看全局设置）。
     ApiConfig? preferredConfig,
     int maxTokens = 512,
   }) async {
+    lastError = null;
     // 只有"按全局设置挑来源"时才看总开关；调用方显式给了配置或引擎
     // （云端对话页/本地对话页）就必须照做——否则用户在对话里怎么点都会
     // 收到"AI 未配置、调用失败或没有返回内容"。
@@ -105,14 +130,22 @@ class AiService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final useLocal = prefs.getBool(_useLocalKey) ?? false;
+      final route = resolveRoute(
+        globalUseLocal: useLocal,
+        hasPreferredCloudConfig: preferredConfig != null,
+        localEngineLoaded: localEngine != null && localEngine.isLoaded,
+      );
 
-      if (useLocal) {
+      if (route == AiRoute.local) {
         final engine = localEngine ?? sharedLocalEngine;
         if (engine == null || !engine.isLoaded) {
           // 没有已加载的引擎：尝试自动加载本机已下载的最小模型，
           // 否则"AI 设置里选本地模型"会静默失效。
           final auto = await _tryAutoLoadLocalEngine();
-          if (auto == null) return null;
+          if (auto == null) {
+            lastError = '本地模型未加载：请先在模型商店下载并打开一个模型';
+            return null;
+          }
           return await _askLocal(auto, userPrompt, systemPrompt, maxTokens)
               .timeout(const Duration(minutes: 3));
         }
@@ -133,7 +166,10 @@ class AiService {
           }
         }
       }
-      if (config == null) return null;
+      if (config == null) {
+        lastError = '没有可用的云端 API 配置';
+        return null;
+      }
 
       return await _askCloud(config, userPrompt, systemPrompt, maxTokens,
               onDelta: onDelta)
@@ -157,7 +193,10 @@ class AiService {
   }) async {
     final model = config.selectedModel ??
         (config.models.isEmpty ? '' : config.models.first);
-    if (model.isEmpty) return null;
+    if (model.isEmpty) {
+      lastError = '当前 API 配置没有选择模型';
+      return null;
+    }
 
     final messages = <Map<String, dynamic>>[
       if (systemPrompt != null && systemPrompt.isNotEmpty)
@@ -184,7 +223,10 @@ class AiService {
           onDelta?.call(event.delta!);
         }
         if (event.isDone && event.response != null) {
-          final text = extractAssistantText(event.response!['body']);
+          final response = event.response!;
+          final text = extractAssistantText(
+            response['body'] ?? response,
+          );
           if (text != null && text.isNotEmpty) return text;
         }
       }
@@ -208,7 +250,7 @@ class AiService {
       );
       final text = extractAssistantText(result['body']);
       if (text != null && text.isNotEmpty) return text;
-      lastError = '模型返回了空内容（非流式回退也没拿到文本）';
+      lastError = '模型返回了空内容（流式与非流式请求都没有拿到文本）';
     } catch (e) {
       lastError = '$e';
       debugPrint('[AiService] 云端非流式也失败: $e');
@@ -226,8 +268,7 @@ class AiService {
       if (systemPrompt != null && systemPrompt.isNotEmpty)
         LlamaChatMessage.fromText(
             role: LlamaChatRole.system, text: systemPrompt),
-      LlamaChatMessage.fromText(
-          role: LlamaChatRole.user, text: userPrompt),
+      LlamaChatMessage.fromText(role: LlamaChatRole.user, text: userPrompt),
     ];
     final text = await engine.generate(messages, maxTokens: maxTokens);
     return text.isEmpty ? null : text;

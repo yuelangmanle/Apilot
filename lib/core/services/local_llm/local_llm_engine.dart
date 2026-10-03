@@ -34,6 +34,11 @@ class LocalLlmEngine {
   String? _loadingKey;
   String? _loadedKey;
 
+  // llama.cpp 的同一上下文不能同时生成。工具模式、聊天页和本地网关
+  // 可能共享一个引擎，因此生成也必须串行化，避免 native 状态被并发读写。
+  Future<void> _generationQueue = Future<void>.value();
+  bool _generationBusy = false;
+
   String? get loadedModelPath => _loadedModelPath;
 
   /// 是否有加载正在进行（含排队等待）。
@@ -49,6 +54,10 @@ class LocalLlmEngine {
   String? get projectorPath => _projectorPath;
 
   bool get isLoaded => _engine != null && _loadedModelPath != null;
+
+  bool get isDisposed => _disposed;
+
+  bool get isGenerating => _generationBusy;
 
   /// 引擎当前已加载的模型是否就是 [filePath]（且没有别的加载在跑）。
   /// 界面用它判断"可以直接生成"，比 [isLoaded] 严格——isLoaded 只说明
@@ -113,6 +122,10 @@ class LocalLlmEngine {
       } catch (_) {}
       if (_disposed) throw StateError('引擎已释放');
     }
+    cancelGeneration();
+    try {
+      await _generationQueue;
+    } catch (_) {}
     final sw = Stopwatch()..start();
     debugPrint('[LocalLlm] 开始加载: ${filePath.split('/').last} '
         '(ctx=$contextSize)…');
@@ -274,51 +287,11 @@ class LocalLlmEngine {
     return null;
   }
 
-  /// 在同目录查找**与主模型匹配**的视觉投影。
+  /// 查找与主模型明确配对的视觉投影。
   ///
-  /// mmproj 不通用（投影层维度必须与主模型隐藏维度一致），所以：
-  /// 1) 优先文件名包含主模型核心名（如 `mmproj-gemma-3-4b-it-f16.gguf` 配
-  ///    `gemma-3-4b-it-Q4_K_M.gguf`）；
-  /// 2) 通用名（`mmproj-F16.gguf`）只在目录里只有这一个主模型时接受；
-  /// 3) 匹配不上的投影一律忽略（绝不猜）。
+  /// mmproj 不是全局通用附件。没有下载时写入的配对记录就不自动挂载，
+  /// 不能因为目录里只有一个文件、文件名相似或模型属于同一个集合就猜测。
   static String? _matchingProjector(String modelPath) {
-    // 纯文本模型根本不需要投影：先按家族判断，避免"每个模型都显示多模态"。
-    if (!ModelCapabilities.isVisionFamily(modelPath)) return null;
-    try {
-      final file = File(modelPath);
-      final dir = file.parent;
-      if (!dir.existsSync()) return null;
-      final projectors = <File>[];
-      final mainModels = <File>[];
-      for (final entity in dir.listSync()) {
-        if (entity is! File) continue;
-        final name = entity.uri.pathSegments.last;
-        if (ModelCapabilities.isProjectorFile(name)) {
-          if (entity.lengthSync() <= 0 ||
-              File('${entity.path}.part').existsSync()) {
-            continue;
-          }
-          projectors.add(entity);
-        } else if (name.toLowerCase().endsWith('.gguf')) {
-          mainModels.add(entity);
-        }
-      }
-      if (projectors.isEmpty) return null;
-      final core = ModelCapabilities.coreToken(file.uri.pathSegments.last);
-      for (final projector in projectors) {
-        final name = projector.uri.pathSegments.last.toLowerCase();
-        if (name.contains(core) && projector.lengthSync() > 0) {
-          return projector.path;
-        }
-      }
-      if (projectors.length == 1 && mainModels.length == 1) {
-        return projectors.first.path;
-      }
-      // 注意：这里**故意不再**"只要目录里有一个投影就用"——
-      // 那条规则会让每个模型（包括纯文本的 gemma-3-1b）都被判定"多模态已就绪"，
-      // 而投影是模型专用的，套上去也用不了。
-      return null;
-    } catch (_) {}
     return null;
   }
 
@@ -329,17 +302,28 @@ class LocalLlmEngine {
     double temp = 0.8,
     double topP = 0.9,
   }) async {
-    final engine = _engine;
-    if (engine == null) throw StateError('模型未加载');
-    final buffer = StringBuffer();
-    await for (final chunk in engine.create(
-      messages,
-      params: GenerationParams(maxTokens: maxTokens, temp: temp, topP: topP),
-    )) {
-      final text = chunk.choices.first.delta.content;
-      if (text != null) buffer.write(text);
+    if (_disposed) throw StateError('引擎已释放');
+    final previous = _generationQueue;
+    final release = Completer<void>();
+    _generationQueue = release.future;
+    _generationBusy = true;
+    try {
+      await previous;
+      final engine = _engine;
+      if (engine == null) throw StateError('模型未加载');
+      final buffer = StringBuffer();
+      await for (final chunk in engine.create(
+        messages,
+        params: GenerationParams(maxTokens: maxTokens, temp: temp, topP: topP),
+      )) {
+        final text = chunk.choices.first.delta.content;
+        if (text != null) buffer.write(text);
+      }
+      return buffer.toString();
+    } finally {
+      _generationBusy = false;
+      if (!release.isCompleted) release.complete();
     }
-    return buffer.toString();
   }
 
   /// 流式生成：逐帧产出增量（正文 + 思考过程分离）。
@@ -354,61 +338,73 @@ class LocalLlmEngine {
     bool thinkingEnabled = false,
     bool suppressThinking = false,
   }) async* {
-    final engine = _engine;
-    if (engine == null) throw StateError('模型未加载');
-    // 只有认这个指令的家族（Qwen3 系）才追加 /no_think：别的模型会把它当
-    // 可疑文本反复琢磨，导致思考打转（真机实测 Spark-X2.5 死循环）。
-    final effectiveMessages =
-        (suppressThinking && !thinkingEnabled && _supportsNoThink)
-            ? _withNoThink(messages)
-            : messages;
-    // 投机解码：预构建原生库可能不含 llama-common 的投机包装层
-    // （部分模型/上下文也不支持），此时引擎会直接抛错。策略：失败且
-    // **尚未产出任何 token** 时关掉投机自动重试一次；仍失败才向上抛错。
-    // 优化永远不许拖垮正常对话。
-    var speculative =
-        LocalLlmTuning.speculativeNgram && !_speculativeUnsupported;
-    while (true) {
-      var yielded = false;
-      try {
-        await for (final chunk in engine.create(
-          effectiveMessages,
-          // 关键：enableThinking 默认 true，模型会先把思考跑完再吐正文——
-          // 用户看到的就是"不是流式、还慢"。关掉开关时必须真的传给模板。
-          enableThinking: thinkingEnabled,
-          params: GenerationParams(
-            maxTokens: maxTokens,
-            temp: temp,
-            topP: topP,
-            // 投机解码：n-gram 自推测（零额外内存；代码/HTML 这类重复多的输出收益大）。
-            // 注意 API 形态：策略不在 GenerationParams 顶层，而是包在
-            // speculativeDecodingConfig 里；null = 关闭。
-            speculativeDecodingConfig: speculative
-                ? const SpeculativeDecodingConfig.ngramSimple()
-                : null,
-            thinkingBudget:
-                thinkingEnabled ? const ThinkingBudget(maxTokens: 1024) : null,
-          ),
-        )) {
-          final delta = chunk.choices.first.delta;
-          final content = delta.content;
-          final thinking = delta.thinking;
-          if ((content != null && content.isNotEmpty) ||
-              (thinking != null && thinking.isNotEmpty)) {
-            yielded = true;
-            yield LocalLlmChunk(content: content, thinking: thinking);
+    if (_disposed) throw StateError('引擎已释放');
+    final previous = _generationQueue;
+    final release = Completer<void>();
+    _generationQueue = release.future;
+    _generationBusy = true;
+    try {
+      await previous;
+      final engine = _engine;
+      if (engine == null) throw StateError('模型未加载');
+      // 只有认这个指令的家族（Qwen3 系）才追加 /no_think：别的模型会把它当
+      // 可疑文本反复琢磨，导致思考打转（真机实测 Spark-X2.5 死循环）。
+      final effectiveMessages =
+          (suppressThinking && !thinkingEnabled && _supportsNoThink)
+              ? _withNoThink(messages)
+              : messages;
+      // 投机解码：预构建原生库可能不含 llama-common 的投机包装层
+      // （部分模型/上下文也不支持），此时引擎会直接抛错。策略：失败且
+      // **尚未产出任何 token** 时关掉投机自动重试一次；仍失败才向上抛错。
+      // 优化永远不许拖垮正常对话。
+      var speculative =
+          LocalLlmTuning.speculativeNgram && !_speculativeUnsupported;
+      while (true) {
+        var yielded = false;
+        try {
+          await for (final chunk in engine.create(
+            effectiveMessages,
+            // 关键：enableThinking 默认 true，模型会先把思考跑完再吐正文——
+            // 用户看到的就是"不是流式、还慢"。关掉开关时必须真的传给模板。
+            enableThinking: thinkingEnabled,
+            params: GenerationParams(
+              maxTokens: maxTokens,
+              temp: temp,
+              topP: topP,
+              // 投机解码：n-gram 自推测（零额外内存；代码/HTML 这类重复多的输出收益大）。
+              // 注意 API 形态：策略不在 GenerationParams 顶层，而是包在
+              // speculativeDecodingConfig 里；null = 关闭。
+              speculativeDecodingConfig: speculative
+                  ? const SpeculativeDecodingConfig.ngramSimple()
+                  : null,
+              thinkingBudget: thinkingEnabled
+                  ? const ThinkingBudget(maxTokens: 1024)
+                  : null,
+            ),
+          )) {
+            final delta = chunk.choices.first.delta;
+            final content = delta.content;
+            final thinking = delta.thinking;
+            if ((content != null && content.isNotEmpty) ||
+                (thinking != null && thinking.isNotEmpty)) {
+              yielded = true;
+              yield LocalLlmChunk(content: content, thinking: thinking);
+            }
           }
+          return;
+        } catch (e) {
+          if (speculative && !yielded) {
+            debugPrint('[LocalLlm] 投机解码不可用，自动降级重试: $e');
+            _speculativeUnsupported = true;
+            speculative = false;
+            continue;
+          }
+          rethrow;
         }
-        return;
-      } catch (e) {
-        if (speculative && !yielded) {
-          debugPrint('[LocalLlm] 投机解码不可用，自动降级重试: $e');
-          _speculativeUnsupported = true;
-          speculative = false;
-          continue;
-        }
-        rethrow;
       }
+    } finally {
+      _generationBusy = false;
+      if (!release.isCompleted) release.complete();
     }
   }
 
@@ -450,6 +446,7 @@ class LocalLlmEngine {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    cancelGeneration();
     // 在途加载必须等它走完（或失败）再卸载：loadModelSource 正在 Vulkan
     // 编译/读文件时直接 dispose 引擎句柄，native 层会崩——这是闪退的
     // 另一个来源（用户等不及退出页面就会触发）。等待本身无人依赖，
@@ -460,6 +457,9 @@ class LocalLlmEngine {
         await tail;
       } catch (_) {}
     }
+    try {
+      await _generationQueue;
+    } catch (_) {}
     await unload();
   }
 }

@@ -49,6 +49,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   final _pendingAttachments = <ChatAttachment>[];
 
   late final LocalLlmEngine _engine;
+  bool _ownsEngine = false;
   late ChatConversation _conversation;
 
   bool _isGenerating = false;
@@ -63,6 +64,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   // ignore: prefer_final_fields
   int _contextSize = 4096;
   final List<agent.AgentStep> _pendingSteps = [];
+  final ValueNotifier<int> _streamRevision = ValueNotifier(0);
   String _streamText = '';
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
@@ -71,7 +73,15 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   @override
   void initState() {
     super.initState();
-    _engine = LocalLlmEngine();
+    final registered = AiService.registeredLocalEngine;
+    if (registered != null && !registered.isDisposed) {
+      // 页面之间复用同一个 native 引擎，避免每次打开对话都重新加载 GGUF，
+      // 也避免两个模型同时编译 Vulkan 导致手机卡死或 native 崩溃。
+      _engine = registered;
+    } else {
+      _engine = LocalLlmEngine();
+      _ownsEngine = true;
+    }
     _init();
   }
 
@@ -249,6 +259,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       var firstTokenMs = -1;
       final streamed = StringBuffer();
       var isToolProtocol = false;
+      var protocolTail = '';
       DateTime? lastToolUiUpdate;
       final history = <agent.ChatTurn>[
         for (final record in _conversation.messages
@@ -275,15 +286,21 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           if (!mounted) return;
           if (firstTokenMs < 0) firstTokenMs = stopwatch.elapsedMilliseconds;
           streamed.write(delta);
-          final streamedText = streamed.toString();
-          if (streamedText.contains('@@')) isToolProtocol = true;
+          final protocolWindow = '$protocolTail$delta';
+          if (!isToolProtocol && protocolWindow.contains('@@')) {
+            isToolProtocol = true;
+          }
+          protocolTail = protocolWindow.length > 5
+              ? protocolWindow.substring(protocolWindow.length - 5)
+              : protocolWindow;
           final now = DateTime.now();
           final shouldUpdate = lastToolUiUpdate == null ||
               now.difference(lastToolUiUpdate!) >=
                   const Duration(milliseconds: 80);
           if (!isToolProtocol && shouldUpdate) {
             lastToolUiUpdate = now;
-            setState(() => _streamText = streamed.toString());
+            _streamText = streamed.toString();
+            _streamRevision.value++;
             _scrollToBottom(animate: false);
           }
         },
@@ -396,10 +413,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 const Duration(milliseconds: 80);
         if (shouldUpdate) {
           lastPlainUiUpdate = now;
-          setState(() {
-            _streamText = buffer.toString();
-            _streamThinking = thinking.toString();
-          });
+          _streamText = buffer.toString();
+          _streamThinking = thinking.toString();
+          _streamRevision.value++;
           _scrollToBottom(animate: false);
         }
       }
@@ -667,7 +683,14 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 手动把磁盘上的视觉投影绑定到当前模型。
   Future<bool> _bindProjector() async {
     final messenger = ScaffoldMessenger.of(context);
-    final files = await ModelDownloadService.listProjectors();
+    final files = <File>[];
+    for (final file in await ModelDownloadService.listProjectors()) {
+      final owner =
+          await ModelStorageSettings.projectorOwner(file.uri.pathSegments.last);
+      if (owner == null || owner == widget.modelPath.split('/').last) {
+        files.add(file);
+      }
+    }
     if (!mounted) return false;
     if (files.isEmpty) {
       messenger.showSnackBar(const SnackBar(
@@ -692,8 +715,15 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     );
     if (picked == null) return false;
     final mainName = widget.modelPath.split('/').last;
-    await ModelStorageSettings.pairProjector(
+    final paired = await ModelStorageSettings.pairProjector(
         mainName, picked.uri.pathSegments.last);
+    if (!paired) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('这个投影已经配给其他主模型，不能重复挂载'),
+        backgroundColor: AppColors.warning,
+      ));
+      return false;
+    }
     // 重新加载模型，让引擎按新配对挂上投影。
     try {
       await _engine
@@ -1271,11 +1301,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   void dispose() {
     _controller.dispose();
     _scrollController.dispose();
-    // 共享引擎指向本页实例时先摘掉，避免其他 AI 功能用到已释放的引擎。
-    if (AiService.sharedLocalEngine == _engine) {
-      AiService.registerLocalEngine(null);
+    _streamRevision.dispose();
+    // 已注册的引擎留给工具、诊断和下一次聊天复用；只有初始化失败、从未
+    // 注册过的页面实例才在退出时释放。释放动作等待加载/生成结束，避免
+    // native 层在 Vulkan 编译期间被销毁。
+    if (AiService.registeredLocalEngine != _engine && _ownsEngine) {
+      unawaited(_engine.dispose());
     }
-    _engine.dispose();
     super.dispose();
   }
 
@@ -1571,39 +1603,42 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           color: isDark ? AppColors.darkSurface : AppColors.background,
           borderRadius: BorderRadius.circular(14),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_isGenerating &&
-                _streamText.isEmpty &&
-                _streamThinking.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                    '思考中…（已 ${_streamThinking.length} 字，'
-                    '点击气泡上方「查看思考过程」可展开）',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? AppColors.darkTextSecondary
-                            : AppColors.textSecondary)),
-              ),
-            if (_pendingSteps.isNotEmpty)
-              _thinkingPanel(
-                [
-                  for (final step in _pendingSteps)
-                    '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
-                ].join('\n\n'),
-                -2,
-                isDark,
-                title: '工具调用中（${_pendingSteps.length} 步）',
-              ),
-            if (_streamThinking.isNotEmpty)
-              _thinkingPanel(_streamThinking, -1, isDark),
-            Text(_streamText.isEmpty && _streamThinking.isNotEmpty
-                ? '（思考中…）'
-                : (_streamText.isEmpty ? '…' : _streamText)),
-          ],
+        child: ValueListenableBuilder<int>(
+          valueListenable: _streamRevision,
+          builder: (context, _, __) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_isGenerating &&
+                  _streamText.isEmpty &&
+                  _streamThinking.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                      '思考中…（已 ${_streamThinking.length} 字，'
+                      '点击气泡上方「查看思考过程」可展开）',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? AppColors.darkTextSecondary
+                              : AppColors.textSecondary)),
+                ),
+              if (_pendingSteps.isNotEmpty)
+                _thinkingPanel(
+                  [
+                    for (final step in _pendingSteps)
+                      '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+                  ].join('\n\n'),
+                  -2,
+                  isDark,
+                  title: '工具调用中（${_pendingSteps.length} 步）',
+                ),
+              if (_streamThinking.isNotEmpty)
+                _thinkingPanel(_streamThinking, -1, isDark),
+              Text(_streamText.isEmpty && _streamThinking.isNotEmpty
+                  ? '（思考中…）'
+                  : (_streamText.isEmpty ? '…' : _streamText)),
+            ],
+          ),
         ),
       ),
     );

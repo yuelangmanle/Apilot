@@ -40,6 +40,7 @@ class ModelListFetchResult {
 class ApiService {
   /// 模块级共享连接池：体检 N 个 Key 复用 TLS 连接而非 N 次握手。
   static final http.Client _sharedClient = http.Client();
+
   /// 智能拼接 URL，避免重复路径段
   static String buildUrl(String baseUrl, String endpoint) {
     String base = baseUrl.trim();
@@ -106,8 +107,7 @@ class ApiService {
         if (response.statusCode == 401 || response.statusCode == 403) {
           return {
             'valid': false,
-            'message':
-                '服务器拒绝了请求（状态码 ${response.statusCode}），请检查 API Key 是否正确',
+            'message': '服务器拒绝了请求（状态码 ${response.statusCode}），请检查 API Key 是否正确',
           };
         }
         return {
@@ -157,14 +157,14 @@ class ApiService {
         try {
           final uri = Uri.parse(modelsUrl);
           final response = await _sharedClient
-          .get(
-            uri,
-            headers: ApiProtocolAdapter.authHeaders(
-              protocolId: apiConfig.protocolId,
-              apiKey: apiConfig.apiKey,
-            ),
-          )
-          .timeout(const Duration(seconds: 15));
+              .get(
+                uri,
+                headers: ApiProtocolAdapter.authHeaders(
+                  protocolId: apiConfig.protocolId,
+                  apiKey: apiConfig.apiKey,
+                ),
+              )
+              .timeout(const Duration(seconds: 15));
 
           if (response.statusCode != 200) {
             lastError = '$modelsUrl 返回状态码 ${response.statusCode}';
@@ -405,51 +405,69 @@ class ApiService {
       TokenUsage? usage;
       var rawChunks = 0;
 
+      final contentType = response.headers['content-type']
+          ?.split(';')
+          .first
+          .trim()
+          .toLowerCase();
+      if (contentType != 'text/event-stream') {
+        final rawBody = await response.stream.bytesToString();
+        final decoded = jsonDecode(rawBody);
+        if (decoded is! Map) {
+          throw const FormatException('非流式响应不是 JSON 对象');
+        }
+        final responseBody = Map<String, dynamic>.from(decoded);
+        final text = ApiProtocolAdapter.extractAssistantText(
+          responseBody,
+          protocolId,
+        );
+        if (text != null && text.isNotEmpty) {
+          contentBuffer.write(text);
+          yield StreamChatEvent.delta(text);
+        }
+        usage = ApiProtocolAdapter.extractUsage(responseBody, protocolId);
+        stopwatch.stop();
+        yield StreamChatEvent.done(
+          {
+            'body': responseBody,
+            'model': responseBody['model'] ?? model,
+            'stream': false,
+          },
+          durationMs: stopwatch.elapsedMilliseconds,
+          usage: usage,
+        );
+        return;
+      }
+
       final lines = response.stream
           .transform(const Utf8Decoder())
           .transform(const LineSplitter());
       // SSE 规范：一个事件可由多行 data: 组成，空行表示事件结束。
       var dataBuffer = StringBuffer();
+      var receivedDone = false;
 
-      await for (final line in lines) {
-        final trimmed = line.trim();
-        if (trimmed.isEmpty) {
-          if (dataBuffer.isEmpty) continue;
-        } else if (trimmed.startsWith(':')) {
-          continue;
-        } else if (trimmed.startsWith('data:')) {
-          dataBuffer.write(trimmed.substring(5).trim());
-          continue;
-        } else {
-          continue;
+      StreamChatEvent? parseDataFrame(String data) {
+        if (data.isEmpty) return null;
+        if (data == '[DONE]') {
+          receivedDone = true;
+          return null;
         }
-
-        final data = dataBuffer.toString();
-        dataBuffer = StringBuffer();
-        if (data.isEmpty || data == '[DONE]') {
-          if (data == '[DONE]') break;
-          continue;
-        }
-
         try {
           final decoded = jsonDecode(data);
-          if (decoded is! Map<String, dynamic>) continue;
+          if (decoded is! Map<String, dynamic>) return null;
           rawChunks++;
           final parsed = SseStreamParser.parseFrame(decoded, protocolId);
           final text = parsed.deltaText ?? parsed.reasoningDelta;
           if (text != null && text.isNotEmpty) {
             if (parsed.isReasoning) {
-              // 推理文本不进正文，但实时展示（避免长时间空白）。
               reasoningBuffer.write(text);
-              yield StreamChatEvent.reasoning(text);
             } else {
               contentBuffer.write(text);
-              yield StreamChatEvent.delta(text);
             }
           }
           if (parsed.usage != null) {
-            // 字段级合并：Anthropic 的 message_start 带完整 input/output，
-            // 后续 message_delta 只带累计 output——整体覆盖会丢掉 prompt。
+            // Anthropic 的 message_start 带完整 input/output，后续
+            // message_delta 只带累计 output，字段级合并以免丢 prompt。
             final incoming = parsed.usage!;
             usage = TokenUsage(
               promptTokens: incoming.promptTokens ?? usage?.promptTokens,
@@ -460,10 +478,41 @@ class ApiService {
                   incoming.reasoningTokens ?? usage?.reasoningTokens,
             );
           }
+          if (text == null || text.isEmpty) return null;
+          return parsed.isReasoning
+              ? StreamChatEvent.reasoning(text)
+              : StreamChatEvent.delta(text);
         } on FormatException catch (e) {
           // 单帧解析失败只跳过该帧（代理保活行/截断 JSON），不废整条流。
           debugPrint('[Stream] 坏帧跳过: $e');
+          return null;
         }
+      }
+
+      await for (final line in lines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) {
+          if (dataBuffer.isEmpty) continue;
+        } else if (trimmed.startsWith(':')) {
+          continue;
+        } else if (trimmed.startsWith('data:')) {
+          dataBuffer.writeln(trimmed.substring(5).trim());
+          continue;
+        } else {
+          continue;
+        }
+
+        final data = dataBuffer.toString().trimRight();
+        dataBuffer = StringBuffer();
+        final event = parseDataFrame(data);
+        if (event != null) yield event;
+        if (receivedDone) break;
+      }
+
+      // 部分代理会在最后一个 data: 帧后直接关闭连接，没有 SSE 空行。
+      if (!receivedDone && dataBuffer.isNotEmpty) {
+        final event = parseDataFrame(dataBuffer.toString().trimRight());
+        if (event != null) yield event;
       }
       stopwatch.stop();
 
@@ -471,19 +520,19 @@ class ApiService {
         'choices': [
           {
             'message': {
-                'role': 'assistant',
-                'content': contentBuffer.toString(),
-              },
+              'role': 'assistant',
+              'content': contentBuffer.toString(),
+            },
             'finish_reason': 'stop',
           }
         ],
         'model': model,
         'stream': true,
-        if (usage != null)
+        if (usage case final currentUsage?)
           'usage': {
-            'prompt_tokens': usage.promptTokens,
-            'completion_tokens': usage.completionTokens,
-            'total_tokens': usage.totalTokens,
+            'prompt_tokens': currentUsage.promptTokens,
+            'completion_tokens': currentUsage.completionTokens,
+            'total_tokens': currentUsage.totalTokens,
           },
         if (rawChunks == 0) 'raw': '流式响应为空',
       };

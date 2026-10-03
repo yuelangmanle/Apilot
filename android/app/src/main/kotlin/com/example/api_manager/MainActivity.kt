@@ -7,6 +7,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.result.contract.ActivityResultContracts
@@ -242,6 +243,39 @@ class MainActivity : FlutterFragmentActivity() {
                 }
             } catch (e: Exception) {
                 result.error("GATEWAY_OVERLAY", e.message, null)
+            }
+        }
+
+        // MANAGE_EXTERNAL_STORAGE 是 Android 11+ 的特殊访问权限，不能靠
+        // 普通应用详情页或运行时弹窗授予；必须打开「所有文件访问」页面。
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            STORAGE_PERMISSION_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "openAllFilesAccessSettings" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:$packageName")
+                            )
+                            try {
+                                startActivity(intent)
+                            } catch (_: Exception) {
+                                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                            }
+                        } else {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:$packageName")
+                            })
+                        }
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                result.error("STORAGE_PERMISSION", e.message, null)
             }
         }
 
@@ -617,6 +651,7 @@ class MainActivity : FlutterFragmentActivity() {
         private const val GATEWAY_GRANT_CHANNEL_NAME = "com.apilot/third_party_gateway_grant"
         private const val GATEWAY_FOREGROUND_CHANNEL = "com.apilot/gateway_foreground"
         private const val GATEWAY_OVERLAY_CHANNEL = "com.apilot/gateway_overlay"
+        private const val STORAGE_PERMISSION_CHANNEL = "com.apilot/storage_permission"
         private const val ACTION_GRANT_GATEWAY = "com.apilot.intent.action.GRANT_GATEWAY"
         private const val EXTRA_GATEWAY_GRANT_JSON = "com.apilot.extra.GATEWAY_GRANT_JSON"
         private const val EXTRA_REQUESTED_SCOPE = "com.apilot.extra.REQUESTED_SCOPE"

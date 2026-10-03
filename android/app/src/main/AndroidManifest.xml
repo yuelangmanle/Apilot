@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- 网络权限 - 必须！ -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 公共 Download/Apilot 模型目录：permission_handler 的
+         Permission.manageExternalStorage 只有声明此权限后才会在系统里出现。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- 蓝牙权限 -->

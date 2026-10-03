@@ -177,8 +177,10 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     // 否则条目会一直显示"投影已装"却删不掉（用户实测的卡住场景）。
     final projectorNames =
         projectors.map((f) => f.uri.pathSegments.last).toSet();
+    final modelNames = files.map((f) => f.uri.pathSegments.last).toSet();
     final stale = pairs.entries
-        .where((e) => !projectorNames.contains(e.value))
+        .where((e) =>
+            !modelNames.contains(e.key) || !projectorNames.contains(e.value))
         .map((e) => e.key)
         .toList();
     for (final main in stale) {
@@ -340,14 +342,31 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     required String fileName,
     required String displayName,
     String? pairWithMain,
+    String? projectorShareGroup,
+    Future<void>? pairAfter,
   }) async {
     if (_downloads[taskId]?.isActive == true) return;
     // 跨屏去重：下载管理/别的页面已在下同一个文件时，这里直接提示而不是
     // 再起一个（服务层也会按文件名互斥兜底）。
     if (_downloader.isFileDownloading(fileName)) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('「$fileName」正在下载中，可在下载管理里查看进度'),
-          duration: const Duration(seconds: 2)));
+      final existing = _downloader.waitForFile(fileName);
+      if (existing != null) {
+        try {
+          await existing;
+          await _refreshDownloaded();
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('「$fileName」的现有下载失败：$e'),
+              backgroundColor: AppColors.error,
+            ));
+          }
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('「$fileName」正在下载中，可在下载管理里查看进度'),
+            duration: const Duration(seconds: 2)));
+      }
       return;
     }
     setState(() {
@@ -361,8 +380,27 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await _downloader.download(url, taskId, expectedFileName: fileName);
+      if (pairWithMain != null && pairAfter != null) await pairAfter;
       if (pairWithMain != null) {
-        await ModelStorageSettings.pairProjector(pairWithMain, fileName);
+        final modelsDir = await ModelDownloadService.modelsDir();
+        final mainFile = File('${modelsDir.path}/$pairWithMain');
+        final mainComplete = mainFile.existsSync() &&
+            mainFile.lengthSync() > 0 &&
+            !File('${mainFile.path}.part').existsSync();
+        final paired = mainComplete &&
+            await ModelStorageSettings.pairProjector(
+              pairWithMain,
+              fileName,
+              shareGroup: projectorShareGroup,
+            );
+        if (!paired && mounted) {
+          messenger.showSnackBar(SnackBar(
+            content: Text(mainComplete
+                ? '投影已下载，但它已归属于其他模型：$fileName'
+                : '投影已下载，但主模型尚未完整下载，因此不会标为已配对'),
+            backgroundColor: AppColors.warning,
+          ));
+        }
       }
       if (mounted) {
         messenger.showSnackBar(
@@ -633,12 +671,17 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       ),
     );
     if (confirmed != true) return;
-    await ModelDownloadService.deleteModelFile(model.filePath);
-    // 清掉配对记录，并连带删除配套的视觉投影（否则条目会继续谎报"已装"，
-    // 而且投影文件会变成没人管的孤儿，白白占空间）。
     final paired = _projectorPairs[model.fileName];
+    final pairedOwners = paired == null
+        ? const <String>[]
+        : await ModelStorageSettings.projectorOwners(paired);
+    await ModelDownloadService.deleteModelFile(model.filePath);
+    // 清掉配对记录；只有投影没有被同一仓库的其他量化变体共用时才删除
+    // 附件，避免删掉 Q4 后让仍在使用同一投影的 Q5 也失去看图能力。
     await ModelStorageSettings.unpairProjector(model.fileName);
-    if (paired != null) {
+    final projectorStillUsed =
+        pairedOwners.any((owner) => owner != model.fileName);
+    if (paired != null && !projectorStillUsed) {
       for (final file in _projectors) {
         if (file.uri.pathSegments.last == paired) {
           await ModelDownloadService.deleteModelFile(file.path);
@@ -679,13 +722,17 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                         {required url,
                         required fileName,
                         required displayName,
-                        String? pairWithMain}) {
-                      _downloadUrl(
+                        String? pairWithMain,
+                        String? projectorShareGroup,
+                        Future<void>? pairAfter}) async {
+                      await _downloadUrl(
                         taskId: fileName,
                         url: url,
                         fileName: fileName,
                         displayName: displayName,
                         pairWithMain: pairWithMain,
+                        projectorShareGroup: projectorShareGroup,
+                        pairAfter: pairAfter,
                       );
                     },
                   ),
@@ -1179,8 +1226,15 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
       if (confirmed != true) return;
     }
 
-    await ModelStorageSettings.pairProjector(
+    final paired = await ModelStorageSettings.pairProjector(
         model.fileName, picked.uri.pathSegments.last);
+    if (!paired) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('这个投影已经配给其他主模型，不能重复挂载'),
+        backgroundColor: AppColors.warning,
+      ));
+      return;
+    }
     await _refreshDownloaded();
     messenger.showSnackBar(SnackBar(
         content: Text('已配对：${model.name} ↔ ${picked.uri.pathSegments.last}'),
@@ -1202,50 +1256,15 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
         .toList();
   }
 
-  /// 找该主模型配套的投影文件名（配对记录优先，其次单投影回退）。
+  /// 找该主模型配套的投影文件名。没有明确配对记录就保持未挂载。
   String? _projectorFor(DownloadedModel model) {
-    final name = model.fileName;
-    // 纯文本模型不该显示"投影已装"（它本来就看不到图）。
     if (!ModelCapabilities.isVisionFamily(model.name)) return null;
-    for (final pair in _projectorPairs.entries) {
-      if (pair.key == name) return pair.value;
-    }
-    if (_projectors.length == 1 && _downloaded.length == 1) {
-      return _projectors.first.uri.pathSegments.last;
-    }
-    // 目录里只有一个投影、只有一个视觉家族模型、**且投影名不指向别的模型**
-    // 才自动配上（投影模型专用，宽松配对会把别人的投影套上来）。
-    if (_projectors.length == 1) {
-      final projectorName = _projectors.first.uri.pathSegments.last;
-      final visionModels = _downloaded
-          .where((m) => ModelCapabilities.isVisionFamily(m.name))
-          .toList();
-      final genericName = RegExp(r'^mmproj[-_]?(f16|bf16|f32|q8_0)?\.gguf$',
-              caseSensitive: false)
-          .hasMatch(projectorName);
-      final belongsToOtherModel = _downloaded.any((m) =>
-          m.fileName != name &&
-          ModelCapabilities.isVisionFamily(m.name) &&
-          projectorName
-              .toLowerCase()
-              .contains(ModelCapabilities.coreToken(m.fileName)));
-      if (visionModels.length == 1 &&
-          visionModels.first.fileName == name &&
-          !belongsToOtherModel &&
-          (genericName ||
-              projectorName
-                  .toLowerCase()
-                  .contains(ModelCapabilities.coreToken(name)))) {
-        return projectorName;
-      }
-    }
-    // 名字包含核心词也算（如 mmproj-gemma-3-4b-it-f16.gguf）。
-    final core = model.name.toLowerCase().split(RegExp(r'-(?=q\d|iq\d)')).first;
-    for (final projector in _projectors) {
-      final pName = projector.uri.pathSegments.last.toLowerCase();
-      if (core.isNotEmpty && pName.contains(core)) return pName;
-    }
-    return null;
+    final projectorName = _projectorPairs[model.fileName];
+    if (projectorName == null) return null;
+    return _projectors
+            .any((file) => file.uri.pathSegments.last == projectorName)
+        ? projectorName
+        : null;
   }
 
   /// 未完成下载卡片：绑实时进度（续传后立刻能看到进度与已下大小）。
@@ -1498,7 +1517,12 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
         _downloaded.any((d) => d.fileName == model.downloadUrl.split('/').last);
     // 投影已安装要看"投影清单"（listDownloadedModels 已明确排除 mmproj，
     // 之前用它判断 → 永远显示"补装视觉投影"，点第二次会重下）。
-    final projectorName = model.mmProjUrl?.split('/').last;
+    final modelFileName = model.downloadUrl.split('/').last;
+    final projectorName = _projectorPairs[modelFileName];
+    final projectorDownloadName = model.mmProjUrl == null
+        ? null
+        : ModelStorageSettings.scopedProjectorFileName(
+            model.id, model.mmProjUrl!.split('/').last);
     // 设备内存未知时不做判断（不编造“适合你的设备”）。
     final fitsDevice = _deviceRamMb == null
         ? null
@@ -1626,24 +1650,28 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                     model.tags.any((t) => visionTags.contains(t)) ||
                         model.mmProjUrl != null;
                 if (!isVision) return const SizedBox.shrink();
-                final installed = _projectors
-                    .any((f) => f.uri.pathSegments.last == projectorName);
+                final installed = projectorName != null &&
+                    _projectors
+                        .any((f) => f.uri.pathSegments.last == projectorName);
                 return TextButton.icon(
                   onPressed: installed
                       ? null
-                      : () => _downloadUrl(
-                            taskId: projectorName!,
-                            url: model.mmProjUrl!,
-                            fileName: projectorName,
-                            displayName: '$projectorName（视觉投影）',
-                            // 下载时记录"主模型↔投影"配对：之后自动挂载。
-                            pairWithMain: model.downloadUrl.split('/').last,
-                          ),
+                      : projectorDownloadName == null
+                          ? null
+                          : () => _downloadUrl(
+                                taskId: projectorDownloadName,
+                                url: model.mmProjUrl!,
+                                fileName: projectorDownloadName,
+                                displayName: '$projectorDownloadName（视觉投影）',
+                                // 下载时记录"主模型↔投影"配对：之后自动挂载。
+                                pairWithMain: modelFileName,
+                                projectorShareGroup: model.id,
+                              ),
                   icon: Icon(
                       installed ? Icons.check : Icons.visibility_outlined,
                       size: 18),
                   label: Text(
-                    installed ? '视觉投影已下载 · 发图片时加载' : '补装视觉投影（下载后即可发图片）',
+                    installed ? '视觉投影已配对 · 发图片时加载' : '补装视觉投影（下载完成后配对）',
                     style: const TextStyle(fontSize: 12),
                   ),
                 );

@@ -33,6 +33,30 @@ void main() {
     });
   });
 
+  group('AiService 路由', () {
+    test('显式云端配置优先于全局本地开关', () {
+      expect(
+        AiService.resolveRoute(
+          globalUseLocal: true,
+          hasPreferredCloudConfig: true,
+          localEngineLoaded: false,
+        ),
+        AiRoute.cloud,
+      );
+    });
+
+    test('本地引擎优先于全局云端设置', () {
+      expect(
+        AiService.resolveRoute(
+          globalUseLocal: false,
+          hasPreferredCloudConfig: false,
+          localEngineLoaded: true,
+        ),
+        AiRoute.local,
+      );
+    });
+  });
+
   group('DeviceCapabilities', () {
     test('detect returns sane values', () async {
       final caps = await DeviceCapabilities.detect();

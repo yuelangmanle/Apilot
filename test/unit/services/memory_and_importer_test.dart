@@ -18,19 +18,29 @@ void main() {
       final query = MemoryStore.tokenize('我最喜欢什么颜色');
       final relevant = MemoryStore.tokenize('用户最喜欢的颜色是蓝色');
       final irrelevant = MemoryStore.tokenize('用户的电脑是 MacBook');
-      int overlap(Set<String> a, Set<String> b) =>
-          a.where(b.contains).length;
+      int overlap(Set<String> a, Set<String> b) => a.where(b.contains).length;
       expect(overlap(query, relevant), greaterThan(overlap(query, irrelevant)));
     });
 
     test('"记住"启发式能提取内容', () {
-      expect(MemoryStore.extractExplicitMemory('请记住：我最喜欢的颜色是蓝色'),
-          '我最喜欢的颜色是蓝色');
+      expect(MemoryStore.extractExplicitMemory('请记住：我最喜欢的颜色是蓝色'), '我最喜欢的颜色是蓝色');
       expect(MemoryStore.extractExplicitMemory('记住我的生日是 5 月 1 日'),
           '我的生日是 5 月 1 日');
       expect(MemoryStore.extractExplicitMemory('今天天气怎么样'), isNull);
       // 冒号后为空时不应误存。
       expect(MemoryStore.extractExplicitMemory('记住：'), isNull);
+    });
+
+    test('长期记忆拒绝明显的凭据格式', () {
+      expect(
+          MemoryStore.containsSensitiveData('api_key=sk-abcdef123456'), isTrue);
+      expect(
+          MemoryStore.containsSensitiveData('Bearer abcdef1234567890'), isTrue);
+      expect(
+        MemoryStore.extractExplicitMemory('记住：我的 API Key 是 sk-abcdef123456'),
+        isNull,
+      );
+      expect(MemoryStore.containsSensitiveData('我喜欢蓝色'), isFalse);
     });
   });
 

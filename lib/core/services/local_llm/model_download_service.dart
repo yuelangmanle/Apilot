@@ -85,6 +85,8 @@ class ModelDownloadService {
   static const int _maxAutoRetries = 3;
   static const Duration _progressNotifyInterval = Duration(milliseconds: 120);
   static final Set<String> _activeFiles = <String>{};
+  static final Map<String, Future<File>> _activeDownloads =
+      <String, Future<File>>{};
   final Map<String, DateTime> _lastProgressNotify = {};
 
   /// 错误信息去掉签名 URL（用户看不懂，而且很长）。
@@ -156,21 +158,35 @@ class ModelDownloadService {
     // 第二个并发下载，同一模型在下载管理里出现两张同时跑的卡片）。
     // 自动重试是递归调用（retryCount>0），不算重复。
     if (retryCount == 0) {
+      final existing = _activeDownloads[fileName];
+      if (existing != null) {
+        return existing;
+      }
       if (_activeFiles.contains(fileName)) {
         throw StateError('「$fileName」正在下载中，请到下载管理查看进度');
       }
       _activeFiles.add(fileName);
-    }
-    try {
-      return await _downloadInner(url, taskId,
+      final task = _downloadInner(url, taskId,
           onProgress: onProgress, fileName: fileName, retryCount: retryCount);
-    } finally {
-      if (retryCount == 0) _activeFiles.remove(fileName);
+      _activeDownloads[fileName] = task;
+      try {
+        return await task;
+      } finally {
+        _activeDownloads.remove(fileName);
+        _activeFiles.remove(fileName);
+      }
     }
+    return _downloadInner(url, taskId,
+        onProgress: onProgress, fileName: fileName, retryCount: retryCount);
   }
 
   /// 某个文件名当前是否正在下载（跨页面统一判断用）。
   bool isFileDownloading(String fileName) => _activeFiles.contains(fileName);
+
+  /// 等待同名文件的现有下载完成。用于“完整包”并发启动主模型和投影时，
+  /// 保证投影配对一定发生在主模型真正完成之后。
+  Future<File>? waitForFile(String fileName) =>
+      _activeDownloads[p.basename(fileName)];
 
   Future<File> _downloadInner(
     String url,
@@ -455,6 +471,9 @@ class ModelDownloadService {
   /// 删除已下载的模型文件。
   static Future<void> deleteModelFile(String filePath) async {
     final file = File(filePath);
+    final fileName = p.basename(filePath);
+    await ModelStorageSettings.unpairProjector(fileName);
+    await ModelStorageSettings.unpairProjectorFile(fileName);
     if (file.existsSync()) await file.delete();
     final partFile = File('$filePath.part');
     if (partFile.existsSync()) await partFile.delete();

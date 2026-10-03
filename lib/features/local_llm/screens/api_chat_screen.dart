@@ -49,12 +49,41 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   bool _ready = false;
   bool _isGenerating = false;
   bool _stopRequested = false;
+  final ValueNotifier<int> _streamRevision = ValueNotifier(0);
   String _streamText = '';
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
   int _requestId = 0;
   bool _toolsEnabled = ToolRegistry.masterEnabled;
   final List<agent.AgentStep> _pendingSteps = [];
+  Timer? _scrollTimer;
+  Timer? _streamFlushTimer;
+  StringBuffer? _liveTextBuffer;
+  StringBuffer? _liveThinkingBuffer;
+
+  void _scheduleStreamFlush() {
+    if (_streamFlushTimer != null) return;
+    _streamFlushTimer = Timer(const Duration(milliseconds: 70), () {
+      _streamFlushTimer = null;
+      _flushStreamBuffers();
+    });
+  }
+
+  void _flushStreamBuffers() {
+    if (!mounted) return;
+    final textBuffer = _liveTextBuffer;
+    final thinkingBuffer = _liveThinkingBuffer;
+    if (textBuffer != null) _streamText = textBuffer.toString();
+    if (thinkingBuffer != null) _streamThinking = thinkingBuffer.toString();
+    _streamRevision.value++;
+    _scrollToBottom();
+  }
+
+  void _flushStreamImmediately() {
+    _streamFlushTimer?.cancel();
+    _streamFlushTimer = null;
+    _flushStreamBuffers();
+  }
 
   @override
   void initState() {
@@ -88,9 +117,12 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
 
     _controller.clear();
     final requestId = ++_requestId;
+    var buffer = StringBuffer();
+    final thinking = StringBuffer();
+    _liveTextBuffer = buffer;
+    _liveThinkingBuffer = thinking;
     setState(() {
-      _conversation.messages
-          .add(ChatMessageRecord(role: 'user', text: text));
+      _conversation.messages.add(ChatMessageRecord(role: 'user', text: text));
       _isGenerating = true;
       _stopRequested = false;
       _streamText = '';
@@ -117,11 +149,23 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           cloudConfig: widget.apiConfig,
           // 同上：完整历史，保证前缀稳定（上下文管理负责压缩）。
           history: history,
+          onDelta: (delta) {
+            if (!mounted || requestId != _requestId) return;
+            buffer.write(delta);
+            _scheduleStreamFlush();
+          },
           onStep: (step) {
-            if (mounted) setState(() => _pendingSteps.add(step));
+            if (!mounted) return;
+            buffer = StringBuffer();
+            _liveTextBuffer = buffer;
+            setState(() {
+              _pendingSteps.add(step);
+              _streamText = '';
+            });
           },
         );
         if (!mounted || requestId != _requestId) return;
+        _flushStreamImmediately();
         setState(() {
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
@@ -139,11 +183,13 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         });
         await _store.save(_conversation);
       } catch (e) {
+        _streamFlushTimer?.cancel();
+        _streamFlushTimer = null;
         if (mounted && requestId == _requestId) {
           setState(() {
             _isGenerating = false;
-            _conversation.messages.add(ChatMessageRecord(
-                role: 'assistant', text: '工具调用失败：$e'));
+            _conversation.messages
+                .add(ChatMessageRecord(role: 'assistant', text: '工具调用失败：$e'));
           });
         }
       }
@@ -151,8 +197,6 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
       return;
     }
 
-    final buffer = StringBuffer();
-    final thinking = StringBuffer();
     String? errorText;
 
     try {
@@ -182,11 +226,10 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         if (event.delta != null && event.delta!.isNotEmpty) {
           buffer.write(event.delta);
         }
-        setState(() {
-          _streamText = buffer.toString();
-          _streamThinking = thinking.toString();
-        });
-        _scrollToBottom();
+        if ((event.delta?.isNotEmpty ?? false) ||
+            (event.reasoning?.isNotEmpty ?? false)) {
+          _scheduleStreamFlush();
+        }
       }
     } on ApiException catch (e) {
       errorText = 'HTTP ${e.statusCode}: ${_shorten(e.body)}';
@@ -194,16 +237,16 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
       errorText = e.toString();
     }
 
+    _flushStreamImmediately();
     if (!mounted || requestId != _requestId) return;
     final stopped = _stopRequested;
     setState(() {
       if (errorText != null) {
-        _conversation.messages.add(ChatMessageRecord(
-            role: 'assistant', text: '请求失败：$errorText'));
+        _conversation.messages
+            .add(ChatMessageRecord(role: 'assistant', text: '请求失败：$errorText'));
       } else if (buffer.isEmpty && thinking.isEmpty) {
         _conversation.messages.add(ChatMessageRecord(
-            role: 'assistant',
-            text: stopped ? '（已停止生成）' : '（模型没有返回内容）'));
+            role: 'assistant', text: stopped ? '（已停止生成）' : '（模型没有返回内容）'));
       } else {
         _conversation.messages.add(ChatMessageRecord(
           role: 'assistant',
@@ -279,9 +322,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                     const SizedBox(height: 12),
                     if (widget.apiConfig.models.isNotEmpty) ...[
                       DropdownButtonFormField<String>(
-                        initialValue: _selectedModel.isEmpty
-                            ? null
-                            : _selectedModel,
+                        initialValue:
+                            _selectedModel.isEmpty ? null : _selectedModel,
                         decoration: const InputDecoration(
                           labelText: '模型',
                           border: OutlineInputBorder(),
@@ -302,8 +344,9 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(_toolsEnabled ? '使用工具（插件）：已开启' : '使用工具（插件）'),
-                      subtitle: const Text('联网搜索 / 新闻 / 抓网页 / 算术 / HTML / 待办 / 找模型…'
-                          '（与右上角插件面板同一个开关）'),
+                      subtitle:
+                          const Text('联网搜索 / 新闻 / 抓网页 / 算术 / HTML / 待办 / 找模型…'
+                              '（与右上角插件面板同一个开关）'),
                       value: _toolsEnabled,
                       onChanged: (v) {
                         // 先刷新面板本身，再通知页面（否则点了看不到变化）。
@@ -378,8 +421,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           children: [
             Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
             Text(display ?? value.toStringAsFixed(2),
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.primary)),
+                style: const TextStyle(fontSize: 12, color: AppColors.primary)),
           ],
         ),
         Slider(
@@ -422,20 +464,26 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   }
 
   void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 150),
-          curve: Curves.easeOut,
-        );
-      }
+    if (_scrollTimer?.isActive ?? false) return;
+    _scrollTimer = Timer(const Duration(milliseconds: 80), () {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+          );
+        }
+      });
     });
   }
 
   @override
   void dispose() {
     _requestId++; // 作废在途流。
+    _scrollTimer?.cancel();
+    _streamFlushTimer?.cancel();
+    _streamRevision.dispose();
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -535,14 +583,11 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                               itemCount: _conversation.messages.length +
                                   (_isGenerating ? 1 : 0),
                               itemBuilder: (context, index) {
-                                if (index >=
-                                    _conversation.messages.length) {
+                                if (index >= _conversation.messages.length) {
                                   return _buildStreamingBubble(isDark);
                                 }
-                                return _buildBubble(
-                                    index,
-                                    _conversation.messages[index],
-                                    isDark);
+                                return _buildBubble(index,
+                                    _conversation.messages[index], isDark);
                               },
                             ),
                     ),
@@ -580,8 +625,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                                     size: 20),
                                 tooltip: _isGenerating ? '停止生成' : '发送',
                                 onPressed: _isGenerating
-                                    ? () => setState(
-                                        () => _stopRequested = true)
+                                    ? () =>
+                                        setState(() => _stopRequested = true)
                                     : _send,
                               ),
                             ),
@@ -606,23 +651,26 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           color: isDark ? AppColors.darkSurface : AppColors.background,
           borderRadius: BorderRadius.circular(14),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_pendingSteps.isNotEmpty)
-              _thinkingPanel(
-                [
-                  for (final step in _pendingSteps)
-                    '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
-                ].join('\n\n'),
-                -2,
-                isDark,
-                title: '工具调用中（${_pendingSteps.length} 步）',
-              ),
-            if (_streamThinking.isNotEmpty)
-              _thinkingPanel(_streamThinking, -1, isDark),
-            Text(_streamText.isEmpty ? '…' : _streamText),
-          ],
+        child: ValueListenableBuilder<int>(
+          valueListenable: _streamRevision,
+          builder: (context, _, __) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_pendingSteps.isNotEmpty)
+                _thinkingPanel(
+                  [
+                    for (final step in _pendingSteps)
+                      '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+                  ].join('\n\n'),
+                  -2,
+                  isDark,
+                  title: '工具调用中（${_pendingSteps.length} 步）',
+                ),
+              if (_streamThinking.isNotEmpty)
+                _thinkingPanel(_streamThinking, -1, isDark),
+              Text(_streamText.isEmpty ? '…' : _streamText),
+            ],
+          ),
         ),
       ),
     );
@@ -647,8 +695,9 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (!isUser && record.toolSteps.isNotEmpty)
-              _thinkingPanel(record.toolSteps.join('\n\n'), index + 100000,
-                  isDark, title: '查看工具调用（${record.toolSteps.length} 步）'),
+              _thinkingPanel(
+                  record.toolSteps.join('\n\n'), index + 100000, isDark,
+                  title: '查看工具调用（${record.toolSteps.length} 步）'),
             if (!isUser &&
                 record.thinking != null &&
                 record.thinking!.isNotEmpty)
@@ -672,7 +721,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   Widget _thinkingPanel(String thinking, int index, bool isDark,
       {String? title}) {
     final expanded = _expandedThinking.contains(index);
-    final color = isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+    final color =
+        isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(

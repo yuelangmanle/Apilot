@@ -44,6 +44,8 @@ class MemoryStore {
 
   static const int maxEntries = 300;
   static const int maxInject = 6;
+  static const int maxEntryChars = 400;
+  static const int maxInjectChars = 2400;
 
   static List<MemoryEntry>? _cache;
 
@@ -95,8 +97,16 @@ class MemoryStore {
   }
 
   /// 保存一条记忆（完全重复的不重复入库）。
-  static Future<MemoryEntry> save(String text, {List<String> tags = const []}) async {
-    final trimmed = text.trim();
+  static Future<MemoryEntry> save(String text,
+      {List<String> tags = const []}) async {
+    var trimmed = text.trim();
+    if (trimmed.length > maxEntryChars) {
+      trimmed = trimmed.substring(0, maxEntryChars);
+    }
+    if (trimmed.isEmpty) throw ArgumentError('记忆内容不能为空');
+    if (containsSensitiveData(trimmed)) {
+      throw ArgumentError('疑似包含密钥、密码或访问令牌，不会写入长期记忆');
+    }
     final entries = List<MemoryEntry>.from(await all());
     for (final existing in entries) {
       if (existing.text.trim() == trimmed) return existing;
@@ -104,7 +114,12 @@ class MemoryStore {
     final entry = MemoryEntry(
       id: 'mem_${DateTime.now().microsecondsSinceEpoch}',
       text: trimmed,
-      tags: tags,
+      tags: tags
+          .map((tag) => tag.trim())
+          .where((tag) => tag.isNotEmpty)
+          .toSet()
+          .take(8)
+          .toList(),
       createdAt: DateTime.now(),
     );
     entries.insert(0, entry);
@@ -127,7 +142,8 @@ class MemoryStore {
   static void resetCache() => _cache = null;
 
   /// 取与 [query] 最相关的记忆（关键词打分 + 新近度）。
-  static Future<List<MemoryEntry>> recall(String query, {int limit = maxInject}) async {
+  static Future<List<MemoryEntry>> recall(String query,
+      {int limit = maxInject}) async {
     final entries = await all();
     if (entries.isEmpty) return const [];
     final queryTokens = tokenize(query);
@@ -138,16 +154,22 @@ class MemoryStore {
     for (final entry in entries) {
       final tokens = tokenize(entry.text);
       if (tokens.isEmpty) continue;
+      final tagTokens = tokenize(entry.tags.join(' '));
       var overlap = 0.0;
       for (final token in queryTokens) {
         if (tokens.contains(token)) overlap += 1;
       }
+      var tagOverlap = 0.0;
+      for (final token in queryTokens) {
+        if (tagTokens.contains(token)) tagOverlap += 1;
+      }
       if (overlap == 0) continue;
-      // 命中比例 × 长度惩罚（短条目更精准）× 新近度（30 天半衰）。
+      // 正文命中 + 标签命中 + 新近度；标签是辅助信号，不压过正文相关性。
       final coverage = overlap / queryTokens.length;
+      final tagCoverage = tagOverlap / queryTokens.length;
       final days = now.difference(entry.createdAt).inDays.clamp(0, 365);
       final recency = 1.0 / (1 + days / 30);
-      scored.add((entry, coverage * 0.7 + recency * 0.3));
+      scored.add((entry, coverage * 0.6 + tagCoverage * 0.15 + recency * 0.25));
     }
     scored.sort((a, b) => b.$2.compareTo(a.$2));
     return scored.take(limit).map((e) => e.$1).toList();
@@ -159,7 +181,9 @@ class MemoryStore {
     if (recalled.isEmpty) return '';
     final buffer = StringBuffer('以下是关于这位用户的长期记忆（可能在本次对话中有用）：\n');
     for (final entry in recalled) {
-      buffer.writeln('- ${entry.text}');
+      final line = '- ${entry.text}\n';
+      if (buffer.length + line.length > maxInjectChars) break;
+      buffer.write(line);
     }
     buffer.writeln('（这些是背景信息，不要原样复述；与当前问题无关时忽略。）');
     return buffer.toString();
@@ -187,6 +211,17 @@ class MemoryStore {
     return tokens;
   }
 
+  /// 记忆是长期落盘数据，拒绝明显的凭据格式，避免用户一句“记住”
+  /// 把 API Key、密码或 Bearer Token 永久写入本地文件和后续提示词。
+  @visibleForTesting
+  static bool containsSensitiveData(String text) {
+    return RegExp(
+      r'(sk-[a-z0-9]{8,}|api[-_ ]?key\s*[:：=]|密码\s*[:：=]|密钥\s*[:：=]|'
+      r'(?<![a-z])bearer\s+[a-z0-9._-]{12,})',
+      caseSensitive: false,
+    ).hasMatch(text);
+  }
+
   /// 启发式：用户明确要求"记住"时自动入库（不用开插件也能生效）。
   static String? extractExplicitMemory(String userMessage) {
     final text = userMessage.trim();
@@ -197,7 +232,10 @@ class MemoryStore {
         var content = text.substring(index + marker.length);
         content = content.replaceAll(RegExp(r'^[：:，,。.、\s]+'), '');
         if (content.length >= 2) {
-          return content.length > 200 ? content.substring(0, 200) : content;
+          if (containsSensitiveData(content)) return null;
+          return content.length > maxEntryChars
+              ? content.substring(0, maxEntryChars)
+              : content;
         }
       }
     }

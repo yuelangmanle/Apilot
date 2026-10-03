@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'package:flutter/material.dart';
 
@@ -29,6 +30,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
   List<PartialDownload> _partials = [];
   List<DownloadTask> _tasks = [];
   List<DownloadedModel> _downloaded = [];
+  List<File> _projectors = [];
+  Map<String, String> _projectorPairs = {};
   StorageReport? _storage;
   bool _loading = true;
   StreamSubscription<DownloadProgress>? _subscription;
@@ -56,6 +59,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     final partials = await ModelDownloadService.listPartialDownloads();
     final tasks = await DownloadTaskStore.list();
     final files = await ModelDownloadService.listDownloadedModels();
+    final projectors = await ModelDownloadService.listProjectors();
+    final projectorPairs = await ModelStorageSettings.projectorPairs();
     final storage = await StorageCleanupService.scan();
     if (!mounted) return;
     setState(() {
@@ -63,6 +68,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       _tasks = tasks;
       _downloaded = files.map((f) => DownloadedModel.fromFile(f)).toList()
         ..sort((a, b) => a.name.compareTo(b.name));
+      _projectors = projectors;
+      _projectorPairs = projectorPairs;
       _storage = storage;
       _loading = false;
     });
@@ -98,8 +105,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       messenger.showSnackBar(const SnackBar(
           content: Text('已暂停，可回来继续'), duration: Duration(seconds: 2)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(
-          content: Text('下载失败：$e'), backgroundColor: AppColors.error));
+      messenger.showSnackBar(
+          SnackBar(content: Text('下载失败：$e'), backgroundColor: AppColors.error));
     }
     await _refresh();
   }
@@ -130,6 +137,30 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     );
     if (confirmed != true) return;
     await ModelDownloadService.deleteModelFile(model.filePath);
+    await _refresh();
+  }
+
+  Future<void> _deleteProjector(File file) async {
+    final name = file.uri.pathSegments.last;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除视觉投影？'),
+        content: Text('删除后，配套模型将不能看图，需重新下载投影。\n$name'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ModelDownloadService.deleteModelFile(file.path);
     await _refresh();
   }
 
@@ -173,10 +204,11 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 leading: const Icon(Icons.download_outlined, size: 20),
                 title: const Text('公共下载目录 Download/Apilot',
                     style: TextStyle(fontSize: 14)),
-                subtitle: const Text('需要"所有文件访问"权限',
-                    style: TextStyle(fontSize: 11)),
+                subtitle:
+                    const Text('需要"所有文件访问"权限', style: TextStyle(fontSize: 11)),
                 trailing: ModelStorageSettings.mode == 'public'
-                    ? const Icon(Icons.check, size: 18, color: AppColors.success)
+                    ? const Icon(Icons.check,
+                        size: 18, color: AppColors.success)
                     : null,
                 onTap: () => Navigator.pop(sheetContext, 'public'),
               ),
@@ -185,7 +217,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 leading: const Icon(Icons.folder_open, size: 20),
                 title: const Text('选择自定义目录', style: TextStyle(fontSize: 14)),
                 trailing: ModelStorageSettings.mode == 'custom'
-                    ? const Icon(Icons.check, size: 18, color: AppColors.success)
+                    ? const Icon(Icons.check,
+                        size: 18, color: AppColors.success)
                     : null,
                 onTap: () => Navigator.pop(sheetContext, 'custom'),
               ),
@@ -195,10 +228,45 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     );
     if (choice == null) return;
 
+    if (choice == 'public' && Platform.isAndroid) {
+      final granted = await Permission.manageExternalStorage.isGranted;
+      if (!granted) {
+        await ModelStorageSettings.openPublicStorageSettings();
+        if (!mounted) return;
+        final retry = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('需要所有文件访问权限'),
+            content: const Text(
+              '请在系统页面中打开 Apilot 的「允许管理所有文件」开关，'
+              '返回后点击“继续”。如果不授予，应用会继续使用私有目录。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('使用私有目录'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('继续'),
+              ),
+            ],
+          ),
+        );
+        if (retry != true ||
+            !await Permission.manageExternalStorage.isGranted) {
+          messenger.showSnackBar(const SnackBar(
+            content: Text('未获得所有文件访问权限，仍使用应用私有目录'),
+          ));
+          return;
+        }
+      }
+    }
+
     var customDir = ModelStorageSettings.customDir;
     if (choice == 'custom') {
-      final picked = await FilePicker.platform.getDirectoryPath(
-          dialogTitle: '选择模型存放目录');
+      final picked =
+          await FilePicker.platform.getDirectoryPath(dialogTitle: '选择模型存放目录');
       if (picked == null || picked.isEmpty) return;
       customDir = picked;
     }
@@ -239,8 +307,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       ),
     );
     if (move == true) {
-      final (moved, failed) = await ModelStorageSettings.moveModels(
-          oldDir, newDir);
+      final (moved, failed) =
+          await ModelStorageSettings.moveModels(oldDir, newDir);
       messenger.showSnackBar(SnackBar(
         content: Text('已搬移 $moved 个文件'
             '${failed > 0 ? '，$failed 个失败（可稍后重试）' : ''}'),
@@ -266,10 +334,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
 
   /// 真失败的任务（**不含手动暂停**：暂停只算"未完成"，避免同一任务
   /// 同时出现在两个区块里）。
-  List<DownloadTask> get _failedTasks => _tasks
-      .where((t) =>
-          t.isFailed && !_active.containsKey(t.id))
-      .toList();
+  List<DownloadTask> get _failedTasks =>
+      _tasks.where((t) => t.isFailed && !_active.containsKey(t.id)).toList();
 
   /// 失败任务对应的文件名集合（未完成区块据此去重）。
   Set<String> get _failedFileNames =>
@@ -277,8 +343,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
 
   /// 失败卡片：说明原因 + 已占空间 + 重试/删除。
   Widget _buildFailedCard(DownloadTask task, Color secondary) {
-    final partialExists =
-        _partials.any((p) => p.fileName == task.fileName);
+    final partialExists = _partials.any((p) => p.fileName == task.fileName);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -331,8 +396,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
   }
 
   String _shortError(String error) {
-    final cleaned =
-        error.replaceAll(RegExp(r'https?://\S+'), '（下载源）').trim();
+    final cleaned = error.replaceAll(RegExp(r'https?://\S+'), '（下载源）').trim();
     return cleaned.length > 120 ? '${cleaned.substring(0, 120)}…' : cleaned;
   }
 
@@ -358,8 +422,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       );
     });
     try {
-      await widget.downloader.download(task.url, task.fileName,
-          expectedFileName: task.fileName);
+      await widget.downloader
+          .download(task.url, task.fileName, expectedFileName: task.fileName);
       messenger.showSnackBar(SnackBar(
           content: Text('「${task.fileName}」下载完成'),
           backgroundColor: AppColors.success));
@@ -547,8 +611,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                     Card(
                       margin: const EdgeInsets.only(bottom: 8),
                       child: ListTile(
-                        leading: const Icon(Icons.memory,
-                            color: AppColors.success),
+                        leading:
+                            const Icon(Icons.memory, color: AppColors.success),
                         title: Text(model.name,
                             style: const TextStyle(
                                 fontWeight: FontWeight.bold, fontSize: 14)),
@@ -574,6 +638,46 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                         onTap: () => _openChat(model),
                       ),
                     ),
+                const SizedBox(height: 8),
+                Text('已下载视觉投影',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                        color: secondary)),
+                const SizedBox(height: 8),
+                if (_projectors.isEmpty)
+                  Text('还没有已下载的视觉投影',
+                      style: TextStyle(fontSize: 12, color: secondary))
+                else
+                  for (final projector in _projectors)
+                    Builder(builder: (context) {
+                      final fileName = projector.uri.pathSegments.last;
+                      final owners = _projectorPairs.entries
+                          .where((entry) => entry.value == fileName)
+                          .map((entry) => entry.key)
+                          .toList();
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: const Icon(Icons.visibility_outlined,
+                              color: AppColors.primary),
+                          title: Text(fileName,
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text(
+                            '${StorageCleanupService.formatBytes(projector.lengthSync())} · '
+                            '${owners.isEmpty ? '尚未配对' : '配套模型：${owners.join('、')}'}',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline,
+                                color: AppColors.error),
+                            tooltip: '删除视觉投影',
+                            onPressed: () => _deleteProjector(projector),
+                          ),
+                        ),
+                      );
+                    }),
                 const SizedBox(height: 24),
               ],
             ),
@@ -591,7 +695,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
           children: [
             Row(
               children: [
-                const Icon(Icons.downloading, size: 18, color: AppColors.primary),
+                const Icon(Icons.downloading,
+                    size: 18, color: AppColors.primary),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(taskId,
@@ -650,8 +755,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 if (active == null && partial.resumable)
                   TextButton.icon(
                     icon: const Icon(Icons.play_arrow, size: 18),
-                    label: const Text('继续下载',
-                        style: TextStyle(fontSize: 12)),
+                    label: const Text('继续下载', style: TextStyle(fontSize: 12)),
                     onPressed: () => _resume(partial),
                   ),
                 IconButton(
@@ -745,7 +849,8 @@ class _CleanupSheetState extends State<_CleanupSheet> {
             const Text('清理垃圾',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 4),
-            Text('只清理临时与缓存数据；已下载的模型不会被动到，'
+            Text(
+                '只清理临时与缓存数据；已下载的模型不会被动到，'
                 '需要删除请在上一个页面逐个删除。',
                 style: TextStyle(fontSize: 12, color: secondary)),
             const SizedBox(height: 12),
@@ -772,8 +877,7 @@ class _CleanupSheetState extends State<_CleanupSheet> {
                           child: Text(category.title,
                               style: const TextStyle(fontSize: 13))),
                       Text(category.sizeLabel,
-                          style:
-                              TextStyle(fontSize: 12, color: secondary)),
+                          style: TextStyle(fontSize: 12, color: secondary)),
                     ],
                   ),
                   subtitle: Text(
@@ -795,15 +899,12 @@ class _CleanupSheetState extends State<_CleanupSheet> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: (_working || _selected.isEmpty)
-                        ? null
-                        : _run,
+                    onPressed: (_working || _selected.isEmpty) ? null : _run,
                     icon: _working
                         ? const SizedBox(
                             width: 14,
                             height: 14,
-                            child:
-                                CircularProgressIndicator(strokeWidth: 2))
+                            child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.cleaning_services, size: 18),
                     label: Text(_working ? '清理中…' : '清理选中项'),
                   ),

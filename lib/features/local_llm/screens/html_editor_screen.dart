@@ -1,11 +1,8 @@
-import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
+import '../../../core/services/ai/html_project_store.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 /// 内置 HTML 编辑器：写/改/预览/导出（也能打开 AI 用 save_html 生成的草稿）。
@@ -35,7 +32,8 @@ class HtmlEditorScreen extends StatefulWidget {
 class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
   final _codeController = TextEditingController();
   final _titleController = TextEditingController(text: '未命名');
-  List<File> _snippets = [];
+  final _projectsStore = HtmlProjectStore();
+  List<HtmlProject> _projects = [];
   bool _preview = false;
   bool _dirty = false;
 
@@ -75,41 +73,27 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
     if (widget.initialTitle != null) {
       _titleController.text = widget.initialTitle!;
     }
-    _loadSnippets();
+    _loadProjects();
   }
 
-  Future<Directory> _snippetsDir() async {
-    final support = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(support.path, 'snippets'));
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return dir;
-  }
-
-  Future<void> _loadSnippets() async {
+  Future<void> _loadProjects() async {
     try {
-      final dir = await _snippetsDir();
-      final files = dir
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.html'))
-          .toList()
-        ..sort((a, b) =>
-            b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-      if (mounted) setState(() => _snippets = files);
+      final projects = await _projectsStore.list();
+      if (mounted) setState(() => _projects = projects);
     } catch (_) {}
   }
 
-  Future<void> _openSnippet(File file) async {
+  Future<void> _openProject(HtmlProject project) async {
     try {
-      final content = await file.readAsString();
+      final content = await _projectsStore.read(project.name);
+      if (content == null) return;
       _codeController.text = content;
-      _titleController.text =
-          p.basenameWithoutExtension(file.path);
+      _titleController.text = project.name;
       setState(() => _dirty = false);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('打开失败：$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('打开失败：$e')));
       }
     }
   }
@@ -117,17 +101,14 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
   Future<void> _save() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final dir = await _snippetsDir();
-      final safeName = _titleController.text
-          .trim()
-          .replaceAll(RegExp(r'[^\w\u4e00-\u9fa5\-]+'), '_');
-      final name = safeName.isEmpty ? '未命名' : safeName;
-      final file = File(p.join(dir.path, '$name.html'));
-      await file.writeAsString(_codeController.text, flush: true);
+      final file = await _projectsStore.save(
+        _titleController.text,
+        _codeController.text,
+      );
       setState(() => _dirty = false);
-      await _loadSnippets();
+      await _loadProjects();
       messenger.showSnackBar(SnackBar(
-          content: Text('已保存到草稿：$name.html'),
+          content: Text('已保存项目：${file.uri.pathSegments.last}'),
           backgroundColor: AppColors.success));
     } catch (e) {
       messenger.showSnackBar(
@@ -148,8 +129,7 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
       );
       if (path != null) {
         messenger.showSnackBar(SnackBar(
-            content: Text('已导出到 $path'),
-            backgroundColor: AppColors.success));
+            content: Text('已导出到 $path'), backgroundColor: AppColors.success));
       }
     } catch (e) {
       messenger.showSnackBar(
@@ -202,8 +182,7 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _codeController.text));
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('HTML 源码已复制'),
-                  duration: Duration(seconds: 1)));
+                  content: Text('HTML 源码已复制'), duration: Duration(seconds: 1)));
             },
           ),
         ],
@@ -223,21 +202,20 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
       ),
       body: Column(
         children: [
-          if (_snippets.isNotEmpty && !_preview)
+          if (_projects.isNotEmpty && !_preview)
             SizedBox(
               height: 44,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 children: [
-                  for (final file in _snippets)
+                  for (final project in _projects)
                     Padding(
                       padding: const EdgeInsets.only(right: 8, top: 8),
                       child: ActionChip(
-                        label: Text(
-                            p.basenameWithoutExtension(file.path),
+                        label: Text(project.name,
                             style: const TextStyle(fontSize: 12)),
-                        onPressed: () => _openSnippet(file),
+                        onPressed: () => _openProject(project),
                       ),
                     ),
                 ],
@@ -382,11 +360,11 @@ class _HtmlPreview extends StatelessWidget {
           margin: const EdgeInsets.symmetric(vertical: 6),
           padding: const EdgeInsets.only(left: 10),
           decoration: const BoxDecoration(
-            border: Border(
-                left: BorderSide(color: AppColors.primary, width: 3)),
+            border:
+                Border(left: BorderSide(color: AppColors.primary, width: 3)),
           ),
-          child: Text(text,
-              style: const TextStyle(fontStyle: FontStyle.italic)),
+          child:
+              Text(text, style: const TextStyle(fontStyle: FontStyle.italic)),
         );
       case 'hr':
         return const Divider(height: 20);

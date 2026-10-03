@@ -71,12 +71,16 @@ class AgentRunner {
     double? temp,
     double? topP,
     bool thinkingEnabled = false,
+    int? maxToolSteps,
     void Function(AgentStep step)? onStep,
 
     /// 流式增量回调：工具模式也能边生成边显示（不再"全想完才吐字"）。
     void Function(String delta)? onDelta,
   }) async {
-    final toolDocs = ToolRegistry.describeForPrompt();
+    final toolDocs = ToolRegistry.describeForPrompt(
+      task: userPrompt,
+      compact: localEngine != null,
+    );
     if (toolDocs.isEmpty) {
       return const AgentResult(text: '', error: '没有可用工具');
     }
@@ -96,7 +100,8 @@ class AgentRunner {
     // 截屏工具产出的图片：下一轮作为图片附件回灌（多模态模型才能"看"）。
     final pendingImages = <String>[];
 
-    for (var step = 0; step < maxSteps; step++) {
+    final stepLimit = maxToolSteps ?? (localEngine != null ? 3 : maxSteps);
+    for (var step = 0; step < stepLimit; step++) {
       final reply = await _ask(
         systemPrompt: systemPrompt,
         userPrompt: prompt,
@@ -119,7 +124,7 @@ class AgentRunner {
         return AgentResult(
           text: steps.isEmpty ? '' : _summarizeSteps(steps),
           steps: steps,
-          error: 'AI 未配置、调用失败或没有返回内容',
+          error: AiService.lastError ?? 'AI 未配置、调用失败或没有返回内容',
           thinking: thinkingBuffer.toString(),
         );
       }
@@ -161,9 +166,11 @@ class AgentRunner {
       cloudConfig: cloudConfig,
       localEngine: localEngine,
       maxTokens: effectiveMaxTokens,
+      onDelta: onDelta,
       temp: temp,
       topP: topP,
       thinkingEnabled: thinkingEnabled,
+      allowCloudStreaming: cloudConfig != null,
     );
     if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
     return AgentResult(
@@ -322,6 +329,7 @@ class AgentRunner {
       // 云端对话页把自己的配置传进来：不再依赖全局"AI 设置"选没选。
       preferredConfig: cloudConfig,
       maxTokens: maxTokens,
+      onDelta: onDelta,
     );
     return (text: cloud, thinking: '');
   }
