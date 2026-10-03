@@ -64,6 +64,9 @@ class LocalLlmEngine {
       await _loadWithBackend(engine, filePath, contextSize, threads, 0,
           GpuBackend.cpu);
     }
+    // 关键：把引擎挂到实例上（我重构后端回退时漏了这一行，
+    // 结果所有推理都报 "Bad state: 模型未加载"）。
+    _engine = engine;
     _loadedModelPath = filePath;
     _visionAvailable = false;
     _projectorError = null;

@@ -82,8 +82,16 @@ void main() {
     });
 
     test('多模态家族但未加载投影时注明前提', () {
-      final text = ModelCapabilities.describe('gemma-3-1b-it-Q4_K_M.gguf');
+      // gemma-3-4b 是多模态（1B 不是，已单独排除）。
+      final text = ModelCapabilities.describe('gemma-3-4b-it-Q4_K_M.gguf');
       expect(text, contains('需视觉投影文件'));
+    });
+
+    test('Gemma 3 1B 是纯文本模型（只有 4B+ 支持视觉）', () {
+      expect(ModelCapabilities.isVisionFamily('gemma-3-1b-it-Q4_K_M.gguf'),
+          isFalse);
+      expect(ModelCapabilities.isVisionFamily('gemma-3-4b-it-Q4_K_M.gguf'),
+          isTrue);
     });
 
     test('已加载投影的多模态模型', () {

@@ -166,7 +166,19 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     final files = await ModelDownloadService.listDownloadedModels();
     final partials = await ModelDownloadService.listPartialDownloads();
     final projectors = await ModelDownloadService.listProjectors();
-    final pairs = await ModelStorageSettings.projectorPairs();
+    var pairs = await ModelStorageSettings.projectorPairs();
+    // 自愈：配对记录指向的投影已经不在磁盘上 → 清掉这条配对，
+    // 否则条目会一直显示"投影已装"却删不掉（用户实测的卡住场景）。
+    final projectorNames =
+        projectors.map((f) => f.uri.pathSegments.last).toSet();
+    final stale = pairs.entries
+        .where((e) => !projectorNames.contains(e.value))
+        .map((e) => e.key)
+        .toList();
+    for (final main in stale) {
+      await ModelStorageSettings.unpairProjector(main);
+      pairs = await ModelStorageSettings.projectorPairs();
+    }
     await _loadSavedModels();
     if (!mounted) return;
     setState(() {
@@ -829,9 +841,18 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                     style: const TextStyle(fontSize: 12)),
               ),
               IconButton(
+                icon: const Icon(Icons.link_off,
+                    size: 18, color: AppColors.warning),
+                tooltip: '解除配对（不删文件）',
+                onPressed: () async {
+                  await ModelStorageSettings.unpairProjector(model.fileName);
+                  await _refreshDownloaded();
+                },
+              ),
+              IconButton(
                 icon: const Icon(Icons.delete_outline,
                     size: 18, color: AppColors.error),
-                tooltip: '删除投影（主模型保留）',
+                tooltip: '删除投影文件（主模型保留）',
                 onPressed: () async {
                   final files =
                       await ModelDownloadService.listProjectors();
@@ -840,6 +861,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                       await ModelDownloadService.deleteModelFile(file.path);
                     }
                   }
+                  // 文件删了，配对记录也要清掉，否则条目继续谎报"已装"。
+                  await ModelStorageSettings.unpairProjector(model.fileName);
                   await _refreshDownloaded();
                 },
               ),

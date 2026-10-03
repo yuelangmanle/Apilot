@@ -57,6 +57,12 @@ class ModelCapabilities {
   /// 注意：真正能否看图还取决于是否加载了 mmproj（见 LocalLlmEngine.supportsVision）。
   static bool isVisionFamily(String modelNameOrPath) {
     final name = _normalize(_baseName(modelNameOrPath));
+    // 明确的例外：Gemma 3 只有 4B 及以上是多模态，1B / 270M 是纯文本。
+    if (name.contains('gemma-3-1b') ||
+        name.contains('gemma-3-270m') ||
+        name.contains('gemma3-1b')) {
+      return false;
+    }
     return _visionFamilies.any((family) => name.contains(_normalize(family)));
   }
 

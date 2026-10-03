@@ -192,9 +192,26 @@ class AiService {
       streamError = e;
     }
     if (buffer.isNotEmpty) return buffer.toString();
-    if (streamError != null) {
-      lastError = '$streamError';
-      debugPrint('[AiService] 云端流式失败: $streamError');
+    // 流式不可用（部分中转站不接受 stream / stream_options）→ 回退非流式，
+    // 否则用户会看到"AI 未配置、调用失败"，而其实只是协议差异。
+    debugPrint('[AiService] 云端流式失败，回退非流式: $streamError');
+    try {
+      final result = await ApiService().sendRequest(
+        apiConfig: config,
+        model: model,
+        endpoint: '',
+        requestBody: {
+          'messages': messages,
+          'max_tokens': maxTokens,
+          'temperature': 0.3,
+        },
+      );
+      final text = extractAssistantText(result['body']);
+      if (text != null && text.isNotEmpty) return text;
+      lastError = '模型返回了空内容（非流式回退也没拿到文本）';
+    } catch (e) {
+      lastError = '$e';
+      debugPrint('[AiService] 云端非流式也失败: $e');
     }
     return null;
   }
