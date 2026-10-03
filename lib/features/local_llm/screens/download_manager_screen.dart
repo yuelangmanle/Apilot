@@ -70,6 +70,14 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
 
   Future<void> _resume(PartialDownload partial) async {
     if (!partial.resumable) return;
+    // 概率性"双任务同时跑"的源头：卡片来自磁盘快照，任务其实还在跑
+    // （别的页面发起的）。服务层按文件名互斥兜底，这里先问一次。
+    if (widget.downloader.isFileDownloading(partial.fileName)) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('「${partial.fileName}」正在下载中，无需继续'),
+          duration: const Duration(seconds: 2)));
+      return;
+    }
     final messenger = ScaffoldMessenger.of(context);
     setState(() {
       _active[partial.fileName] = DownloadProgress(
@@ -330,10 +338,18 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
 
   Future<void> _resumeTask(DownloadTask task) async {
     if (task.url.isEmpty) return;
+    // taskId 统一收敛到文件名：老记录可能是 uuid id，续传后新记录会以
+    // 文件名落盘，旧 id 的陈旧卡片由"同文件互斥"挡住重复下载。
+    if (widget.downloader.isFileDownloading(task.fileName)) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('「${task.fileName}」正在下载中，无需继续'),
+          duration: const Duration(seconds: 2)));
+      return;
+    }
     final messenger = ScaffoldMessenger.of(context);
     setState(() {
-      _active[task.id] = DownloadProgress(
-        taskId: task.id,
+      _active[task.fileName] = DownloadProgress(
+        taskId: task.fileName,
         url: task.url,
         filePath: '',
         receivedBytes: task.receivedBytes,
@@ -342,8 +358,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       );
     });
     try {
-      await widget.downloader
-          .download(task.url, task.id, expectedFileName: task.fileName);
+      await widget.downloader.download(task.url, task.fileName,
+          expectedFileName: task.fileName);
       messenger.showSnackBar(SnackBar(
           content: Text('「${task.fileName}」下载完成'),
           backgroundColor: AppColors.success));

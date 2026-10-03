@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/services/local_llm/device_capabilities.dart';
+import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/model_plaza_service.dart';
 import '../../../shared/theme/color_scheme.dart';
 
@@ -18,10 +19,13 @@ import '../../../shared/theme/color_scheme.dart';
 /// - 详情页把"主模型 + 视觉投影"作为一组下载
 class ModelPlazaScreen extends StatefulWidget {
   /// 供外部传入的下载回调（复用商店页的下载服务，保证进度统一）。
+  /// [pairWithMain] 非空时表示本次下载的是视觉投影，下载完成会把它
+  /// 配对到指定主模型（主模型文件名），之后打开该模型自动挂上看图。
   final void Function({
     required String url,
     required String fileName,
     required String displayName,
+    String? pairWithMain,
   })? onDownloadRequested;
 
   const ModelPlazaScreen({super.key, this.onDownloadRequested});
@@ -426,8 +430,79 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
         url: model.projector!.downloadUrl,
         fileName: model.projector!.fileName,
         displayName: '${model.info.name} 视觉投影',
+        pairWithMain: model.info.downloadUrl.split('/').last,
       );
     }
+  }
+
+  /// 完整包下载：多个版本时先让用户选具体量化版本，再连同投影一起下
+  /// 并自动配对。单版本直接下——按钮上已写明版本，不再有"不知道下的是哪个"。
+  Future<void> _downloadCompletePack(PlazaModel model) async {
+    final handler = widget.onDownloadRequested;
+    if (handler == null) return;
+    // 未解析（列表项）：走详情解析流程。
+    if (model.info.sizeBytes <= 0) {
+      await _showDetail(model, Theme.of(context).brightness == Brightness.dark
+          ? AppColors.darkTextSecondary
+          : AppColors.textSecondary);
+      return;
+    }
+    ModelFileVariant? chosen;
+    if (model.info.variants.length > 1) {
+      chosen = await _pickVariant(model);
+      if (chosen == null) return;
+    } else {
+      chosen = model.info.variants.isEmpty ? null : model.info.variants.first;
+    }
+    final variant = chosen;
+    final mainName = variant?.fileName ??
+        model.info.downloadUrl.split('/').last;
+    handler(
+      url: variant?.downloadUrl ?? model.info.downloadUrl,
+      fileName: mainName,
+      displayName: '${model.info.name} '
+          '${variant?.quantization ?? model.info.quantization}',
+    );
+    if (model.projector != null) {
+      handler(
+        url: model.projector!.downloadUrl,
+        fileName: model.projector!.fileName,
+        displayName: '${model.info.name} 视觉投影',
+        pairWithMain: mainName,
+      );
+    }
+  }
+
+  /// 版本选择对话框（量化版本清单，带体积；推荐项排前由服务层排好序）。
+  Future<ModelFileVariant?> _pickVariant(PlazaModel model) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final secondary = dark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+    return showModalBottomSheet<ModelFileVariant>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(16),
+          children: [
+            Text('选择「${model.info.name}」的版本',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text('选中的版本将与配套视觉投影一起下载并自动配对。',
+                style: TextStyle(fontSize: 11, color: secondary)),
+            for (final variant in model.info.variants.take(20))
+              ListTile(
+                dense: true,
+                title: Text(variant.quantization,
+                    style: const TextStyle(fontSize: 13)),
+                subtitle: Text('${variant.fileName} · ${variant.sizeLabel}',
+                    style: const TextStyle(fontSize: 11)),
+                trailing: const Icon(Icons.download, size: 18),
+                onTap: () => Navigator.pop(sheetContext, variant),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 把选中的模型交给 AI 调研：这是干什么的 / 各版本区别 / 推荐哪个。
@@ -551,6 +626,10 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
               const Text('文件（真实体积）',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
               const SizedBox(height: 4),
+              if (detail.projector != null)
+                const Text('「型号 + 投影」= 下载后自动配对，打开即可看图；'
+                    '“只下模型”则不含看图能力。',
+                    style: TextStyle(fontSize: 11, color: AppColors.primary)),
               for (final variant in detail.info.variants.take(12))
                 ListTile(
                   dense: true,
@@ -560,18 +639,42 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                   subtitle: Text(
                       '${variant.fileName} · ${variant.sizeLabel}',
                       style: const TextStyle(fontSize: 11)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.download, size: 18),
-                    tooltip: '只下这个版本',
-                    onPressed: () {
-                      widget.onDownloadRequested?.call(
-                        url: variant.downloadUrl,
-                        fileName: variant.fileName,
-                        displayName: variant.quantization,
-                      );
-                      Navigator.pop(sheetContext);
-                    },
-                  ),
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (detail.projector != null)
+                      IconButton(
+                        icon: const Icon(Icons.link, size: 18),
+                        tooltip: '下这个版本 + 配套投影（自动配对）',
+                        onPressed: () {
+                          final handler = widget.onDownloadRequested;
+                          handler?.call(
+                            url: variant.downloadUrl,
+                            fileName: variant.fileName,
+                            displayName: '${detail.info.name} '
+                                '${variant.quantization}（含投影）',
+                          );
+                          handler?.call(
+                            url: detail.projector!.downloadUrl,
+                            fileName: detail.projector!.fileName,
+                            displayName:
+                                '${detail.info.name} 视觉投影',
+                            pairWithMain: variant.fileName,
+                          );
+                          Navigator.pop(sheetContext);
+                        },
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.download, size: 18),
+                      tooltip: '只下这个版本',
+                      onPressed: () {
+                        widget.onDownloadRequested?.call(
+                          url: variant.downloadUrl,
+                          fileName: variant.fileName,
+                          displayName: variant.quantization,
+                        );
+                        Navigator.pop(sheetContext);
+                      },
+                    ),
+                  ]),
                 ),
               if (detail.projector != null) ...[
                 const SizedBox(height: 8),
@@ -598,14 +701,17 @@ class _ModelPlazaScreenState extends State<ModelPlazaScreen> {
                 ),
               ],
               const SizedBox(height: 16),
+              // 完整包按钮：明确写出将要下载的具体版本与投影文件名，
+              // 不再让用户猜"一键下载下的是哪个"；有多个版本时先弹选择。
               FilledButton.icon(
                 icon: const Icon(Icons.download),
                 label: Text(detail.projector != null
-                    ? '下载完整包（模型 + 视觉投影）'
+                    ? '下载完整包：${detail.info.quantization}'
+                        '（${detail.info.sizeMb}）+ 投影'
                     : '下载 ${detail.info.quantization}（${detail.info.sizeMb}）'),
-                onPressed: () {
-                  _download(detail);
+                onPressed: () async {
                   Navigator.pop(sheetContext);
+                  await _downloadCompletePack(detail);
                 },
               ),
               if (detail.projector != null) ...[

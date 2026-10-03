@@ -41,6 +41,11 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   List<LocalModelInfo> _communityModels = [];
   List<SavedModelEntry> _savedModels = [];
   final ModelCatalogStore _catalogStore = ModelCatalogStore();
+  // ---- 分类筛选（厂商 / 类型 / 特性 / 来源）----
+  String _vendorFilter = '全部';
+  String _typeFilter = '全部'; // 全部 / 多模态 / 纯文本
+  String _thinkingFilter = '全部'; // 全部 / 支持思考
+  String _sourceFilter = '全部'; // 全部 / 内置 / 社区 / 我的
   bool _loadingCommunity = false;
   bool _loading = true;
   bool _resolvingRepo = false;
@@ -81,8 +86,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   Future<void> _curateWithAi() async {
     final messenger = ScaffoldMessenger.of(context);
     if (_communityModels.isEmpty) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('社区列表还没加载好，先点右上角刷新')));
+      messenger
+          .showSnackBar(const SnackBar(content: Text('社区列表还没加载好，先点右上角刷新')));
       return;
     }
     final configs = context.read<ApiProvider>().allApiConfigs;
@@ -97,8 +102,9 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 height: 18,
                 child: CircularProgressIndicator(strokeWidth: 2)),
             SizedBox(width: 12),
-            Expanded(child: Text('AI 正在浏览社区模型并生成介绍…\n'
-                '（用本地模型做 AI 时可能需要一两分钟）')),
+            Expanded(
+                child: Text('AI 正在浏览社区模型并生成介绍…\n'
+                    '（用本地模型做 AI 时可能需要一两分钟）')),
           ],
         ),
       ),
@@ -182,15 +188,146 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     await _loadSavedModels();
     if (!mounted) return;
     setState(() {
-      _downloaded = files
-          .map((f) => DownloadedModel.fromFile(f))
-          .toList()
+      _downloaded = files.map((f) => DownloadedModel.fromFile(f)).toList()
         ..sort((a, b) => a.name.compareTo(b.name));
       _partials = partials;
       _projectors = projectors;
       _projectorPairs = pairs;
       _loading = false;
     });
+  }
+
+  // ================= 分类筛选 =================
+  // 模型一多（内置 24 个 + 社区上百个）就是一锅粥。按厂商/类型/特性/来源
+  // 四个维度切；厂商从模型名识别（社区模型名字里自带家族名，够用）。
+
+  static const _vendorLabels = <String, List<String>>{
+    '阿里 Qwen': ['qwen', 'qwq', 'ovis'],
+    'Google Gemma': ['gemma'],
+    'Meta Llama': ['llama'],
+    'Microsoft Phi': ['phi-'],
+    '面壁 MiniCPM': ['minicpm'],
+    'DeepSeek': ['deepseek'],
+    '智谱 GLM': ['glm-'],
+    '月之暗面 Kimi': ['kimi'],
+    '小米 MiMo': ['mimo-'],
+    '阶跃 Spark': ['spark-', 'step-'],
+    '字节 Seed': ['seed-'],
+    '百度 ERNIE': ['ernie'],
+    '腾讯混元': ['hunyuan'],
+    'Mistral': ['mistral', 'pixtral'],
+    'IBM Granite': ['granite'],
+    'HuggingFace SmolVLM': ['smolvlm'],
+    'NVIDIA': ['nanovlm'],
+    'LiquidAI LFM2': ['lfm2'],
+  };
+
+  static String _vendorOf(String modelName) {
+    final name = modelName.toLowerCase();
+    for (final entry in _vendorLabels.entries) {
+      if (entry.value.any(name.contains)) return entry.key;
+    }
+    return '其他';
+  }
+
+  static Set<String> get _vendorOptions => _vendorLabels.keys.toSet();
+
+  bool _matchesFilters(LocalModelInfo model, {String source = '社区'}) {
+    if (_sourceFilter != '全部' && _sourceFilter != source) return false;
+    if (_vendorFilter != '全部' && _vendorOf(model.name) != _vendorFilter) {
+      return false;
+    }
+    final vision = ModelCapabilities.isVisionFamily(model.name);
+    if (_typeFilter == '多模态' && !vision) return false;
+    if (_typeFilter == '纯文本' && vision) return false;
+    final thinking = ModelCapabilities.supportsThinking(model.name);
+    if (_thinkingFilter == '支持思考' && !thinking) return false;
+    return true;
+  }
+
+  List<LocalModelInfo> _filterBuiltin() {
+    final source = _sourceFilter == '全部' || _sourceFilter == '内置'
+        ? LocalModelCatalog.builtin
+        : const <LocalModelInfo>[];
+    return [
+      for (final m in source)
+        if (_matchesFilters(m, source: '内置')) m,
+    ];
+  }
+
+  List<LocalModelInfo> _filterCommunity() {
+    final source = _sourceFilter == '全部' || _sourceFilter == '社区'
+        ? _communityModels
+        : const <LocalModelInfo>[];
+    return [
+      for (final m in source)
+        if (_matchesFilters(m, source: '社区')) m,
+    ];
+  }
+
+  List<SavedModelEntry> _filterSaved() {
+    if (_sourceFilter != '全部' && _sourceFilter != '我的') return const [];
+    return [
+      for (final entry in _savedModels)
+        if (_matchesFilters(entry.info, source: '我的')) entry,
+    ];
+  }
+
+  /// 筛选条：四个紧凑下拉，横排可滚动；选中非默认值时高亮。
+  Widget _buildFilterBar(Color secondary) {
+    Widget chip(String label, String current, List<String> options,
+        ValueChanged<String> onChanged) {
+      final active = current != options.first;
+      return Container(
+        margin: const EdgeInsets.only(right: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: active
+              ? AppColors.primary.withValues(alpha: 0.12)
+              : Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest
+                  .withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: current,
+            isDense: true,
+            borderRadius: BorderRadius.circular(10),
+            style: TextStyle(
+                fontSize: 12, color: active ? AppColors.primary : secondary),
+            items: [
+              for (final o in options)
+                DropdownMenuItem(value: o, child: Text(o)),
+            ],
+            onChanged: (v) {
+              if (v == null || v == current) return;
+              setState(() => onChanged(v));
+            },
+          ),
+        ),
+      );
+    }
+
+    final vendors = ['全部', ..._vendorOptions]..sort((a, b) {
+        if (a == '全部') return -1;
+        if (b == '全部') return 1;
+        return a.compareTo(b);
+      });
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(children: [
+        chip('来源：$_sourceFilter', _sourceFilter, ['全部', '内置', '社区', '我的'],
+            (v) => _sourceFilter = v),
+        chip('类型：$_typeFilter', _typeFilter, ['全部', '多模态', '纯文本'],
+            (v) => _typeFilter = v),
+        chip('厂商：$_vendorFilter', _vendorFilter, vendors,
+            (v) => _vendorFilter = v),
+        chip('特性：$_thinkingFilter', _thinkingFilter, ['全部', '支持思考'],
+            (v) => _thinkingFilter = v),
+      ]),
+    );
   }
 
   /// 下载指定文件（社区模型的多版本/内置模型共用入口）。
@@ -205,6 +342,14 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     String? pairWithMain,
   }) async {
     if (_downloads[taskId]?.isActive == true) return;
+    // 跨屏去重：下载管理/别的页面已在下同一个文件时，这里直接提示而不是
+    // 再起一个（服务层也会按文件名互斥兜底）。
+    if (_downloader.isFileDownloading(fileName)) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('「$fileName」正在下载中，可在下载管理里查看进度'),
+          duration: const Duration(seconds: 2)));
+      return;
+    }
     setState(() {
       _downloads[taskId] = DownloadProgress(
         taskId: taskId,
@@ -252,10 +397,12 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   }
 
   Future<void> _startDownload(LocalModelInfo model) async {
+    // taskId 统一用文件名：下载管理/商店/广场对同一文件的去重才能对上。
+    final fileName = model.downloadUrl.split('/').last;
     await _downloadUrl(
-      taskId: model.id,
+      taskId: fileName,
       url: model.downloadUrl,
-      fileName: model.downloadUrl.split('/').last,
+      fileName: fileName,
       displayName: model.name,
     );
   }
@@ -272,7 +419,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     );
     if (selected == null) return;
     await _downloadUrl(
-      taskId: model.id,
+      taskId: selected.fileName,
       url: selected.downloadUrl,
       fileName: selected.fileName,
       displayName: '${model.name} ${selected.quantization}',
@@ -346,8 +493,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                                       decoration: BoxDecoration(
                                         color: AppColors.success
                                             .withValues(alpha: 0.12),
-                                        borderRadius:
-                                            BorderRadius.circular(4),
+                                        borderRadius: BorderRadius.circular(4),
                                       ),
                                       child: const Text('推荐',
                                           style: TextStyle(
@@ -385,15 +531,13 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   label: const Text('AI 分析'),
                   onPressed: () async {
                     setDialogState(() => aiLoading = true);
-                    final configs =
-                        context.read<ApiProvider>().allApiConfigs;
+                    final configs = context.read<ApiProvider>().allApiConfigs;
                     final device = deviceSummary ??
                         (_deviceRamMb != null
                             ? '设备内存约 ${(_deviceRamMb! / 1024).toStringAsFixed(1)} GB'
                             : '设备信息未知');
                     final advice = await AiService.ask(
-                      systemPrompt:
-                          '你是本地大模型部署助手。根据设备配置推荐最合适的量化版本，'
+                      systemPrompt: '你是本地大模型部署助手。根据设备配置推荐最合适的量化版本，'
                           '只输出一句话建议（含版本名与理由），不要 Markdown。',
                       userPrompt: '$device\n'
                           '模型：$modelName\n'
@@ -406,8 +550,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                     if (dialogContext.mounted) {
                       setDialogState(() {
                         aiLoading = false;
-                        aiAdvice =
-                            advice ?? 'AI 未配置，已按设备内存给出本地推荐';
+                        aiAdvice = advice ?? 'AI 未配置，已按设备内存给出本地推荐';
                       });
                     }
                   },
@@ -424,6 +567,15 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
 
   /// 继续一个未完成的下载（HTTP Range 续传）。
   Future<void> _resumePartial(PartialDownload partial) async {
+    // 概率性重复的根源之一：任务实际还在下载（别的入口发起），但本页
+    // 拿到的是磁盘上的一次性快照，把"下载中"显示成"中断"。
+    // 点继续前先问服务层，真的在跑就只提示，绝不再起一个。
+    if (_downloader.isFileDownloading(partial.fileName)) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('「${partial.fileName}」正在下载中，无需继续'),
+          duration: const Duration(seconds: 2)));
+      return;
+    }
     if (!partial.resumable) return;
     await _downloadUrl(
       taskId: partial.fileName,
@@ -523,12 +675,17 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 context,
                 MaterialPageRoute(
                   builder: (context) => ModelPlazaScreen(
-                    onDownloadRequested: ({required url, required fileName, required displayName}) {
+                    onDownloadRequested: (
+                        {required url,
+                        required fileName,
+                        required displayName,
+                        String? pairWithMain}) {
                       _downloadUrl(
                         taskId: fileName,
                         url: url,
                         fileName: fileName,
                         displayName: displayName,
+                        pairWithMain: pairWithMain,
                       );
                     },
                   ),
@@ -574,12 +731,16 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                // ---- 分类筛选条（厂商 / 类型 / 特性 / 来源）----
+                // 社区模型和内置模型都过同一套筛选；"已下载"区不筛（那是
+                // 用户自己的文件，数量少）。
+                _buildFilterBar(secondary),
+                const SizedBox(height: 10),
                 if (_resolvingRepo) ...[
                   const LinearProgressIndicator(),
                   const SizedBox(height: 6),
                   const Text('正在解析仓库文件清单…',
-                      style: TextStyle(
-                          fontSize: 12, color: AppColors.primary)),
+                      style: TextStyle(fontSize: 12, color: AppColors.primary)),
                   const SizedBox(height: 12),
                 ],
                 if (_partials.isNotEmpty) ...[
@@ -594,10 +755,11 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   const Divider(height: 24),
                 ],
                 if (_downloaded.isNotEmpty) ...[
-                  Text('已下载', style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      color: secondary)),
+                  Text('已下载',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          color: secondary)),
                   const SizedBox(height: 8),
                   for (final model in _downloaded) _buildDownloadedTile(model),
                   const Divider(height: 24),
@@ -608,8 +770,12 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                           color: secondary)),
                   const SizedBox(height: 8),
                 ],
-                for (final model in LocalModelCatalog.builtin)
-                  _buildModelCard(model),
+                for (final model in _filterBuiltin()) _buildModelCard(model),
+                if (_filterBuiltin().isEmpty &&
+                    _vendorFilter == '全部' &&
+                    _typeFilter == '全部' &&
+                    _thinkingFilter == '全部')
+                  const SizedBox.shrink(),
                 const SizedBox(height: 16),
                 if (_orphanProjectors.isNotEmpty) ...[
                   Text('未配对的视觉投影',
@@ -618,7 +784,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                           fontSize: 15,
                           color: secondary)),
                   const SizedBox(height: 6),
-                  Text('这些投影文件还没有归属的模型（或主模型已删除）。'
+                  Text(
+                      '这些投影文件还没有归属的模型（或主模型已删除）。'
                       '投影是模型专用的，配错无法看图；确认不需要可以删掉，'
                       '每个约几百 MB。',
                       style: TextStyle(fontSize: 11, color: secondary)),
@@ -665,7 +832,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  for (final entry in _savedModels)
+                  for (final entry in _filterSaved())
                     _buildSavedCard(entry, secondary),
                   const Divider(height: 24),
                 ],
@@ -685,13 +852,14 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                for (final model in _communityModels)
-                  _buildModelCard(model),
-                if (_communityModels.isEmpty && !_loadingCommunity)
+                for (final model in _filterCommunity()) _buildModelCard(model),
+                if (_filterCommunity().isEmpty && !_loadingCommunity)
                   Center(
-                    child: Text('社区模型加载失败或无结果',
-                        style: TextStyle(
-                            fontSize: 12, color: secondary)),
+                    child: Text(
+                        _communityModels.isEmpty
+                            ? '社区模型加载失败或无结果'
+                            : '当前筛选条件下没有匹配的社区模型',
+                        style: TextStyle(fontSize: 12, color: secondary)),
                   ),
               ],
             ),
@@ -813,8 +981,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     final projectorName = _projectorFor(model);
     final tile = ListTile(
       leading: const Icon(Icons.memory, color: AppColors.success),
-      title: Text(model.name,
-          style: const TextStyle(fontWeight: FontWeight.bold)),
+      title:
+          Text(model.name, style: const TextStyle(fontWeight: FontWeight.bold)),
       subtitle: Text(
         '点击开始对话 · ${model.sizeMb}'
         '${projectorName != null ? ' · 视觉投影已装（可看图）' : ''}',
@@ -838,8 +1006,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
               onPressed: () => _pairProjectorFor(model),
             ),
           IconButton(
-            icon: const Icon(Icons.chat_bubble_outline,
-                color: AppColors.primary),
+            icon:
+                const Icon(Icons.chat_bubble_outline, color: AppColors.primary),
             tooltip: '开始对话',
             onPressed: () => _openChat(model),
           ),
@@ -894,8 +1062,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                     size: 18, color: AppColors.error),
                 tooltip: '删除投影文件（主模型保留）',
                 onPressed: () async {
-                  final files =
-                      await ModelDownloadService.listProjectors();
+                  final files = await ModelDownloadService.listProjectors();
                   for (final file in files) {
                     if (file.uri.pathSegments.last == projectorName) {
                       await ModelDownloadService.deleteModelFile(file.path);
@@ -976,8 +1143,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   ),
                   if (nameMatches(file))
                     const Text('名字匹配',
-                        style: TextStyle(
-                            fontSize: 10, color: AppColors.success)),
+                        style:
+                            TextStyle(fontSize: 10, color: AppColors.success)),
                 ],
               ),
             ),
@@ -1114,8 +1281,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 else if (partial.resumable)
                   TextButton.icon(
                     icon: const Icon(Icons.play_arrow, size: 18),
-                    label:
-                        const Text('继续下载', style: TextStyle(fontSize: 12)),
+                    label: const Text('继续下载', style: TextStyle(fontSize: 12)),
                     onPressed: () => _resumePartial(partial),
                   ),
                 IconButton(
@@ -1159,7 +1325,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     final resolved = <LocalModelInfo>[];
     try {
       resolved.addAll(await ModelCuratorService.resolvePastedLinks(
-        repos.map((r) => r.host == 'modelscope'
+        repos
+            .map((r) => r.host == 'modelscope'
                 ? 'https://modelscope.cn/models/${r.path}'
                 : 'https://huggingface.co/${r.path}')
             .join('\n'),
@@ -1230,11 +1397,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   onPressed: () => Navigator.pop(dialogContext),
                   child: const Text('取消')),
               FilledButton(
-                onPressed: () => Navigator.pop(
-                    dialogContext,
-                    resolved
-                        .where((m) => chosen.contains(m.id))
-                        .toList()),
+                onPressed: () => Navigator.pop(dialogContext,
+                    resolved.where((m) => chosen.contains(m.id)).toList()),
                 child: const Text('固定到我的社区模型'),
               ),
             ],
@@ -1316,7 +1480,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                   ],
                 ),
               ),
-            Text('${model.sizeMb} · ${model.ramRequired} · ${model.quantization}',
+            Text(
+                '${model.sizeMb} · ${model.ramRequired} · ${model.quantization}',
                 style: TextStyle(fontSize: 11, color: secondary)),
             const SizedBox(height: 8),
             _buildModelCard(model),
@@ -1327,10 +1492,10 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   }
 
   Widget _buildModelCard(LocalModelInfo model) {
-    final download = _downloads[model.id];
+    final download = _downloads[model.downloadUrl.split('/').last];
     final isDownloading = download?.status == DownloadStatus.downloading;
-    final isDownloaded = _downloaded.any(
-        (d) => d.fileName == model.downloadUrl.split('/').last);
+    final isDownloaded =
+        _downloaded.any((d) => d.fileName == model.downloadUrl.split('/').last);
     // 投影已安装要看"投影清单"（listDownloadedModels 已明确排除 mmproj，
     // 之前用它判断 → 永远显示"补装视觉投影"，点第二次会重下）。
     final projectorName = model.mmProjUrl?.split('/').last;
@@ -1367,25 +1532,23 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 ),
                 if (model.recommended)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.success.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: const Text('推荐',
-                        style: TextStyle(
-                            fontSize: 10, color: AppColors.success)),
+                        style:
+                            TextStyle(fontSize: 10, color: AppColors.success)),
                   ),
                 if (fitsDevice != null) ...[
                   const SizedBox(width: 4),
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: (fitsDevice
-                              ? AppColors.primary
-                              : AppColors.error)
+                      color: (fitsDevice ? AppColors.primary : AppColors.error)
                           .withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(4),
                     ),
@@ -1393,9 +1556,8 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                       fitsDevice ? '适合你的设备' : '可能内存不足',
                       style: TextStyle(
                           fontSize: 10,
-                          color: fitsDevice
-                              ? AppColors.primary
-                              : AppColors.error),
+                          color:
+                              fitsDevice ? AppColors.primary : AppColors.error),
                     ),
                   ),
                 ],
@@ -1481,9 +1643,7 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                       installed ? Icons.check : Icons.visibility_outlined,
                       size: 18),
                   label: Text(
-                    installed
-                        ? '视觉投影已安装 · 可看图'
-                        : '补装视觉投影（下载后即可发图片）',
+                    installed ? '视觉投影已下载 · 发图片时加载' : '补装视觉投影（下载后即可发图片）',
                     style: const TextStyle(fontSize: 12),
                   ),
                 );

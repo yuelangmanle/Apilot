@@ -55,6 +55,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   bool _modelReady = false;
   bool _stopRequested = false;
   bool _enablingVision = false;
+  bool _switchingModel = false;
   bool _toolsEnabled = ToolRegistry.masterEnabled;
   bool _compressing = false;
   String? _memorySectionCache;
@@ -65,6 +66,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   String _streamText = '';
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
+  bool _scrollScheduled = false;
 
   @override
   void initState() {
@@ -118,13 +120,40 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     var text = _controller.text.trim();
     if ((text.isEmpty && _pendingAttachments.isEmpty) || _isGenerating) return;
 
-    debugPrint('[CHAT-DIAG] send: text="${text.length > 20 ? '${text.substring(0, 20)}…' : text}" '
+    debugPrint(
+        '[CHAT-DIAG] send: text="${text.length > 20 ? '${text.substring(0, 20)}…' : text}" '
         'attachments=${_pendingAttachments.length} tools=$_toolsEnabled '
         'engineLoaded=${_engine.isLoaded}');
+    // 关键守卫：引擎里装的未必是本会话的模型（可能是上一个模型、或还在
+    // 加载中）。此前直接把生成流挂起，用户面对 90+ 秒的"…"以为死机，
+    // 反复退出重进又触发并发加载 → 闪退。现在：加载中提示等待；
+    // 装的是别的模型就现场切换（横幅反馈），加载完再继续发送。
+    if (_engine.isLoading) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('模型正在加载，请等加载完成后再发送'), duration: Duration(seconds: 2)));
+      return;
+    }
+    if (!_engine.isReadyFor(widget.modelPath, contextSize: _contextSize)) {
+      setState(() => _switchingModel = true);
+      try {
+        await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
+        if (mounted) {
+          AiService.registerLocalEngine(_engine);
+          ToolHost.visionEnabled = _engine.supportsVision;
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('模型加载失败：$e'), backgroundColor: AppColors.error));
+        }
+        return;
+      } finally {
+        if (mounted) setState(() => _switchingModel = false);
+      }
+    }
     // 图片处理：模型能看图就直接发；有投影候选就先按需启用；
     // 都没有则讲清楚让用户决定，绝不让引擎抛错（用户看不懂）。
-    final hasImage =
-        _pendingAttachments.any((a) => a.type == 'image');
+    final hasImage = _pendingAttachments.any((a) => a.type == 'image');
     if (hasImage && !_engine.supportsVision) {
       var enabled = false;
       if (_engine.hasVisionCandidate) {
@@ -143,8 +172,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         if (action == 'bind') {
           final bound = await _bindProjector();
           if (bound && mounted) {
-            setState(() => _pendingAttachments
-                .removeWhere((a) => a.type == 'image'));
+            setState(() =>
+                _pendingAttachments.removeWhere((a) => a.type == 'image'));
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('已绑定视觉投影，请重新发送图片'),
                 backgroundColor: AppColors.success));
@@ -157,8 +186,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         text = _controller.text.trim();
         if (text.isEmpty && _pendingAttachments.isEmpty) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('图片已移除，请输入文字后再发送')));
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text('图片已移除，请输入文字后再发送')));
           }
           return;
         }
@@ -220,6 +249,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       var firstTokenMs = -1;
       final streamed = StringBuffer();
       var isToolProtocol = false;
+      DateTime? lastToolUiUpdate;
       final history = <agent.ChatTurn>[
         for (final record in _conversation.messages
             .where((m) => m.role == 'user' || m.role == 'assistant')
@@ -245,9 +275,16 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           if (!mounted) return;
           if (firstTokenMs < 0) firstTokenMs = stopwatch.elapsedMilliseconds;
           streamed.write(delta);
-          if (streamed.toString().contains('@@')) isToolProtocol = true;
-          if (!isToolProtocol) {
+          final streamedText = streamed.toString();
+          if (streamedText.contains('@@')) isToolProtocol = true;
+          final now = DateTime.now();
+          final shouldUpdate = lastToolUiUpdate == null ||
+              now.difference(lastToolUiUpdate!) >=
+                  const Duration(milliseconds: 80);
+          if (!isToolProtocol && shouldUpdate) {
+            lastToolUiUpdate = now;
             setState(() => _streamText = streamed.toString());
+            _scrollToBottom(animate: false);
           }
         },
         onStep: (step) {
@@ -290,7 +327,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 ? '${result.error ?? '（没有返回内容）'}'
                     '${AiService.lastError == null ? '' : '\n原因：${AiService.lastError}'}'
                 : finalText,
-                // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
+            // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
             thinking: result.thinking.isEmpty ? null : result.thinking,
             speed: speed,
             toolSteps: [
@@ -323,6 +360,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       final buffer = StringBuffer();
       final thinking = StringBuffer();
       var chunkCount = 0;
+      DateTime? lastPlainUiUpdate;
 
       await for (final chunk in _engine.generateStream(
         messages,
@@ -351,11 +389,19 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
               'content=${chunk.content?.length ?? 0} '
               'thinking=${chunk.thinking?.length ?? 0}');
         }
-        setState(() {
-          _streamText = buffer.toString();
-          _streamThinking = thinking.toString();
-        });
-        _scrollToBottom();
+        final now = DateTime.now();
+        final shouldUpdate = chunkCount == 1 ||
+            lastPlainUiUpdate == null ||
+            now.difference(lastPlainUiUpdate) >=
+                const Duration(milliseconds: 80);
+        if (shouldUpdate) {
+          lastPlainUiUpdate = now;
+          setState(() {
+            _streamText = buffer.toString();
+            _streamThinking = thinking.toString();
+          });
+          _scrollToBottom(animate: false);
+        }
       }
 
       debugPrint('[CHAT-DIAG] stream done: chunks=$chunkCount '
@@ -379,9 +425,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 ? '（模型把本次预算都用在了思考上，没有输出正文）\n'
                     '可以：① 在参数面板里把「最大生成长度」调大；'
                     '② 或换更小的模型/稍后重试。'
-                : (buffer.isEmpty && stopped
-                    ? '（已停止生成）'
-                    : buffer.toString()),
+                : (buffer.isEmpty && stopped ? '（已停止生成）' : buffer.toString()),
             thinking: thinking.toString(),
             speed: plainSpeed,
           ));
@@ -496,7 +540,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
 
   /// 压缩上下文：保留最近 [keepRecent] 条，其余交给模型总结成一段摘要。
   /// 摘要随对话持久化，之后每次对话都带上它（老消息从发送列表里移除）。
-  Future<void> _compressContext({int keepRecent = 8, bool silent = false}) async {
+  Future<void> _compressContext(
+      {int keepRecent = 8, bool silent = false}) async {
     final messenger = ScaffoldMessenger.of(context);
     final messages = _conversation.messages;
     if (messages.length <= keepRecent) {
@@ -519,29 +564,26 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           .map((m) => '- ${m.text.replaceAll(RegExp(r'\s+'), ' ').trim()}'
               '${m.text.length > 120 ? '…' : ''}')
           .join('\n');
-      final summary = await _engine
-          .generate([
-            const LlamaChatMessage.fromText(
-              role: LlamaChatRole.system,
-              text: '把下面这段对话压缩成要点摘要，保留人物、偏好、'
-                  '结论、未完成事项与关键数据；不要评论，不要加入新信息。'
-                  '用简洁的中文短句。这是**增量压缩**：如果已有摘要，'
-                  '请与它合并去重，不要写成"摘要的摘要"。',
-            ),
-            LlamaChatMessage.fromText(
-                role: LlamaChatRole.user,
-                text: transcript.length > 8000
-                    ? transcript.substring(transcript.length - 8000)
-                    : transcript),
-          ], maxTokens: 400, temp: 0.3)
-          .timeout(const Duration(minutes: 3));
+      final summary = await _engine.generate([
+        const LlamaChatMessage.fromText(
+          role: LlamaChatRole.system,
+          text: '把下面这段对话压缩成要点摘要，保留人物、偏好、'
+              '结论、未完成事项与关键数据；不要评论，不要加入新信息。'
+              '用简洁的中文短句。这是**增量压缩**：如果已有摘要，'
+              '请与它合并去重，不要写成"摘要的摘要"。',
+        ),
+        LlamaChatMessage.fromText(
+            role: LlamaChatRole.user,
+            text: transcript.length > 8000
+                ? transcript.substring(transcript.length - 8000)
+                : transcript),
+      ], maxTokens: 400, temp: 0.3).timeout(const Duration(minutes: 3));
       final merged = [
         if (_conversation.summary.isNotEmpty) _conversation.summary,
         if (summary.trim().isNotEmpty) summary.trim(),
       ].join('\n');
-      final withIntents = userIntents.isEmpty
-          ? merged
-          : '$merged\n\n用户此前提过的诉求：\n$userIntents';
+      final withIntents =
+          userIntents.isEmpty ? merged : '$merged\n\n用户此前提过的诉求：\n$userIntents';
       if (!mounted) return;
       setState(() {
         _conversation.summary = withIntents;
@@ -558,8 +600,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       ));
     } catch (e) {
       if (mounted) setState(() => _compressing = false);
-      messenger.showSnackBar(SnackBar(
-          content: Text('压缩失败：$e'), backgroundColor: AppColors.error));
+      messenger.showSnackBar(
+          SnackBar(content: Text('压缩失败：$e'), backgroundColor: AppColors.error));
     }
   }
 
@@ -583,11 +625,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 应用调参后重新加载模型（几秒）。
   Future<void> _reloadForTuning() async {
     try {
-      await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
+      await _engine.loadModel(widget.modelPath,
+          contextSize: _contextSize, force: true);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('已应用并重新加载模型'),
-            duration: Duration(seconds: 2)));
+            content: Text('已应用并重新加载模型'), duration: Duration(seconds: 2)));
       }
     } catch (e) {
       if (mounted) {
@@ -600,6 +642,28 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   String _shorten(String text) =>
       text.length > 160 ? '${text.substring(0, 160)}…' : text;
 
+  /// 空状态的能力说明。判定顺序（与引擎实际能力保持一致）：
+  /// 引擎已就绪且确认能看图 → 多模态已启用；
+  /// 本身属于视觉家族（无论引擎此刻状态）→ 多模态，区分投影是否已备好；
+  /// 其余 → 纯文本。此前直接读引擎状态，在"引擎还装着上一个模型"时
+  /// 会把 gemma-3-4b 这类多模态模型错标成"纯文本"。
+  String _emptyStateHint() {
+    const fileHint = '（txt / md / json / csv…）';
+    if (_engine.isReadyFor(widget.modelPath, contextSize: _contextSize)) {
+      if (_engine.supportsVision) {
+        return '多模态模型：支持附加图片和文本文件';
+      }
+      if (_engine.hasVisionCandidate) {
+        return '多模态模型（视觉投影已下载）：发图片时会加载看图能力';
+      }
+    }
+    if (ModelCapabilities.isVisionFamily(widget.modelPath)) {
+      return '多模态模型：尚未挂载视觉投影——'
+          '发一张图片即可引导绑定，或到「模型」页给该模型补装投影';
+    }
+    return '纯文本模型：支持附加文本文件$fileHint';
+  }
+
   /// 手动把磁盘上的视觉投影绑定到当前模型。
   Future<bool> _bindProjector() async {
     final messenger = ScaffoldMessenger.of(context);
@@ -607,8 +671,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     if (!mounted) return false;
     if (files.isEmpty) {
       messenger.showSnackBar(const SnackBar(
-          content: Text('设备上还没有视觉投影文件：'
-              '到「模型」页给多模态模型点「补装视觉投影」'),
+        content: Text('设备上还没有视觉投影文件：'
+            '到「模型」页给多模态模型点「补装视觉投影」'),
       ));
       return false;
     }
@@ -633,8 +697,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     // 重新加载模型，让引擎按新配对挂上投影。
     try {
       await _engine
-          .loadModel(widget.modelPath, contextSize: _contextSize)
-          .timeout(const Duration(seconds: 90));
+          .loadModel(widget.modelPath, contextSize: _contextSize, force: true)
+          .timeout(const Duration(seconds: 120));
     } catch (e) {
       debugPrint('[Chat] 绑定后重载失败: $e');
       return false;
@@ -648,8 +712,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 不能看图时的说明与分流。
   /// 返回 'text'（移除图片继续）、'bind'（去绑定投影）或 null（取消）。
   Future<String?> _confirmTextOnly() {
-    final isVisionFamily =
-        ModelCapabilities.isVisionFamily(widget.modelName);
+    final isVisionFamily = ModelCapabilities.isVisionFamily(widget.modelName);
     final reason = _engine.projectorError != null
         ? '视觉投影加载失败（可能是投影与模型不匹配或文件损坏）：'
             '${_engine.projectorError}'
@@ -703,9 +766,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       ));
     }
     for (final record in _conversation.messages) {
-      final role = record.role == 'user'
-          ? LlamaChatRole.user
-          : LlamaChatRole.assistant;
+      final role =
+          record.role == 'user' ? LlamaChatRole.user : LlamaChatRole.assistant;
 
       final images = _engine.supportsVision
           ? record.attachments
@@ -732,8 +794,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           role: role,
           content: [
             if (text.trim().isNotEmpty) LlamaTextContent(text.trim()),
-            for (final image in images)
-              LlamaImageContent(path: image.path),
+            for (final image in images) LlamaImageContent(path: image.path),
           ],
         ));
       } else {
@@ -762,13 +823,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       final ext = (file.extension ?? '').toLowerCase();
       const imageExts = {'png', 'jpg', 'jpeg', 'webp'};
       if (imageExts.contains(ext)) {
-        _pendingAttachments.add(
-            ChatAttachment(name: file.name, type: 'image', path: path));
+        _pendingAttachments
+            .add(ChatAttachment(name: file.name, type: 'image', path: path));
       } else {
         try {
           final content = await File(path).readAsString();
-          _pendingAttachments.add(ChatAttachment(
-              name: file.name, type: 'text', content: content));
+          _pendingAttachments.add(
+              ChatAttachment(name: file.name, type: 'text', content: content));
         } catch (e) {
           messenger.showSnackBar(SnackBar(
               content: Text('读取 ${file.name} 失败: $e'),
@@ -836,8 +897,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       max: 8192,
                       divisions: 31,
                       display: '${settings.maxTokens} tokens',
-                      onChanged: (v) => update(
-                          settings.copyWith(maxTokens: v.round())),
+                      onChanged: (v) =>
+                          update(settings.copyWith(maxTokens: v.round())),
                     ),
                     DropdownButtonFormField<LocalLlmPreset>(
                       initialValue: LocalLlmTuning.preset,
@@ -859,7 +920,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           // 重新加载模型让新参数生效。
                           try {
                             await _engine.loadModel(widget.modelPath,
-                                contextSize: _contextSize);
+                                contextSize: _contextSize, force: true);
                           } catch (e) {
                             debugPrint('[Tuning] 重载失败: $e');
                           }
@@ -876,10 +937,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                         isDense: true,
                       ),
                       items: const [
-                        DropdownMenuItem(value: 4096, child: Text('4096 · 省内存')),
+                        DropdownMenuItem(
+                            value: 4096, child: Text('4096 · 省内存')),
                         DropdownMenuItem(value: 8192, child: Text('8192 · 日常')),
-                        DropdownMenuItem(value: 16384, child: Text('16384 · 长对话')),
-                        DropdownMenuItem(value: 32768, child: Text('32768 · 长文档')),
+                        DropdownMenuItem(
+                            value: 16384, child: Text('16384 · 长对话')),
+                        DropdownMenuItem(
+                            value: 32768, child: Text('32768 · 长文档')),
                       ],
                       onChanged: (value) async {
                         if (value == null) return;
@@ -888,7 +952,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                         // 之前只改状态不重载 → helperText 说"会重新加载"但实际没生效。
                         try {
                           await _engine.loadModel(widget.modelPath,
-                              contextSize: value);
+                              contextSize: value, force: true);
                         } catch (e) {
                           debugPrint('[Chat] 切换上下文长度失败: $e');
                         }
@@ -898,8 +962,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(_toolsEnabled ? '使用工具（插件）：已开启' : '使用工具（插件）'),
-                      subtitle: const Text('联网搜索 / 新闻 / 抓网页 / 算术 / HTML / 待办 / 找模型…'
-                          '（与右上角插件面板同一个开关）'),
+                      subtitle:
+                          const Text('联网搜索 / 新闻 / 抓网页 / 算术 / HTML / 待办 / 找模型…'
+                              '（与右上角插件面板同一个开关）'),
                       value: _toolsEnabled,
                       onChanged: (v) {
                         // 先刷新面板本身，再通知页面（否则点了看不到变化）。
@@ -939,13 +1004,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                         isDense: true,
                       ),
                       items: const [
-                        DropdownMenuItem(
-                            value: 0, child: Text('自动（上下文 85%）')),
+                        DropdownMenuItem(value: 0, child: Text('自动（上下文 85%）')),
                         DropdownMenuItem(
                             value: 1500, child: Text('1500 tokens（省内存）')),
                         DropdownMenuItem(
                             value: 3000, child: Text('3000 tokens（默认）')),
-                        DropdownMenuItem(value: 6000, child: Text('6000 tokens')),
+                        DropdownMenuItem(
+                            value: 6000, child: Text('6000 tokens')),
                         DropdownMenuItem(
                             value: 12000, child: Text('12000 tokens（长会话）')),
                       ],
@@ -965,20 +1030,18 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                                 child:
                                     CircularProgressIndicator(strokeWidth: 2))
                             : const Icon(Icons.compress, size: 18),
-                        label: Text(_compressing
-                            ? '压缩中…'
-                            : '立即整理上下文（折叠旧工具输出 + 增量摘要）'),
-                        onPressed: _compressing
-                            ? null
-                            : () => _compressContext(),
+                        label: Text(
+                            _compressing ? '压缩中…' : '立即整理上下文（折叠旧工具输出 + 增量摘要）'),
+                        onPressed:
+                            _compressing ? null : () => _compressContext(),
                       ),
                     ),
                     const SizedBox(height: 8),
                     ExpansionTile(
                       tilePadding: EdgeInsets.zero,
                       childrenPadding: const EdgeInsets.only(bottom: 8),
-                      title: const Text('高级性能选项',
-                          style: TextStyle(fontSize: 13)),
+                      title:
+                          const Text('高级性能选项', style: TextStyle(fontSize: 13)),
                       subtitle: Text('GPU 层数 / 线程 / FlashAttention / KV 量化',
                           style: TextStyle(fontSize: 11, color: secondary)),
                       children: [
@@ -1130,8 +1193,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           children: [
             Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
             Text(display ?? value.toStringAsFixed(2),
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.primary)),
+                style: const TextStyle(fontSize: 12, color: AppColors.primary)),
           ],
         ),
         Slider(
@@ -1164,8 +1226,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       _pendingAttachments.clear();
     });
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('已开启新对话（模型保持加载，无需等待）'),
-        duration: Duration(seconds: 2)));
+        content: Text('已开启新对话（模型保持加载，无需等待）'), duration: Duration(seconds: 2)));
   }
 
   void _openConversationList() {
@@ -1187,14 +1248,21 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     });
   }
 
-  void _scrollToBottom() {
+  void _scrollToBottom({bool animate = true}) {
+    if (_scrollScheduled) return;
+    _scrollScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
+      _scrollScheduled = false;
+      if (!mounted || !_scrollController.hasClients) return;
+      final offset = _scrollController.position.maxScrollExtent;
+      if (animate) {
         _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
+          offset,
           duration: const Duration(milliseconds: 150),
           curve: Curves.easeOut,
         );
+      } else {
+        _scrollController.jumpTo(offset);
       }
     });
   }
@@ -1231,7 +1299,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 overflow: TextOverflow.ellipsis),
             Text(
                 '$modelName'
-                '${_modelReady ? (_engine.supportsVision ? ' · 多模态' : (_engine.hasVisionCandidate ? ' · 多模态（投影已就绪）' : ' · 纯文本')) : ''}'
+                '${_modelReady && _engine.isReadyFor(widget.modelPath, contextSize: _contextSize) ? (_engine.supportsVision ? ' · 多模态（看图已启用）' : (_engine.hasVisionCandidate ? ' · 多模态（投影已就绪）' : (ModelCapabilities.isVisionFamily(widget.modelPath) ? ' · 多模态（未挂投影）' : ' · 纯文本'))) : ''}'
                 '${_modelReady ? ' · 上下文 ${(_contextTokens() / _contextSize * 100).clamp(0, 999).toStringAsFixed(0)}%' : ''}'
                 '${ModelCapabilities.supportsThinking(widget.modelName) ? ' · 支持思考' : ''}',
                 style: TextStyle(fontSize: 11, color: secondary),
@@ -1302,160 +1370,192 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
               ),
             )
           : !_modelReady
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Expanded(
-                  child: _conversation.messages.isEmpty && !_isGenerating
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.chat_bubble_outline,
-                                  size: 48, color: secondary),
-                              const SizedBox(height: 12),
-                              Text('与 $modelName 开始对话',
-                                  style: TextStyle(color: secondary)),
-                              const SizedBox(height: 4),
-                              Text(
-                                  _engine.supportsVision
-                                      ? '多模态模型：支持附加图片和文本文件'
-                                      : _engine.hasVisionCandidate
-                                          ? '多模态模型（视觉投影已就绪）：发图片时会自动启用看图'
-                                          : '纯文本模型：支持附加文本文件'
-                                              '（txt / md / json / csv…）',
-                                  style: TextStyle(
-                                      fontSize: 11, color: secondary)),
-                            ],
-                          ),
-                        )
-                      : ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.all(12),
-                          itemCount: _conversation.messages.length +
-                              (_isGenerating ? 1 : 0),
-                          itemBuilder: (context, index) {
-                            if (index >= _conversation.messages.length) {
-                              return _buildStreamingBubble(isDark);
-                            }
-                            return _buildMessageBubble(
-                                index, _conversation.messages[index], isDark);
-                          },
-                        ),
-                ),
-                if (_compressing)
-              Container(
-                width: double.infinity,
-                color: AppColors.secondary.withValues(alpha: 0.12),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                child: const Row(
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 16),
+                      Text('正在加载 ${widget.modelName}…',
+                          style: const TextStyle(fontSize: 14)),
+                      const SizedBox(height: 6),
+                      const Text('大模型首次加载可能需要一到几分钟，请稍候',
+                          style: TextStyle(
+                              fontSize: 11, color: AppColors.textSecondary)),
+                    ],
+                  ),
+                )
+              : Column(
                   children: [
-                    SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2)),
-                    SizedBox(width: 8),
-                    Text('正在压缩上下文…', style: TextStyle(fontSize: 12)),
+                    Expanded(
+                      child: _conversation.messages.isEmpty && !_isGenerating
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.chat_bubble_outline,
+                                      size: 48, color: secondary),
+                                  const SizedBox(height: 12),
+                                  Text('与 $modelName 开始对话',
+                                      style: TextStyle(color: secondary)),
+                                  const SizedBox(height: 4),
+                                  Text(_emptyStateHint(),
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                          fontSize: 11, color: secondary)),
+                                ],
+                              ),
+                            )
+                          : ListView.builder(
+                              controller: _scrollController,
+                              padding: const EdgeInsets.all(12),
+                              itemCount: _conversation.messages.length +
+                                  (_isGenerating ? 1 : 0),
+                              itemBuilder: (context, index) {
+                                if (index >= _conversation.messages.length) {
+                                  return _buildStreamingBubble(isDark);
+                                }
+                                return _buildMessageBubble(index,
+                                    _conversation.messages[index], isDark);
+                              },
+                            ),
+                    ),
+                    if (_compressing)
+                      Container(
+                        width: double.infinity,
+                        color: AppColors.secondary.withValues(alpha: 0.12),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        child: const Row(
+                          children: [
+                            SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 8),
+                            Text('正在压缩上下文…', style: TextStyle(fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    if (_switchingModel)
+                      Container(
+                        width: double.infinity,
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        child: const Row(
+                          children: [
+                            SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                  '正在切换/加载模型（大模型可能需要几分钟），'
+                                  '完成后自动继续发送…',
+                                  style: TextStyle(fontSize: 12)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_enablingVision)
+                      Container(
+                        width: double.infinity,
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        child: const Row(
+                          children: [
+                            SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 8),
+                            Text('正在启用视觉投影（首次需几秒）…',
+                                style: TextStyle(fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    if (_pendingAttachments.isNotEmpty)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        child: Wrap(
+                          spacing: 8,
+                          children: [
+                            for (var i = 0; i < _pendingAttachments.length; i++)
+                              Chip(
+                                avatar: Icon(
+                                  _pendingAttachments[i].type == 'image'
+                                      ? Icons.image
+                                      : Icons.description,
+                                  size: 16,
+                                ),
+                                label: Text(_pendingAttachments[i].name,
+                                    style: const TextStyle(fontSize: 11)),
+                                onDeleted: () => setState(
+                                    () => _pendingAttachments.removeAt(i)),
+                              ),
+                          ],
+                        ),
+                      ),
+                    const Divider(height: 1),
+                    SafeArea(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.attach_file),
+                              tooltip: '添加附件（图片/文本）',
+                              onPressed: _isGenerating ? null : _pickAttachment,
+                            ),
+                            Expanded(
+                              child: TextField(
+                                controller: _controller,
+                                decoration: InputDecoration(
+                                  hintText: '输入消息…',
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(24)),
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 10),
+                                ),
+                                onSubmitted: (_) => _send(),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            CircleAvatar(
+                              radius: 22,
+                              backgroundColor: _isGenerating
+                                  ? AppColors.error
+                                  : AppColors.primary,
+                              child: IconButton(
+                                icon: Icon(
+                                    _isGenerating ? Icons.stop : Icons.send,
+                                    color: Colors.white,
+                                    size: 20),
+                                tooltip: _isGenerating ? '停止生成' : '发送',
+                                onPressed: _isGenerating
+                                    ? () {
+                                        setState(() => _stopRequested = true);
+                                        // 真正中断底层推理（工具模式也生效）。
+                                        _engine.cancelGeneration();
+                                      }
+                                    : _send,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                 ),
-              ),
-            if (_enablingVision)
-                  Container(
-                    width: double.infinity,
-                    color: AppColors.primary.withValues(alpha: 0.08),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 6),
-                    child: const Row(
-                      children: [
-                        SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2)),
-                        SizedBox(width: 8),
-                        Text('正在启用视觉投影（首次需几秒）…',
-                            style: TextStyle(fontSize: 12)),
-                      ],
-                    ),
-                  ),
-                if (_pendingAttachments.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 6),
-                    child: Wrap(
-                      spacing: 8,
-                      children: [
-                        for (var i = 0;
-                            i < _pendingAttachments.length;
-                            i++)
-                          Chip(
-                            avatar: Icon(
-                              _pendingAttachments[i].type == 'image'
-                                  ? Icons.image
-                                  : Icons.description,
-                              size: 16,
-                            ),
-                            label: Text(_pendingAttachments[i].name,
-                                style: const TextStyle(fontSize: 11)),
-                            onDeleted: () => setState(
-                                () => _pendingAttachments.removeAt(i)),
-                          ),
-                      ],
-                    ),
-                  ),
-                const Divider(height: 1),
-                SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 6),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.attach_file),
-                          tooltip: '添加附件（图片/文本）',
-                          onPressed: _isGenerating ? null : _pickAttachment,
-                        ),
-                        Expanded(
-                          child: TextField(
-                            controller: _controller,
-                            decoration: InputDecoration(
-                              hintText: '输入消息…',
-                              border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(24)),
-                              isDense: true,
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 10),
-                            ),
-                            onSubmitted: (_) => _send(),
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        CircleAvatar(
-                          radius: 22,
-                          backgroundColor: _isGenerating
-                              ? AppColors.error
-                              : AppColors.primary,
-                          child: IconButton(
-                            icon: Icon(
-                                _isGenerating ? Icons.stop : Icons.send,
-                                color: Colors.white,
-                                size: 20),
-                            tooltip: _isGenerating ? '停止生成' : '发送',
-                            onPressed: _isGenerating
-                                ? () {
-                                    setState(() => _stopRequested = true);
-                                    // 真正中断底层推理（工具模式也生效）。
-                                    _engine.cancelGeneration();
-                                  }
-                                : _send,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
     );
   }
 
@@ -1465,8 +1565,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.78),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
         decoration: BoxDecoration(
           color: isDark ? AppColors.darkSurface : AppColors.background,
           borderRadius: BorderRadius.circular(14),
@@ -1479,7 +1579,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 _streamThinking.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text('思考中…（已 ${_streamThinking.length} 字，'
+                child: Text(
+                    '思考中…（已 ${_streamThinking.length} 字，'
                     '点击气泡上方「查看思考过程」可展开）',
                     style: TextStyle(
                         fontSize: 11,
@@ -1497,7 +1598,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 isDark,
                 title: '工具调用中（${_pendingSteps.length} 步）',
               ),
-            if (_streamThinking.isNotEmpty) _thinkingPanel(_streamThinking, -1, isDark),
+            if (_streamThinking.isNotEmpty)
+              _thinkingPanel(_streamThinking, -1, isDark),
             Text(_streamText.isEmpty && _streamThinking.isNotEmpty
                 ? '（思考中…）'
                 : (_streamText.isEmpty ? '…' : _streamText)),
@@ -1507,16 +1609,15 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     );
   }
 
-  Widget _buildMessageBubble(
-      int index, ChatMessageRecord record, bool isDark) {
+  Widget _buildMessageBubble(int index, ChatMessageRecord record, bool isDark) {
     final isUser = record.role == 'user';
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.78),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
         decoration: BoxDecoration(
           color: isUser
               ? AppColors.primary
@@ -1550,9 +1651,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                                     ? Icons.image
                                     : Icons.description,
                                 size: 12,
-                                color: isUser
-                                    ? Colors.white
-                                    : AppColors.primary),
+                                color:
+                                    isUser ? Colors.white : AppColors.primary),
                             const SizedBox(width: 4),
                             Text(a.name,
                                 style: TextStyle(
@@ -1568,8 +1668,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
               ),
             // 工具调用过程（默认折叠，可点开）
             if (!isUser && record.toolSteps.isNotEmpty)
-              _thinkingPanel(record.toolSteps.join('\n\n'), index + 100000,
-                  isDark, title: '查看工具调用（${record.toolSteps.length} 步）'),
+              _thinkingPanel(
+                  record.toolSteps.join('\n\n'), index + 100000, isDark,
+                  title: '查看工具调用（${record.toolSteps.length} 步）'),
             // 思考过程（默认折叠，可点开）
             if (!isUser &&
                 record.thinking != null &&
@@ -1605,8 +1706,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   Widget _thinkingPanel(String thinking, int index, bool isDark,
       {String? title}) {
     // 生成中的思考面板（index == -1）默认展开：否则用户只看到"没动静"。
-    final expanded =
-        index == -1 ? !_expandedThinking.contains(-1) : _expandedThinking.contains(index);
+    final expanded = index == -1
+        ? !_expandedThinking.contains(-1)
+        : _expandedThinking.contains(index);
     final color =
         isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
     return Container(
@@ -1627,18 +1729,14 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
               }
             }),
             child: Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 10, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.psychology, size: 14, color: AppColors.primary),
+                  const Icon(Icons.psychology,
+                      size: 14, color: AppColors.primary),
                   const SizedBox(width: 6),
-                  Text(
-                      expanded
-                          ? '收起'
-                          : (title ??
-                              '查看思考过程'),
+                  Text(expanded ? '收起' : (title ?? '查看思考过程'),
                       style: const TextStyle(
                           fontSize: 11, color: AppColors.primary)),
                   Icon(expanded ? Icons.expand_less : Icons.expand_more,
@@ -1649,12 +1747,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           ),
           if (expanded)
             Padding(
-              padding:
-                  const EdgeInsets.only(left: 10, right: 10, bottom: 10),
+              padding: const EdgeInsets.only(left: 10, right: 10, bottom: 10),
               child: SelectableText(
                 thinking,
-                style: TextStyle(
-                    fontSize: 12, height: 1.4, color: color),
+                style: TextStyle(fontSize: 12, height: 1.4, color: color),
               ),
             ),
         ],

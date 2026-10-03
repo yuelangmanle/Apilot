@@ -72,6 +72,7 @@ class AgentRunner {
     double? topP,
     bool thinkingEnabled = false,
     void Function(AgentStep step)? onStep,
+
     /// 流式增量回调：工具模式也能边生成边显示（不再"全想完才吐字"）。
     void Function(String delta)? onDelta,
   }) async {
@@ -284,8 +285,7 @@ class AgentRunner {
             ],
           )
         else
-          LlamaChatMessage.fromText(
-              role: LlamaChatRole.user, text: userPrompt),
+          LlamaChatMessage.fromText(role: LlamaChatRole.user, text: userPrompt),
       ];
       try {
         // 用流式收集：正文与思考都拿到（工具模式也要能看到思考过程）。
@@ -310,7 +310,9 @@ class AgentRunner {
         return (text: content.toString(), thinking: thinking.toString());
       } catch (e) {
         debugPrint('[Agent] 本地推理失败: $e');
-        return (text: null, thinking: '');
+        final message = '本地模型调用失败：$e';
+        AiService.lastError = message;
+        return (text: message, thinking: '');
       }
     }
     final cloud = await AiService.ask(

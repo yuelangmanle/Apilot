@@ -82,8 +82,10 @@ class ModelDownloadService {
   final HttpClient _client;
   final Map<String, DownloadProgress> _progressMap = {};
   DateTime? _lastTaskWrite;
-  int _attempt = 0;
   static const int _maxAutoRetries = 3;
+  static const Duration _progressNotifyInterval = Duration(milliseconds: 120);
+  static final Set<String> _activeFiles = <String>{};
+  final Map<String, DateTime> _lastProgressNotify = {};
 
   /// 错误信息去掉签名 URL（用户看不懂，而且很长）。
   static String _cleanError(String raw) {
@@ -91,6 +93,7 @@ class ModelDownloadService {
     text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     return text.length > 200 ? '${text.substring(0, 200)}…' : text;
   }
+
   final Set<String> _cancelRequested = {};
   final _progressController = StreamController<DownloadProgress>.broadcast();
 
@@ -143,16 +146,40 @@ class ModelDownloadService {
   }) async {
     // 清除上次可能残留的取消标记。
     _cancelRequested.remove(taskId);
-    // 注意：**不能**在这里把 _attempt 归零——自动重试是递归调用本函数的，
-    // 归零会导致断网时无限重试（之前的写法永远进不到 failed 状态）。
-    _attempt = retryCount;
-
-    final dir = await modelsDir();
     // 仓库里的文件可能带子目录（如 Q4_K_M/xxx.gguf）：只取文件名，
     // 否则 p.join 会拼出不存在的父目录、openWrite 直接 ENOENT。
     final rawName = expectedFileName ??
         url.split('/').last.replaceAll(RegExp(r'[?#].*$'), '');
     final fileName = p.basename(rawName);
+    // 同一文件只允许一个下载在跑（按文件名互斥，不看 taskId——
+    // 商店页/广场页/下载管理各自的 taskId 不同，此前从这里漏进来了
+    // 第二个并发下载，同一模型在下载管理里出现两张同时跑的卡片）。
+    // 自动重试是递归调用（retryCount>0），不算重复。
+    if (retryCount == 0) {
+      if (_activeFiles.contains(fileName)) {
+        throw StateError('「$fileName」正在下载中，请到下载管理查看进度');
+      }
+      _activeFiles.add(fileName);
+    }
+    try {
+      return await _downloadInner(url, taskId,
+          onProgress: onProgress, fileName: fileName, retryCount: retryCount);
+    } finally {
+      if (retryCount == 0) _activeFiles.remove(fileName);
+    }
+  }
+
+  /// 某个文件名当前是否正在下载（跨页面统一判断用）。
+  bool isFileDownloading(String fileName) => _activeFiles.contains(fileName);
+
+  Future<File> _downloadInner(
+    String url,
+    String taskId, {
+    void Function(int received, int total)? onProgress,
+    required String fileName,
+    required int retryCount,
+  }) async {
+    final dir = await modelsDir();
     final finalPath = p.join(dir.path, fileName);
     final partPath = '$finalPath.part';
     final partFile = File(partPath);
@@ -171,7 +198,9 @@ class ModelDownloadService {
     );
 
     // 已完成的文件直接返回。
-    if (finalFile.existsSync() && !partFile.existsSync()) {
+    if (finalFile.existsSync() &&
+        !partFile.existsSync() &&
+        finalFile.lengthSync() > 0) {
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
         url: url,
@@ -179,6 +208,15 @@ class ModelDownloadService {
         receivedBytes: finalFile.lengthSync(),
         totalBytes: finalFile.lengthSync(),
         status: DownloadStatus.completed,
+      );
+      await _deleteSidecar(finalPath);
+      await _recordTask(
+        taskId: taskId,
+        url: url,
+        fileName: fileName,
+        status: 'completed',
+        receivedBytes: finalFile.lengthSync(),
+        totalBytes: finalFile.lengthSync(),
       );
       _notify(taskId);
       return finalFile;
@@ -214,7 +252,20 @@ class ModelDownloadService {
         await partFile.delete();
       }
       if (response.statusCode == 416) {
-        // Range 超出：文件可能已完整。
+        // Range 超出只有在服务端明确报告的总长度等于本地文件长度时，
+        // 才能认定下载完整。之前无条件 rename，会把损坏/截断的 .part
+        // 文件显示成已完成，随后模型加载或投影挂载才暴露问题。
+        final contentRange = response.headers.value('content-range');
+        final totalFromRange = contentRange == null
+            ? null
+            : int.tryParse(
+                RegExp(r'/([0-9]+)$').firstMatch(contentRange)?.group(1) ?? '');
+        final localLength = partFile.lengthSync();
+        if (totalFromRange == null || localLength != totalFromRange) {
+          await response.drain<void>();
+          throw HttpException(
+              '下载未完成：本地 $localLength 字节，服务端应为 ${totalFromRange ?? '未知'} 字节');
+        }
         await response.drain<void>();
         _progressMap[taskId] = DownloadProgress(
           taskId: taskId,
@@ -224,8 +275,17 @@ class ModelDownloadService {
           totalBytes: effectiveStart,
           status: DownloadStatus.completed,
         );
+        await _deleteSidecar(finalPath);
+        await _recordTask(
+          taskId: taskId,
+          url: url,
+          fileName: fileName,
+          status: 'completed',
+          receivedBytes: effectiveStart,
+          totalBytes: effectiveStart,
+        );
         _notify(taskId);
-        partFile.renameSync(finalPath);
+        await partFile.rename(finalPath);
         return finalFile;
       }
       if (response.statusCode != 200 && response.statusCode != 206) {
@@ -233,8 +293,15 @@ class ModelDownloadService {
       }
 
       final contentLength = response.headers.value('content-length');
-      final totalSize =
-          contentLength != null ? int.parse(contentLength) + effectiveStart : 0;
+      final contentRange = response.headers.value('content-range');
+      final totalFromRange = contentRange == null
+          ? null
+          : int.tryParse(
+              RegExp(r'/([0-9]+)$').firstMatch(contentRange)?.group(1) ?? '');
+      final totalSize = totalFromRange ??
+          (contentLength != null
+              ? int.tryParse(contentLength)! + effectiveStart
+              : 0);
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
         url: url,
@@ -305,6 +372,10 @@ class ModelDownloadService {
       await sink.close();
       sink = null;
 
+      if (totalSize > 0 && received != totalSize) {
+        throw HttpException('下载未完成：已接收 $received 字节，应为 $totalSize 字节');
+      }
+
       // 下载完成，rename .part → 正式文件。
       await partFile.rename(finalPath);
       await _deleteSidecar(finalPath);
@@ -334,7 +405,7 @@ class ModelDownloadService {
       } catch (_) {}
       // 连接被中断（CDN 常见）：自动重试几次，用 Range 从断点继续。
       final message = e.toString();
-      final retriable = _attempt < _maxAutoRetries &&
+      final retriable = retryCount < _maxAutoRetries &&
           partFile.existsSync() &&
           (message.contains('Connection closed') ||
               message.contains('Connection reset') ||
@@ -343,21 +414,21 @@ class ModelDownloadService {
               message.contains('timed out') ||
               message.contains('Software caused connection abort'));
       if (retriable) {
-        _attempt++;
-        debugPrint('[Download] 连接中断，自动重试第 $_attempt 次（断点续传）');
+        final nextRetry = retryCount + 1;
+        debugPrint('[Download] 连接中断，自动重试第 $nextRetry 次（断点续传）');
         _progressMap[taskId] = DownloadProgress(
           taskId: taskId,
           url: url,
           filePath: finalPath,
           status: DownloadStatus.downloading,
-          error: '连接中断，正在自动重试（第 $_attempt 次）',
+          error: '连接中断，正在自动重试（第 $nextRetry 次）',
         );
         _notify(taskId);
-        await Future<void>.delayed(Duration(seconds: 2 * _attempt));
+        await Future<void>.delayed(Duration(seconds: 2 * nextRetry));
         return download(url, taskId,
             onProgress: onProgress,
             expectedFileName: fileName,
-            retryCount: _attempt);
+            retryCount: nextRetry);
       }
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
@@ -455,8 +526,10 @@ class ModelDownloadService {
       if (!f.path.endsWith('.gguf') || f.path.endsWith('.gguf.part')) {
         return false;
       }
-      return !ModelCapabilities.isProjectorFile(
-          f.uri.pathSegments.last);
+      if (File('${f.path}.part').existsSync() || f.lengthSync() <= 0) {
+        return false;
+      }
+      return !ModelCapabilities.isProjectorFile(f.uri.pathSegments.last);
     }).toList();
   }
 
@@ -464,8 +537,12 @@ class ModelDownloadService {
   static Future<List<File>> listProjectors() async {
     final dir = await modelsDir();
     if (!dir.existsSync()) return [];
-    return dir.listSync().whereType<File>().where((f) =>
-        ModelCapabilities.isProjectorFile(f.uri.pathSegments.last)).toList();
+    return dir.listSync().whereType<File>().where((f) {
+      if (!ModelCapabilities.isProjectorFile(f.uri.pathSegments.last)) {
+        return false;
+      }
+      return f.lengthSync() > 0 && !File('${f.path}.part').existsSync();
+    }).toList();
   }
 
   /// 获取指定 URL 对应的本地文件路径。
@@ -499,7 +576,20 @@ class ModelDownloadService {
 
   void _notify(String taskId) {
     final progress = _progressMap[taskId];
-    if (progress != null) _progressController.add(progress);
+    if (progress == null) return;
+    final now = DateTime.now();
+    final previous = _lastProgressNotify[taskId];
+    final isTerminal = progress.status == DownloadStatus.completed ||
+        progress.status == DownloadStatus.failed ||
+        progress.status == DownloadStatus.cancelled ||
+        progress.status == DownloadStatus.paused;
+    if (!isTerminal &&
+        previous != null &&
+        now.difference(previous) < _progressNotifyInterval) {
+      return;
+    }
+    _lastProgressNotify[taskId] = now;
+    _progressController.add(progress);
   }
 
   void dispose() {

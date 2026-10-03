@@ -11,7 +11,7 @@ import 'model_storage_settings.dart';
 import 'model_catalog.dart';
 
 /// 本地推理引擎封装：加载 GGUF 模型、流式生成、对话会话。
-/// 线程安全：同一时刻只允许加载一个模型。
+/// 线程安全：同一时刻只允许一个加载在跑（内部互斥），同一时刻只允许加载一个模型。
 class LocalLlmEngine {
   LlamaEngine? _engine;
   String? _loadedModelPath;
@@ -21,10 +21,26 @@ class LocalLlmEngine {
   String? _pendingProjectorPath;
   String? _projectorError;
   bool _disposed = false;
+  Future<bool>? _visionLoadFuture;
+
   /// 本次加载的模型已证实不支持投机解码（避免每轮都失败重试一次）。
   bool _speculativeUnsupported = false;
 
+  // ---- 加载互斥 ----
+  // 并发 loadModel 是真实存在过的闪退源：聊天页 initState、绑定投影、
+  // 调参面板各自都能触发加载，两个 4B 模型同时进 Vulkan 编译 → 内存翻倍、
+  // 引擎句柄竞争。这里把所有加载串成一条队列，并按"路径#上下文"去重。
+  Future<void>? _loadQueueTail;
+  String? _loadingKey;
+  String? _loadedKey;
+
   String? get loadedModelPath => _loadedModelPath;
+
+  /// 是否有加载正在进行（含排队等待）。
+  bool get isLoading => _loadingKey != null;
+
+  /// 正在加载的目标（路径#上下文）；空闲为 null。
+  String? get loadingKey => _loadingKey;
 
   /// 当前模型是否真的能看图（取决于是否成功加载了视觉投影 mmproj）。
   bool get supportsVision => _visionAvailable;
@@ -34,18 +50,72 @@ class LocalLlmEngine {
 
   bool get isLoaded => _engine != null && _loadedModelPath != null;
 
+  /// 引擎当前已加载的模型是否就是 [filePath]（且没有别的加载在跑）。
+  /// 界面用它判断"可以直接生成"，比 [isLoaded] 严格——isLoaded 只说明
+  /// 引擎里装着*某个*模型，未必是当前会话要的那个。
+  bool isReadyFor(String filePath, {int contextSize = 4096}) =>
+      !isLoading && isLoaded && _loadedModelPath == filePath;
+
+  static String _keyFor(String filePath, int contextSize) =>
+      '$filePath#$contextSize';
+
   /// 从本地文件路径加载 GGUF 模型。
   ///
   /// **不在加载时自动挂载视觉投影**：mmproj 是模型专用的，挂错会把引擎带进
   /// 不匹配的多模态路径，连文本对话一起报错（上一版就是这么坏掉的）。
   /// 这里只"记账"（找到同系列候选投影并记下来），真正启用走 [ensureVision]，
   /// 由用户在发图片时按需触发；文本对话永远不受影响。
+  ///
+  /// [force] 为 true 时忽略去重（绑定投影/调参后必须真正重载）。
+  /// 相同目标的重复调用会复用进行中的加载（聊天页 initState 与发送路径
+  /// 同时触发时只加载一次）；不同目标则排队串行执行。
   Future<void> loadModel(
     String filePath, {
     int contextSize = 4096,
     String? mmProjPath,
-  }) async {
+    bool force = false,
+  }) {
     if (_disposed) throw StateError('引擎已释放');
+    final key = _keyFor(filePath, contextSize);
+    if (!force) {
+      // 目标正在加载 → 直接等它；目标已装好 → 立即返回。
+      if (_loadingKey == key && _loadQueueTail != null) return _loadQueueTail!;
+      if (_loadedKey == key && isLoaded) return Future.value();
+    }
+    final prev = _loadQueueTail;
+    final task = _doLoad(filePath, contextSize, mmProjPath, key, prev);
+    _loadQueueTail = task;
+    _loadingKey = key;
+    // 队尾完成后清掉"加载中"标记；失败也要清。不要直接丢弃
+    // whenComplete 返回的 Future，否则原始加载异常会被派生 Future 再报一次。
+    unawaited(task.then<void>(
+      (_) {
+        if (_loadingKey == key) _loadingKey = null;
+      },
+      onError: (Object _, StackTrace __) {
+        if (_loadingKey == key) _loadingKey = null;
+      },
+    ));
+    return task;
+  }
+
+  Future<void> _doLoad(
+    String filePath,
+    int contextSize,
+    String? mmProjPath,
+    String key,
+    Future<void>? prev,
+  ) async {
+    // 等待前一个加载彻底结束（可能是别的模型，也可能是同模型的调参重载）。
+    if (prev != null) {
+      try {
+        await prev;
+      } catch (_) {}
+      if (_disposed) throw StateError('引擎已释放');
+    }
+    final sw = Stopwatch()..start();
+    debugPrint('[LocalLlm] 开始加载: ${filePath.split('/').last} '
+        '(ctx=$contextSize)…');
     await unload();
     final engine = LlamaEngine(LlamaBackend());
     // 应用性能档位（线程 / GPU 卸载 / FlashAttention / KV 量化）。
@@ -58,13 +128,13 @@ class LocalLlmEngine {
     debugPrint('[LocalLlm] 加载参数: ${LocalLlmTuning.describe()}'
         ' backend=${backend.name}');
     try {
-      await _loadWithBackend(engine, filePath, contextSize, threads, gpuLayers,
-          backend);
+      await _loadWithBackend(
+          engine, filePath, contextSize, threads, gpuLayers, backend);
     } catch (e) {
       if (backend == GpuBackend.cpu) rethrow;
       debugPrint('[LocalLlm] ${backend.name} 加载失败，回退 CPU: $e');
-      await _loadWithBackend(engine, filePath, contextSize, threads, 0,
-          GpuBackend.cpu);
+      await _loadWithBackend(
+          engine, filePath, contextSize, threads, 0, GpuBackend.cpu);
     }
     // 关键：把引擎挂到实例上（我重构后端回退时漏了这一行，
     // 结果所有推理都报 "Bad state: 模型未加载"）。
@@ -73,14 +143,16 @@ class LocalLlmEngine {
     _visionAvailable = false;
     _projectorError = null;
     _speculativeUnsupported = false;
-    _supportsNoThink =
-        ModelCapabilities.supportsNoThinkDirective(filePath);
-    _pendingProjectorPath =
-        mmProjPath ?? await _pairedProjector(filePath) ?? _matchingProjector(filePath);
+    _supportsNoThink = ModelCapabilities.supportsNoThinkDirective(filePath);
+    _pendingProjectorPath = mmProjPath ??
+        await _pairedProjector(filePath) ??
+        _matchingProjector(filePath);
+    _loadedKey = key;
+    debugPrint('[LocalLlm] 模型加载完成: ${filePath.split('/').last} '
+        '耗时 ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)}s');
     if (_pendingProjectorPath != null) {
       debugPrint('[LocalLlm] 发现匹配的视觉投影（待启用）: $_pendingProjectorPath');
     }
-    return;
   }
 
   /// 用指定后端加载；后端不被支持时会抛错，由调用方回退。
@@ -110,8 +182,7 @@ class LocalLlmEngine {
         // 开启投机解码时给原生层预留回滚快照：ngram-simple 的有效草稿长度
         // 默认 48（ngramSizeM），官方要求 snapshot ≥ 该值，否则部分架构
         // 会拒绝投机路径。关闭时为 0（不做快照，零额外开销）。
-        speculativeRollbackTokenMax:
-            LocalLlmTuning.speculativeNgram ? 64 : 0,
+        speculativeRollbackTokenMax: LocalLlmTuning.speculativeNgram ? 64 : 0,
       ),
     );
   }
@@ -141,9 +212,27 @@ class LocalLlmEngine {
   /// "投影坏了导致连文本都不能用"。
   Future<bool> ensureVision() async {
     if (_visionAvailable) return true;
+    final running = _visionLoadFuture;
+    if (running != null) return running;
+    final task = _ensureVisionInternal();
+    _visionLoadFuture = task;
+    try {
+      return await task;
+    } finally {
+      if (identical(_visionLoadFuture, task)) _visionLoadFuture = null;
+    }
+  }
+
+  Future<bool> _ensureVisionInternal() async {
     final engine = _engine;
     final projector = _pendingProjectorPath;
-    if (engine == null || projector == null) return false;
+    if (engine == null ||
+        projector == null ||
+        !File(projector).existsSync() ||
+        File(projector).lengthSync() <= 0 ||
+        File('$projector.part').existsSync()) {
+      return false;
+    }
     try {
       await engine
           .loadMultimodalProjector(projector)
@@ -176,7 +265,11 @@ class LocalLlmEngine {
       if (projectorName == null || projectorName.isEmpty) return null;
       final dir = File(modelPath).parent;
       final candidate = File('${dir.path}/$projectorName');
-      if (candidate.existsSync()) return candidate.path;
+      if (candidate.existsSync() &&
+          candidate.lengthSync() > 0 &&
+          !File('${candidate.path}.part').existsSync()) {
+        return candidate.path;
+      }
     } catch (_) {}
     return null;
   }
@@ -201,17 +294,22 @@ class LocalLlmEngine {
         if (entity is! File) continue;
         final name = entity.uri.pathSegments.last;
         if (ModelCapabilities.isProjectorFile(name)) {
+          if (entity.lengthSync() <= 0 ||
+              File('${entity.path}.part').existsSync()) {
+            continue;
+          }
           projectors.add(entity);
         } else if (name.toLowerCase().endsWith('.gguf')) {
           mainModels.add(entity);
         }
       }
       if (projectors.isEmpty) return null;
-      final core = ModelCapabilities.coreToken(
-          file.uri.pathSegments.last);
+      final core = ModelCapabilities.coreToken(file.uri.pathSegments.last);
       for (final projector in projectors) {
         final name = projector.uri.pathSegments.last.toLowerCase();
-        if (name.contains(core)) return projector.path;
+        if (name.contains(core) && projector.lengthSync() > 0) {
+          return projector.path;
+        }
       }
       if (projectors.length == 1 && mainModels.length == 1) {
         return projectors.first.path;
@@ -288,9 +386,8 @@ class LocalLlmEngine {
             speculativeDecodingConfig: speculative
                 ? const SpeculativeDecodingConfig.ngramSimple()
                 : null,
-            thinkingBudget: thinkingEnabled
-                ? const ThinkingBudget(maxTokens: 1024)
-                : null,
+            thinkingBudget:
+                thinkingEnabled ? const ThinkingBudget(maxTokens: 1024) : null,
           ),
         )) {
           final delta = chunk.choices.first.delta;
@@ -322,8 +419,7 @@ class LocalLlmEngine {
     final result = List<LlamaChatMessage>.from(messages);
     final last = result.last;
     // 只处理纯文本消息（有图片等多模态内容时不动，避免破坏结构）。
-    if (last.parts.length != 1 ||
-        last.parts.first is! LlamaTextContent) {
+    if (last.parts.length != 1 || last.parts.first is! LlamaTextContent) {
       return result;
     }
     final text = last.content;
@@ -342,9 +438,11 @@ class LocalLlmEngine {
       await engine.dispose();
       _engine = null;
       _loadedModelPath = null;
+      _loadedKey = null;
       _visionAvailable = false;
       _projectorPath = null;
       _pendingProjectorPath = null;
+      _visionLoadFuture = null;
       _projectorError = null;
     }
   }
@@ -352,6 +450,16 @@ class LocalLlmEngine {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    // 在途加载必须等它走完（或失败）再卸载：loadModelSource 正在 Vulkan
+    // 编译/读文件时直接 dispose 引擎句柄，native 层会崩——这是闪退的
+    // 另一个来源（用户等不及退出页面就会触发）。等待本身无人依赖，
+    // 不会阻塞 UI；加载完成后紧接着的 unload() 负责真正释放。
+    final tail = _loadQueueTail;
+    if (tail != null) {
+      try {
+        await tail;
+      } catch (_) {}
+    }
     await unload();
   }
 }
