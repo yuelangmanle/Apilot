@@ -115,9 +115,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           configs: configs,
           // 用本对话自己的配置（不看全局 AI 设置）。
           cloudConfig: widget.apiConfig,
-          history: history.length > 6
-              ? history.sublist(history.length - 6)
-              : history,
+          // 同上：完整历史，保证前缀稳定（上下文管理负责压缩）。
+          history: history,
           onStep: (step) {
             if (mounted) setState(() => _pendingSteps.add(step));
           },

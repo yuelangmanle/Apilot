@@ -21,6 +21,8 @@ class LocalLlmEngine {
   String? _pendingProjectorPath;
   String? _projectorError;
   bool _disposed = false;
+  /// 本次加载的模型已证实不支持投机解码（避免每轮都失败重试一次）。
+  bool _speculativeUnsupported = false;
 
   String? get loadedModelPath => _loadedModelPath;
 
@@ -70,6 +72,7 @@ class LocalLlmEngine {
     _loadedModelPath = filePath;
     _visionAvailable = false;
     _projectorError = null;
+    _speculativeUnsupported = false;
     _supportsNoThink =
         ModelCapabilities.supportsNoThinkDirective(filePath);
     _pendingProjectorPath =
@@ -104,6 +107,11 @@ class LocalLlmEngine {
         flashAttention: LocalLlmTuning.resolveFlashAttention(),
         cacheTypeK: LocalLlmTuning.resolveKvCacheType(),
         cacheTypeV: LocalLlmTuning.resolveKvCacheType(),
+        // 开启投机解码时给原生层预留回滚快照：ngram-simple 的有效草稿长度
+        // 默认 48（ngramSizeM），官方要求 snapshot ≥ 该值，否则部分架构
+        // 会拒绝投机路径。关闭时为 0（不做快照，零额外开销）。
+        speculativeRollbackTokenMax:
+            LocalLlmTuning.speculativeNgram ? 64 : 0,
       ),
     );
   }
@@ -256,26 +264,53 @@ class LocalLlmEngine {
         (suppressThinking && !thinkingEnabled && _supportsNoThink)
             ? _withNoThink(messages)
             : messages;
-    await for (final chunk in engine.create(
-      effectiveMessages,
-      // 关键：enableThinking 默认 true，模型会先把思考跑完再吐正文——
-      // 用户看到的就是"不是流式、还慢"。关掉开关时必须真的传给模板。
-      enableThinking: thinkingEnabled,
-      params: GenerationParams(
-        maxTokens: maxTokens,
-        temp: temp,
-        topP: topP,
-        thinkingBudget: thinkingEnabled
-            ? const ThinkingBudget(maxTokens: 1024)
-            : null,
-      ),
-    )) {
-      final delta = chunk.choices.first.delta;
-      final content = delta.content;
-      final thinking = delta.thinking;
-      if ((content != null && content.isNotEmpty) ||
-          (thinking != null && thinking.isNotEmpty)) {
-        yield LocalLlmChunk(content: content, thinking: thinking);
+    // 投机解码：预构建原生库可能不含 llama-common 的投机包装层
+    // （部分模型/上下文也不支持），此时引擎会直接抛错。策略：失败且
+    // **尚未产出任何 token** 时关掉投机自动重试一次；仍失败才向上抛错。
+    // 优化永远不许拖垮正常对话。
+    var speculative =
+        LocalLlmTuning.speculativeNgram && !_speculativeUnsupported;
+    while (true) {
+      var yielded = false;
+      try {
+        await for (final chunk in engine.create(
+          effectiveMessages,
+          // 关键：enableThinking 默认 true，模型会先把思考跑完再吐正文——
+          // 用户看到的就是"不是流式、还慢"。关掉开关时必须真的传给模板。
+          enableThinking: thinkingEnabled,
+          params: GenerationParams(
+            maxTokens: maxTokens,
+            temp: temp,
+            topP: topP,
+            // 投机解码：n-gram 自推测（零额外内存；代码/HTML 这类重复多的输出收益大）。
+            // 注意 API 形态：策略不在 GenerationParams 顶层，而是包在
+            // speculativeDecodingConfig 里；null = 关闭。
+            speculativeDecodingConfig: speculative
+                ? const SpeculativeDecodingConfig.ngramSimple()
+                : null,
+            thinkingBudget: thinkingEnabled
+                ? const ThinkingBudget(maxTokens: 1024)
+                : null,
+          ),
+        )) {
+          final delta = chunk.choices.first.delta;
+          final content = delta.content;
+          final thinking = delta.thinking;
+          if ((content != null && content.isNotEmpty) ||
+              (thinking != null && thinking.isNotEmpty)) {
+            yielded = true;
+            yield LocalLlmChunk(content: content, thinking: thinking);
+          }
+        }
+        return;
+      } catch (e) {
+        if (speculative && !yielded) {
+          debugPrint('[LocalLlm] 投机解码不可用，自动降级重试: $e');
+          _speculativeUnsupported = true;
+          speculative = false;
+          continue;
+        }
+        rethrow;
       }
     }
   }

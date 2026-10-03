@@ -236,9 +236,10 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         topP: _conversation.settings.topP,
         thinkingEnabled: _conversation.settings.thinkingEnabled &&
             ModelCapabilities.supportsThinking(widget.modelName),
-        history: history.length > 6
-            ? history.sublist(history.length - 6)
-            : history,
+        // 传**完整历史**（不再取"最后 6 条"）：滑动窗口会让每轮提示词前缀
+        // 都发生变化，llama.cpp 的前缀缓存（KV 复用）就完全失效——每轮都要
+        // 从头 prefill。历史过长时由上下文管理（折叠/摘要）负责收敛。
+        history: history,
         // 增量回调：边生成边显示（工具协议文本不显示给用户）。
         onDelta: (delta) {
           if (!mounted) return;
@@ -1051,6 +1052,23 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           onChanged: (v) async {
                             setSheetState(() {});
                             await LocalLlmTuning.setAdvanced(kvQuantized: v);
+                            await _reloadForTuning();
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: const Text('投机解码（n-gram 自推测）',
+                              style: TextStyle(fontSize: 13)),
+                          subtitle: const Text(
+                              '零额外内存；代码/HTML 等重复多的输出可快 1.5~2 倍。'
+                              '不支持时自动降级，不影响使用',
+                              style: TextStyle(fontSize: 11)),
+                          value: LocalLlmTuning.speculativeNgram,
+                          onChanged: (v) async {
+                            setSheetState(() {});
+                            await LocalLlmTuning.setAdvanced(
+                                speculativeNgram: v);
                             await _reloadForTuning();
                           },
                         ),

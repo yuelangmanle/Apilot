@@ -40,18 +40,23 @@ class LocalLlmTuning {
   static const _threadsKey = 'llm_threads';
   static const _flashKey = 'llm_flash_attention';
   static const _kvQuantKey = 'llm_kv_quantized';
+  static const _speculativeKey = 'llm_speculative_ngram';
 
   static LocalLlmPreset _preset = LocalLlmPreset.balanced;
   static int? _gpuLayersOverride;
   static int? _threadsOverride;
   static bool _flashAttention = true;
   static bool _kvQuantized = false;
+  /// 投机解码（n-gram 自推测）：**不需要草稿模型、不占额外内存**，
+  /// 对"重复模式多"的输出（代码/HTML/表格）收益明显。
+  static bool _speculativeNgram = false;
 
   static LocalLlmPreset get preset => _preset;
   static int? get gpuLayersOverride => _gpuLayersOverride;
   static int? get threadsOverride => _threadsOverride;
   static bool get flashAttention => _flashAttention;
   static bool get kvQuantized => _kvQuantized;
+  static bool get speculativeNgram => _speculativeNgram;
 
   static Future<void> load() async {
     try {
@@ -61,6 +66,7 @@ class LocalLlmTuning {
       _threadsOverride = prefs.getInt(_threadsKey);
       _flashAttention = prefs.getBool(_flashKey) ?? true;
       _kvQuantized = prefs.getBool(_kvQuantKey) ?? false;
+      _speculativeNgram = prefs.getBool(_speculativeKey) ?? false;
     } catch (e) {
       debugPrint('[Tuning] 读取失败: $e');
     }
@@ -79,6 +85,7 @@ class LocalLlmTuning {
     int? threads,
     bool? flashAttention,
     bool? kvQuantized,
+    bool? speculativeNgram,
   }) async {
     // -1 = 自动（null）；0 = 强制纯 CPU；>0 = 指定层数。
     if (gpuLayers != null) {
@@ -89,6 +96,7 @@ class LocalLlmTuning {
     }
     if (flashAttention != null) _flashAttention = flashAttention;
     if (kvQuantized != null) _kvQuantized = kvQuantized;
+    if (speculativeNgram != null) _speculativeNgram = speculativeNgram;
     try {
       final prefs = await SharedPreferences.getInstance();
       if (_gpuLayersOverride == null) {
@@ -103,6 +111,7 @@ class LocalLlmTuning {
       }
       await prefs.setBool(_flashKey, _flashAttention);
       await prefs.setBool(_kvQuantKey, _kvQuantized);
+      await prefs.setBool(_speculativeKey, _speculativeNgram);
     } catch (_) {}
   }
 
@@ -169,6 +178,7 @@ class LocalLlmTuning {
           '${resolveGpuLayers() == null ? '' : '/${resolveGpuLayers()}层'}',
       _flashAttention ? 'FlashAttn 开' : 'FlashAttn 关',
       _kvQuantized ? 'KV q8_0' : 'KV f16',
+      if (_speculativeNgram) '投机 n-gram',
     ];
     return parts.join(' · ');
   }
