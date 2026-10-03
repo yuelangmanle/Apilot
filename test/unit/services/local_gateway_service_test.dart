@@ -85,4 +85,25 @@ void main() {
       return _RealHttpOverrides().createHttpClient(context);
     });
   });
+
+  test('局域网模式拒绝空网关 Token', () async {
+    final config = ApiConfig(
+      id: 'gateway-token-test',
+      name: '网关 Token 测试配置',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'not-returned',
+      models: const ['test-model'],
+      environment: 'test',
+    );
+
+    await expectLater(
+      LocalGatewayService.start(
+        config,
+        port: 0,
+        lanEnabled: true,
+        token: '   ',
+      ),
+      throwsArgumentError,
+    );
+  });
 }

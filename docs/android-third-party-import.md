@@ -5,7 +5,7 @@ Apilot 面向任意第三方 Android App 开放 API 方案互操作。所有导�
 当前 Android 包名：`com.example.api_manager`
 
 > 版本兼容：V1 导入在所有版本可用；V2（`schemaVersion: 2`）需要 **Apilot ≥ 1.20.0**。
-> 本文档按 Apilot `2.8.0+66` 的行为维护，最后更新于 2026-10-03。
+> 本文档按 Apilot `2.8.1+67` 的行为维护，最后更新于 2026-10-04。
 
 ## 协议版本
 
@@ -261,7 +261,7 @@ override fun onActivityResult(resultCode: Int, data: Intent?) {
 注意事项：
 - 网关仅在 Apilot 运行时可用。建议引导用户保持 Apilot 在前台或分屏。
 - 本机回环地址（127.0.0.1）无需 Token；局域网地址需 Token。
-- Apilot 侧的"本机模型"后端只支持文本对话；请求里带图片会返回 400 与明确说明。
+- Apilot 侧的"本机模型"后端支持文本对话，以及不超过 8MB 的 `data:image/*;base64` 图片；前提是本地模型已配对并成功启用视觉投影。远程图片 URL 和任意本地路径会返回 400，不会被网关读取。
 
 ## 取消、错误和安全
 

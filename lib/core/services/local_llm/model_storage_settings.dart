@@ -269,10 +269,14 @@ class ModelStorageSettings {
     var moved = 0;
     var failed = 0;
     if (!from.existsSync() || from.path == to.path) return (0, 0);
+    if (!to.existsSync()) await to.create(recursive: true);
     for (final entity in from.listSync()) {
       if (entity is! File) continue;
       final name = p.basename(entity.path);
-      if (!name.endsWith('.gguf') && !name.endsWith('.gguf.part')) continue;
+      final isModelArtifact = name.endsWith('.gguf') ||
+          name.endsWith('.gguf.part') ||
+          name.endsWith('.gguf.meta.json');
+      if (!isModelArtifact) continue;
       try {
         final target = File(p.join(to.path, name));
         if (target.existsSync()) {

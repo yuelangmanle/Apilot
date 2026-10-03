@@ -60,6 +60,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   Timer? _streamFlushTimer;
   StringBuffer? _liveTextBuffer;
   StringBuffer? _liveThinkingBuffer;
+  ApiRequestCancellation? _requestCancellation;
 
   void _scheduleStreamFlush() {
     if (_streamFlushTimer != null) return;
@@ -117,6 +118,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
 
     _controller.clear();
     final requestId = ++_requestId;
+    final cancellation = ApiRequestCancellation();
+    _requestCancellation = cancellation;
     var buffer = StringBuffer();
     final thinking = StringBuffer();
     _liveTextBuffer = buffer;
@@ -163,15 +166,17 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
               _streamText = '';
             });
           },
+          cancellation: cancellation,
         );
         if (!mounted || requestId != _requestId) return;
+        final stopped = _stopRequested || cancellation.isCancelled;
         _flushStreamImmediately();
         setState(() {
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
             text: result.text.isEmpty
-                ? (result.error ?? '（没有返回内容）')
-                : result.text,
+                ? (stopped ? '（已停止生成）' : (result.error ?? '（没有返回内容）'))
+                : (stopped ? '${result.text}（已停止）' : result.text),
             // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
             thinking: result.thinking.isEmpty ? null : result.thinking,
             toolSteps: [
@@ -180,17 +185,26 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
             ],
           ));
           _isGenerating = false;
+          _stopRequested = false;
         });
         await _store.save(_conversation);
+        if (identical(_requestCancellation, cancellation)) {
+          _requestCancellation = null;
+        }
       } catch (e) {
         _streamFlushTimer?.cancel();
         _streamFlushTimer = null;
         if (mounted && requestId == _requestId) {
+          final stopped = _stopRequested || cancellation.isCancelled;
           setState(() {
             _isGenerating = false;
-            _conversation.messages
-                .add(ChatMessageRecord(role: 'assistant', text: '工具调用失败：$e'));
+            _conversation.messages.add(ChatMessageRecord(
+                role: 'assistant', text: stopped ? '（已停止生成）' : '工具调用失败：$e'));
+            _stopRequested = false;
           });
+        }
+        if (identical(_requestCancellation, cancellation)) {
+          _requestCancellation = null;
         }
       }
       _scrollToBottom();
@@ -217,6 +231,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         apiConfig: widget.apiConfig,
         model: _selectedModel,
         requestBody: body,
+        shouldStop: () => _stopRequested,
+        cancellation: cancellation,
       )) {
         if (!mounted || requestId != _requestId) return;
         if (_stopRequested) break;
@@ -241,7 +257,10 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
     if (!mounted || requestId != _requestId) return;
     final stopped = _stopRequested;
     setState(() {
-      if (errorText != null) {
+      if (stopped && cancellation.isCancelled) {
+        _conversation.messages
+            .add(const ChatMessageRecord(role: 'assistant', text: '（已停止生成）'));
+      } else if (errorText != null) {
         _conversation.messages
             .add(ChatMessageRecord(role: 'assistant', text: '请求失败：$errorText'));
       } else if (buffer.isEmpty && thinking.isEmpty) {
@@ -261,6 +280,9 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
     });
     await _store.save(_conversation);
     _scrollToBottom();
+    if (identical(_requestCancellation, cancellation)) {
+      _requestCancellation = null;
+    }
   }
 
   String _shorten(String text) =>
@@ -481,6 +503,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   @override
   void dispose() {
     _requestId++; // 作废在途流。
+    _requestCancellation?.cancel();
+    _requestCancellation = null;
     _scrollTimer?.cancel();
     _streamFlushTimer?.cancel();
     _streamRevision.dispose();
@@ -625,8 +649,10 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                                     size: 20),
                                 tooltip: _isGenerating ? '停止生成' : '发送',
                                 onPressed: _isGenerating
-                                    ? () =>
-                                        setState(() => _stopRequested = true)
+                                    ? () {
+                                        setState(() => _stopRequested = true);
+                                        _requestCancellation?.cancel();
+                                      }
                                     : _send,
                               ),
                             ),

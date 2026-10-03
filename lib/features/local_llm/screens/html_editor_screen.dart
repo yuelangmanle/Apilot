@@ -1,14 +1,16 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../../core/services/ai/html_project_store.dart';
 import '../../../shared/theme/color_scheme.dart';
 
 /// 内置 HTML 编辑器：写/改/预览/导出（也能打开 AI 用 save_html 生成的草稿）。
 ///
-/// 预览用轻量渲染（不引入 WebView 依赖，桌面与移动端行为一致）：
-/// 支持标题、段落、列表、代码、链接、图片、分割线与表格的基础排版。
+/// Android/iOS/macOS 使用真实 WebView 运行 HTML、CSS 与 JavaScript；
+/// Linux/Windows/Web 保留轻量渲染回退，避免没有原生 WebView 时页面不可用。
 class HtmlEditorScreen extends StatefulWidget {
   final String? initialTitle;
 
@@ -36,6 +38,14 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
   List<HtmlProject> _projects = [];
   bool _preview = false;
   bool _dirty = false;
+  WebViewController? _webController;
+  String? _previewError;
+
+  bool get _supportsWebView =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.macOS);
 
   static const _template = '''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -73,7 +83,42 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
     if (widget.initialTitle != null) {
       _titleController.text = widget.initialTitle!;
     }
+    if (_supportsWebView) _initWebView();
     _loadProjects();
+  }
+
+  void _initWebView() {
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(ThemeData.light().scaffoldBackgroundColor)
+      ..setNavigationDelegate(NavigationDelegate(
+        onWebResourceError: (error) {
+          if (!mounted) return;
+          setState(() => _previewError = error.description);
+        },
+      ));
+    _webController = controller;
+    if (_preview) _loadWebPreview();
+  }
+
+  Future<void> _loadWebPreview() async {
+    final controller = _webController;
+    if (controller == null) return;
+    if (mounted) setState(() => _previewError = null);
+    try {
+      await controller.loadHtmlString(
+        _codeController.text,
+        baseUrl: 'https://apilot.local/',
+      );
+    } catch (e) {
+      if (mounted) setState(() => _previewError = '$e');
+    }
+  }
+
+  void _togglePreview() {
+    final next = !_preview;
+    setState(() => _preview = next);
+    if (next) _loadWebPreview();
   }
 
   Future<void> _loadProjects() async {
@@ -90,6 +135,7 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
       _codeController.text = content;
       _titleController.text = project.name;
       setState(() => _dirty = false);
+      if (_preview) _loadWebPreview();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -164,7 +210,7 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
           IconButton(
             icon: Icon(_preview ? Icons.code : Icons.visibility_outlined),
             tooltip: _preview ? '回到代码' : '预览',
-            onPressed: () => setState(() => _preview = !_preview),
+            onPressed: _togglePreview,
           ),
           IconButton(
             icon: const Icon(Icons.save_outlined),
@@ -223,7 +269,7 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
             ),
           Expanded(
             child: _preview
-                ? _HtmlPreview(html: _codeController.text)
+                ? _buildPreview()
                 : Padding(
                     padding: const EdgeInsets.all(12),
                     child: TextField(
@@ -242,6 +288,25 @@ class _HtmlEditorScreenState extends State<HtmlEditorScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildPreview() {
+    final controller = _webController;
+    if (controller == null) {
+      return _HtmlPreview(html: _codeController.text);
+    }
+    return Column(
+      children: [
+        if (_previewError != null)
+          MaterialBanner(
+            content: Text('页面运行错误：$_previewError'),
+            actions: [
+              TextButton(onPressed: _loadWebPreview, child: const Text('重试')),
+            ],
+          ),
+        Expanded(child: WebViewWidget(controller: controller)),
+      ],
     );
   }
 }

@@ -81,7 +81,8 @@ class ModelDownloadService {
 
   final HttpClient _client;
   final Map<String, DownloadProgress> _progressMap = {};
-  DateTime? _lastTaskWrite;
+  final Map<String, DateTime> _lastTaskWrite = {};
+  final Map<String, HttpClientRequest> _activeRequests = {};
   static const int _maxAutoRetries = 3;
   static const Duration _progressNotifyInterval = Duration(milliseconds: 120);
   static final Set<String> _activeFiles = <String>{};
@@ -110,6 +111,7 @@ class ModelDownloadService {
   /// 请求取消指定任务（在下一个数据块边界生效）。
   void cancel(String taskId) {
     _cancelRequested.add(taskId);
+    _activeRequests[taskId]?.abort();
   }
 
   /// 获取模型存储目录。
@@ -146,8 +148,9 @@ class ModelDownloadService {
     String? expectedFileName,
     int retryCount = 0,
   }) async {
-    // 清除上次可能残留的取消标记。
-    _cancelRequested.remove(taskId);
+    // 只有一次新的用户下载才清除取消标记；自动重试必须保留它，
+    // 否则用户在重试等待期间点击暂停，递归重试会把任务重新拉起来。
+    if (retryCount == 0) _cancelRequested.remove(taskId);
     // 仓库里的文件可能带子目录（如 Q4_K_M/xxx.gguf）：只取文件名，
     // 否则 p.join 会拼出不存在的父目录、openWrite 直接 ENOENT。
     final rawName = expectedFileName ??
@@ -253,8 +256,15 @@ class ModelDownloadService {
     _notify(taskId);
 
     IOSink? sink;
+    HttpClientRequest? activeRequest;
     try {
+      if (_cancelRequested.contains(taskId)) {
+        throw const DownloadCancelledException();
+      }
       final request = await _client.getUrl(Uri.parse(url));
+      activeRequest = request;
+      _activeRequests[taskId] = request;
+      if (_cancelRequested.contains(taskId)) request.abort();
       if (startByte > 0) {
         request.headers.set('Range', 'bytes=$startByte-');
       }
@@ -283,14 +293,7 @@ class ModelDownloadService {
               '下载未完成：本地 $localLength 字节，服务端应为 ${totalFromRange ?? '未知'} 字节');
         }
         await response.drain<void>();
-        _progressMap[taskId] = DownloadProgress(
-          taskId: taskId,
-          url: url,
-          filePath: finalPath,
-          receivedBytes: effectiveStart,
-          totalBytes: effectiveStart,
-          status: DownloadStatus.completed,
-        );
+        await partFile.rename(finalPath);
         await _deleteSidecar(finalPath);
         await _recordTask(
           taskId: taskId,
@@ -300,8 +303,15 @@ class ModelDownloadService {
           receivedBytes: effectiveStart,
           totalBytes: effectiveStart,
         );
+        _progressMap[taskId] = DownloadProgress(
+          taskId: taskId,
+          url: url,
+          filePath: finalPath,
+          receivedBytes: effectiveStart,
+          totalBytes: effectiveStart,
+          status: DownloadStatus.completed,
+        );
         _notify(taskId);
-        await partFile.rename(finalPath);
         return finalFile;
       }
       if (response.statusCode != 200 && response.statusCode != 206) {
@@ -314,10 +324,12 @@ class ModelDownloadService {
           ? null
           : int.tryParse(
               RegExp(r'/([0-9]+)$').firstMatch(contentRange)?.group(1) ?? '');
+      final contentLengthValue =
+          contentLength == null ? null : int.tryParse(contentLength);
       final totalSize = totalFromRange ??
-          (contentLength != null
-              ? int.tryParse(contentLength)! + effectiveStart
-              : 0);
+          (contentLengthValue == null
+              ? 0
+              : contentLengthValue + effectiveStart);
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
         url: url,
@@ -329,35 +341,19 @@ class ModelDownloadService {
       _notify(taskId);
 
       // 用 .part 文件写入，完成后再 rename。
-      sink = partFile.openWrite(mode: FileMode.append);
+      final outputSink = partFile.openWrite(mode: FileMode.append);
+      sink = outputSink;
       var received = effectiveStart;
 
       await for (final chunk in response) {
         if (_cancelRequested.contains(taskId)) {
-          await sink.flush();
-          await sink.close();
-          _cancelRequested.remove(taskId);
-          _progressMap[taskId] = DownloadProgress(
-            taskId: taskId,
-            url: url,
-            filePath: finalPath,
-            receivedBytes: received,
-            totalBytes: totalSize,
-            status: DownloadStatus.paused,
-          );
-          _notify(taskId);
-          await _recordTask(
-            taskId: taskId,
-            url: url,
-            fileName: fileName,
-            status: 'paused',
-            receivedBytes: received,
-            totalBytes: totalSize,
-          );
+          await outputSink.flush();
+          await outputSink.close();
+          sink = null;
           throw const DownloadCancelledException();
         }
         received += chunk.length;
-        sink.add(chunk);
+        outputSink.add(chunk);
         _progressMap[taskId] = DownloadProgress(
           taskId: taskId,
           url: url,
@@ -370,9 +366,10 @@ class ModelDownloadService {
         _notify(taskId);
         // 进度落盘做节流：每 3 秒一次，避免频繁写文件。
         final now = DateTime.now();
-        if (_lastTaskWrite == null ||
-            now.difference(_lastTaskWrite!) > const Duration(seconds: 3)) {
-          _lastTaskWrite = now;
+        final lastWrite = _lastTaskWrite[taskId];
+        if (lastWrite == null ||
+            now.difference(lastWrite) > const Duration(seconds: 3)) {
+          _lastTaskWrite[taskId] = now;
           unawaited(_recordTask(
             taskId: taskId,
             url: url,
@@ -384,8 +381,8 @@ class ModelDownloadService {
         }
       }
 
-      await sink.flush();
-      await sink.close();
+      await outputSink.flush();
+      await outputSink.close();
       sink = null;
 
       if (totalSize > 0 && received != totalSize) {
@@ -403,6 +400,8 @@ class ModelDownloadService {
         receivedBytes: received,
         totalBytes: totalSize,
       );
+      _cancelRequested.remove(taskId);
+      _lastTaskWrite.remove(taskId);
 
       _progressMap[taskId] = DownloadProgress(
         taskId: taskId,
@@ -419,6 +418,18 @@ class ModelDownloadService {
         await sink?.flush();
         await sink?.close();
       } catch (_) {}
+      if (e is DownloadCancelledException ||
+          _cancelRequested.contains(taskId)) {
+        await _markPaused(
+          taskId: taskId,
+          url: url,
+          fileName: fileName,
+          finalPath: finalPath,
+          partFile: partFile,
+          totalBytes: _progressMap[taskId]?.totalBytes ?? 0,
+        );
+        throw const DownloadCancelledException();
+      }
       // 连接被中断（CDN 常见）：自动重试几次，用 Range 从断点继续。
       final message = e.toString();
       final retriable = retryCount < _maxAutoRetries &&
@@ -440,7 +451,29 @@ class ModelDownloadService {
           error: '连接中断，正在自动重试（第 $nextRetry 次）',
         );
         _notify(taskId);
+        if (_cancelRequested.contains(taskId)) {
+          await _markPaused(
+            taskId: taskId,
+            url: url,
+            fileName: fileName,
+            finalPath: finalPath,
+            partFile: partFile,
+            totalBytes: 0,
+          );
+          throw const DownloadCancelledException();
+        }
         await Future<void>.delayed(Duration(seconds: 2 * nextRetry));
+        if (_cancelRequested.contains(taskId)) {
+          await _markPaused(
+            taskId: taskId,
+            url: url,
+            fileName: fileName,
+            finalPath: finalPath,
+            partFile: partFile,
+            totalBytes: 0,
+          );
+          throw const DownloadCancelledException();
+        }
         return download(url, taskId,
             onProgress: onProgress,
             expectedFileName: fileName,
@@ -464,8 +497,43 @@ class ModelDownloadService {
         totalBytes: 0,
         error: _cleanError(message),
       );
+      _lastTaskWrite.remove(taskId);
       rethrow;
+    } finally {
+      if (identical(_activeRequests[taskId], activeRequest)) {
+        _activeRequests.remove(taskId);
+      }
     }
+  }
+
+  Future<void> _markPaused({
+    required String taskId,
+    required String url,
+    required String fileName,
+    required String finalPath,
+    required File partFile,
+    required int totalBytes,
+  }) async {
+    _cancelRequested.remove(taskId);
+    final received = partFile.existsSync() ? partFile.lengthSync() : 0;
+    _progressMap[taskId] = DownloadProgress(
+      taskId: taskId,
+      url: url,
+      filePath: finalPath,
+      receivedBytes: received,
+      totalBytes: totalBytes,
+      status: DownloadStatus.paused,
+    );
+    _notify(taskId);
+    _lastTaskWrite.remove(taskId);
+    await _recordTask(
+      taskId: taskId,
+      url: url,
+      fileName: fileName,
+      status: 'paused',
+      receivedBytes: received,
+      totalBytes: totalBytes,
+    );
   }
 
   /// 删除已下载的模型文件。

@@ -9,6 +9,7 @@ import 'package:llamadart/llamadart.dart';
 
 import '../../../core/models/api_config.dart';
 import '../../../core/services/api_protocol_adapter.dart';
+import '../../../core/services/ai/ai_service.dart';
 import '../../../core/services/ai/tool_registry.dart';
 import '../../../core/services/local_llm/download_task_store.dart';
 import '../../../core/services/local_llm/local_llm_engine.dart';
@@ -35,6 +36,7 @@ class LocalGatewayService {
   LocalGatewayService._();
 
   static const int defaultPort = 8787;
+  static const int _maxGatewayImageBytes = 8 * 1024 * 1024;
 
   static HttpServer? _server;
   static ApiConfig? _target;
@@ -43,6 +45,8 @@ class LocalGatewayService {
   static String? _token;
   static bool _lanEnabled = false;
   static LocalLlmEngine? _localEngine;
+  static bool _ownsLocalEngine = false;
+  static bool _localRequestsEnabled = false;
 
   /// 本地推理串行化：单引擎不能并发生成。
   static Future<void> _localQueue = Future<void>.value();
@@ -70,12 +74,15 @@ class LocalGatewayService {
     if (config == null && localModel == null) {
       throw ArgumentError('必须指定云端配置或本地模型');
     }
+    if (lanEnabled && (token == null || token.trim().isEmpty)) {
+      throw ArgumentError('局域网模式必须设置非空网关 Token');
+    }
     await stop();
     _target = config;
     _localTarget = localModel;
     _port = port ?? defaultPort;
     _lanEnabled = lanEnabled;
-    _token = (lanEnabled && token != null && token.isNotEmpty) ? token : null;
+    _token = lanEnabled ? token!.trim() : null;
     try {
       _server = await HttpServer.bind(
         lanEnabled ? InternetAddress.anyIPv4 : InternetAddress.loopbackIPv4,
@@ -88,22 +95,36 @@ class LocalGatewayService {
       );
       // 安卓：拉起前台服务（常驻通知 + 唤醒锁），否则切后台就被冻结。
       await _setForegroundService(running: true, port: _port);
+      _localRequestsEnabled = localModel != null;
     } catch (e) {
       _server = null;
+      _localRequestsEnabled = false;
       rethrow;
     }
   }
 
   static Future<void> stop() async {
+    _localRequestsEnabled = false;
     final server = _server;
     _server = null;
     await server?.close(force: true);
     await _setForegroundService(running: false, port: _port);
     await setOverlayVisible(false);
     final engine = _localEngine;
+    // 自有引擎可以主动中止生成；共享聊天引擎不能在这里强制取消，
+    // 否则关闭网关会误杀聊天页当前回复。两者都先等待队列结束，
+    // 再决定是否释放 native 句柄，避免 Vulkan/生成中的 use-after-dispose。
+    if (_ownsLocalEngine) engine?.cancelGeneration();
+    try {
+      await _localQueue;
+    } catch (_) {}
+    _localQueue = Future<void>.value();
     _localEngine = null;
+    final ownsEngine = _ownsLocalEngine;
+    _ownsLocalEngine = false;
+    _target = null;
     _localTarget = null;
-    await engine?.dispose();
+    if (ownsEngine) await engine?.dispose();
   }
 
   static const MethodChannel _foregroundChannel =
@@ -212,9 +233,9 @@ class LocalGatewayService {
     // 局域网模式：非回环来源必须携带 X-Gateway-Token（防 Key 暴露）。
     final remote = request.connectionInfo?.remoteAddress.address ?? '';
     final fromLoopback = remote == '127.0.0.1' || remote == '::1';
-    if (!fromLoopback && _token != null) {
+    if (!fromLoopback && _lanEnabled) {
       final provided = request.headers.value('X-Gateway-Token');
-      if (provided != _token) {
+      if (_token == null || provided != _token) {
         request.response.statusCode = HttpStatus.unauthorized;
         request.response.write(jsonEncode({'error': '缺少或错误的网关 Token'}));
         await request.response.close();
@@ -405,42 +426,71 @@ class LocalGatewayService {
       return;
     }
 
-    // 消息解析：本地模型只接受文本；图片要明确报错而不是静默丢弃。
+    final rawMessages = body['messages'];
+    if (rawMessages is! List) {
+      request.response.statusCode = HttpStatus.badRequest;
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'error': {'message': 'messages 必须是数组'},
+      }));
+      await request.response.close();
+      return;
+    }
+
+    // 消息解析：兼容 OpenAI 的文本 + data URL 图片格式。
     final messages = <LlamaChatMessage>[];
     var hasImage = false;
-    for (final entry in (body['messages'] as List? ?? const [])) {
+    String? imageError;
+    for (final entry in rawMessages) {
       if (entry is! Map) continue;
       final roleText = entry['role']?.toString() ?? 'user';
       final content = entry['content'];
       final buffer = StringBuffer();
+      final parts = <LlamaContentPart>[];
+      var messageHasImage = false;
       if (content is String) {
         buffer.write(content);
+        if (content.isNotEmpty) parts.add(LlamaTextContent(content));
       } else if (content is List) {
         for (final part in content) {
           if (part is! Map) continue;
           final type = part['type']?.toString();
           if (type == 'text') {
-            buffer.write(part['text']?.toString() ?? '');
+            final text = part['text']?.toString() ?? '';
+            buffer.write(text);
+            if (text.isNotEmpty) parts.add(LlamaTextContent(text));
           } else if (type == 'image_url' || type == 'input_image') {
-            hasImage = true;
+            try {
+              parts.add(_parseGatewayImage(part));
+              hasImage = true;
+              messageHasImage = true;
+            } catch (e) {
+              imageError = e.toString();
+              break;
+            }
           }
         }
       }
+      if (imageError != null) break;
       final role = switch (roleText) {
         'system' => LlamaChatRole.system,
         'assistant' => LlamaChatRole.assistant,
         _ => LlamaChatRole.user,
       };
-      messages
-          .add(LlamaChatMessage.fromText(role: role, text: buffer.toString()));
+      if (parts.isNotEmpty && messageHasImage) {
+        messages.add(LlamaChatMessage.withContent(role: role, content: parts));
+      } else {
+        messages.add(
+            LlamaChatMessage.fromText(role: role, text: buffer.toString()));
+      }
     }
-    if (hasImage) {
+    if (imageError != null) {
       request.response.statusCode = HttpStatus.badRequest;
       request.response.headers.contentType = ContentType.json;
       request.response.write(jsonEncode({
         'error': {
-          'message': '当前本地模型网关只支持文本输入：请改用支持多模态的模型，'
-              '或去掉消息中的图片。',
+          'message':
+              '图片格式不受支持：$imageError；请使用不超过 8MB 的 data:image/*;base64 图片。',
         },
       }));
       await request.response.close();
@@ -457,14 +507,31 @@ class LocalGatewayService {
     }
 
     final stream = body['stream'] == true;
-    final maxTokens = (body['max_tokens'] as num?)?.toInt() ?? 512;
-    final temp = (body['temperature'] as num?)?.toDouble() ?? 0.8;
+    final maxTokens = body['max_tokens'] is num
+        ? (body['max_tokens'] as num).toInt().clamp(1, 32768).toInt()
+        : 512;
+    final temp = body['temperature'] is num
+        ? (body['temperature'] as num).toDouble().clamp(0.0, 2.0).toDouble()
+        : 0.8;
 
     // 串行执行：单引擎不能并发生成。
     final completer = Completer<void>();
     final previous = _localQueue;
     _localQueue = completer.future;
     await previous;
+    if (!_localRequestsEnabled || !identical(_localTarget, model)) {
+      try {
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'error': {'message': '本地网关正在停止，请稍后重试'},
+        }));
+        await request.response.close();
+      } finally {
+        if (!completer.isCompleted) completer.complete();
+      }
+      return;
+    }
     try {
       final engine = await _ensureEngine(model);
       if (engine == null) {
@@ -472,6 +539,18 @@ class LocalGatewayService {
         request.response.headers.contentType = ContentType.json;
         request.response.write(jsonEncode({
           'error': {'message': '本地模型加载失败：文件可能已被删除'},
+        }));
+        await request.response.close();
+        return;
+      }
+      if (hasImage && !engine.supportsVision && !await engine.ensureVision()) {
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode({
+          'error': {
+            'message':
+                '当前本地模型没有可用的视觉投影：${engine.projectorError ?? '请先下载并配对对应 mmproj 文件'}',
+          },
         }));
         await request.response.close();
         return;
@@ -568,16 +647,58 @@ class LocalGatewayService {
     }
   }
 
+  static LlamaImageContent _parseGatewayImage(Map part) {
+    Object? value = part['image_url'] ?? part['input_image'] ?? part['image'];
+    if (value is Map) {
+      value = value['url'] ?? value['data'] ?? value['image_url'];
+    }
+    final source = value?.toString().trim() ?? '';
+    if (!source.startsWith('data:')) {
+      throw const FormatException('仅支持 data URL 图片，不能读取远程 URL 或任意本地路径');
+    }
+    final comma = source.indexOf(',');
+    if (comma <= 5 ||
+        !source.substring(0, comma).toLowerCase().contains(';base64')) {
+      throw const FormatException('data URL 必须包含 base64 编码');
+    }
+    final encoded = source.substring(comma + 1).replaceAll(RegExp(r'\s+'), '');
+    final bytes = base64Decode(encoded);
+    if (bytes.length > _maxGatewayImageBytes) {
+      throw const FormatException('图片超过 8MB 限制');
+    }
+    return LlamaImageContent(bytes: bytes);
+  }
+
   /// 确保引擎指向目标模型（同一实例复用；切换模型时重新加载）。
   static Future<LocalLlmEngine?> _ensureEngine(GatewayLocalModel model) async {
     var engine = _localEngine;
+    if (engine == null) {
+      final shared = AiService.registeredLocalEngine;
+      final sharedMatches = shared != null &&
+          !shared.isDisposed &&
+          (shared.loadedModelPath == model.filePath ||
+              shared.loadingKey?.startsWith('${model.filePath}#') == true);
+      if (sharedMatches) {
+        engine = shared;
+        _ownsLocalEngine = false;
+      }
+    }
     if (engine != null &&
         engine.isLoaded &&
         engine.loadedModelPath == model.filePath) {
       return engine;
     }
     if (!File(model.filePath).existsSync()) return null;
-    engine ??= LocalLlmEngine();
+    final sharedLoadingTarget = engine != null &&
+        !_ownsLocalEngine &&
+        engine.loadingKey?.startsWith('${model.filePath}#') == true;
+    if (engine == null ||
+        (!_ownsLocalEngine &&
+            engine.loadedModelPath != model.filePath &&
+            !sharedLoadingTarget)) {
+      engine = LocalLlmEngine();
+      _ownsLocalEngine = true;
+    }
     try {
       await engine.loadModel(model.filePath);
     } catch (e) {

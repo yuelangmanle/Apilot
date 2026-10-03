@@ -11,6 +11,7 @@ import '../../../core/services/ai/agent_runner.dart' as agent;
 import '../../../core/services/ai/ai_service.dart';
 import '../../../core/services/ai/memory_store.dart';
 import '../../../core/services/ai/tool_registry.dart';
+import '../../../core/services/api_service.dart';
 import '../../api_management/providers/api_provider.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../core/services/local_llm/local_llm_tuning.dart';
@@ -69,6 +70,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   String _streamThinking = '';
   final Set<int> _expandedThinking = {};
   bool _scrollScheduled = false;
+  ApiRequestCancellation? _requestCancellation;
 
   @override
   void initState() {
@@ -236,6 +238,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     }
 
     final attachments = List<ChatAttachment>.from(_pendingAttachments);
+    final cancellation = ApiRequestCancellation();
+    cancellation.setCancelHandler(_engine.cancelGeneration);
+    _requestCancellation = cancellation;
     _controller.clear();
     setState(() {
       _conversation.messages.add(ChatMessageRecord(
@@ -268,93 +273,119 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             .take(_conversation.messages.length - 1))
           agent.ChatTurn(isUser: record.role == 'user', text: record.text),
       ];
-      final result = await agent.AgentRunner.run(
-        userPrompt: text,
-        configs: configs,
-        // 本地对话一律走本地引擎（不再看全局 AI 来源设置）。
-        localEngine: _engine,
-        temp: _conversation.settings.temp,
-        topP: _conversation.settings.topP,
-        thinkingEnabled: _conversation.settings.thinkingEnabled &&
-            ModelCapabilities.supportsThinking(widget.modelName),
-        // 传**完整历史**（不再取"最后 6 条"）：滑动窗口会让每轮提示词前缀
-        // 都发生变化，llama.cpp 的前缀缓存（KV 复用）就完全失效——每轮都要
-        // 从头 prefill。历史过长时由上下文管理（折叠/摘要）负责收敛。
-        history: history,
-        // 增量回调：边生成边显示（工具协议文本不显示给用户）。
-        onDelta: (delta) {
-          if (!mounted) return;
-          if (firstTokenMs < 0) firstTokenMs = stopwatch.elapsedMilliseconds;
-          streamed.write(delta);
-          final protocolWindow = '$protocolTail$delta';
-          if (!isToolProtocol && protocolWindow.contains('@@')) {
-            isToolProtocol = true;
-          }
-          protocolTail = protocolWindow.length > 5
-              ? protocolWindow.substring(protocolWindow.length - 5)
-              : protocolWindow;
-          final now = DateTime.now();
-          final shouldUpdate = lastToolUiUpdate == null ||
-              now.difference(lastToolUiUpdate!) >=
-                  const Duration(milliseconds: 80);
-          if (!isToolProtocol && shouldUpdate) {
-            lastToolUiUpdate = now;
-            _streamText = streamed.toString();
-            _streamRevision.value++;
-            _scrollToBottom(animate: false);
-          }
-        },
-        onStep: (step) {
-          if (mounted) {
-            setState(() {
-              _pendingSteps.add(step);
-              // 工具开始执行后清掉流式草稿（那是协议文本）。
-              _streamText = '';
-            });
-          }
-        },
-      );
-      stopwatch.stop();
-      if (mounted) {
-        // 截断兜底：写代码/HTML 以未闭合结尾时自动续写一次。
-        var finalText = result.text;
-        var continueCount = 0;
-        while (continueCount < 2 &&
-            agent.AgentRunner.looksTruncated(finalText, text)) {
-          continueCount++;
-          final more = await _engine.generate([
-            const LlamaChatMessage.fromText(
-                role: LlamaChatRole.user,
-                text: '继续输出，从断掉的地方接着写，不要重复已输出的内容、'
-                    '不要解释，直接接着写：'),
-          ], maxTokens: 3072, temp: 0.4);
-          if (more.trim().isEmpty) break;
-          finalText = '$finalText$more';
-        }
-        final speed = _formatSpeed(
-          chars: finalText.length,
-          firstTokenMs: firstTokenMs,
-          totalMs: stopwatch.elapsedMilliseconds,
+      try {
+        final result = await agent.AgentRunner.run(
+          userPrompt: text,
+          configs: configs,
+          // 本地对话一律走本地引擎（不再看全局 AI 来源设置）。
+          localEngine: _engine,
+          temp: _conversation.settings.temp,
+          topP: _conversation.settings.topP,
+          thinkingEnabled: _conversation.settings.thinkingEnabled &&
+              ModelCapabilities.supportsThinking(widget.modelName),
+          // 传**完整历史**（不再取"最后 6 条"）：滑动窗口会让每轮提示词前缀
+          // 都发生变化，llama.cpp 的前缀缓存（KV 复用）就完全失效——每轮都要
+          // 从头 prefill。历史过长时由上下文管理（折叠/摘要）负责收敛。
+          history: history,
+          // 增量回调：边生成边显示（工具协议文本不显示给用户）。
+          onDelta: (delta) {
+            if (!mounted) return;
+            if (firstTokenMs < 0) firstTokenMs = stopwatch.elapsedMilliseconds;
+            streamed.write(delta);
+            final protocolWindow = '$protocolTail$delta';
+            if (!isToolProtocol && protocolWindow.contains('@@')) {
+              isToolProtocol = true;
+            }
+            protocolTail = protocolWindow.length > 5
+                ? protocolWindow.substring(protocolWindow.length - 5)
+                : protocolWindow;
+            final now = DateTime.now();
+            final shouldUpdate = lastToolUiUpdate == null ||
+                now.difference(lastToolUiUpdate!) >=
+                    const Duration(milliseconds: 80);
+            if (!isToolProtocol && shouldUpdate) {
+              lastToolUiUpdate = now;
+              _streamText = streamed.toString();
+              _streamRevision.value++;
+              _scrollToBottom(animate: false);
+            }
+          },
+          onStep: (step) {
+            if (mounted) {
+              setState(() {
+                _pendingSteps.add(step);
+                // 工具开始执行后清掉流式草稿（那是协议文本）。
+                _streamText = '';
+              });
+            }
+          },
+          cancellation: cancellation,
         );
-        setState(() {
-          _streamText = '';
-          _conversation.messages.add(ChatMessageRecord(
-            role: 'assistant',
-            text: finalText.isEmpty
-                ? '${result.error ?? '（没有返回内容）'}'
-                    '${AiService.lastError == null ? '' : '\n原因：${AiService.lastError}'}'
-                : finalText,
-            // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
-            thinking: result.thinking.isEmpty ? null : result.thinking,
-            speed: speed,
-            toolSteps: [
-              for (final step in result.steps)
-                '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
-            ],
-          ));
-          _isGenerating = false;
-        });
-        await _store.save(_conversation);
+        stopwatch.stop();
+        if (mounted) {
+          final stopped = _stopRequested || cancellation.isCancelled;
+          // 截断兜底：写代码/HTML 以未闭合结尾时自动续写一次。
+          var finalText = result.text;
+          var continueCount = 0;
+          while (!stopped &&
+              continueCount < 2 &&
+              agent.AgentRunner.looksTruncated(finalText, text)) {
+            continueCount++;
+            final more = await _engine.generate([
+              const LlamaChatMessage.fromText(
+                  role: LlamaChatRole.user,
+                  text: '继续输出，从断掉的地方接着写，不要重复已输出的内容、'
+                      '不要解释，直接接着写：'),
+            ], maxTokens: 3072, temp: 0.4);
+            if (more.trim().isEmpty) break;
+            finalText = '$finalText$more';
+          }
+          final speed = _formatSpeed(
+            chars: finalText.length,
+            firstTokenMs: firstTokenMs,
+            totalMs: stopwatch.elapsedMilliseconds,
+          );
+          setState(() {
+            _streamText = '';
+            _conversation.messages.add(ChatMessageRecord(
+              role: 'assistant',
+              text: finalText.isEmpty
+                  ? (stopped
+                      ? '（已停止生成）'
+                      : '${result.error ?? '（没有返回内容）'}'
+                          '${AiService.lastError == null ? '' : '\n原因：${AiService.lastError}'}')
+                  : (stopped ? '$finalText（已停止）' : finalText),
+              // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
+              thinking: result.thinking.isEmpty ? null : result.thinking,
+              speed: speed,
+              toolSteps: [
+                for (final step in result.steps)
+                  '${step.tool}(${step.argsLabel})：${_shorten(step.result)}',
+              ],
+            ));
+            _isGenerating = false;
+            _stopRequested = false;
+          });
+          await _store.save(_conversation);
+        }
+      } catch (e, st) {
+        debugPrint('[CHAT-DIAG] tool send threw: $e\n$st');
+        if (mounted) {
+          final stopped = _stopRequested || cancellation.isCancelled;
+          setState(() {
+            _isGenerating = false;
+            _conversation.messages.add(ChatMessageRecord(
+              role: 'assistant',
+              text: stopped ? '（已停止生成）' : '工具调用失败：$e',
+            ));
+            _stopRequested = false;
+          });
+          await _store.save(_conversation);
+        }
+      } finally {
+        if (identical(_requestCancellation, cancellation)) {
+          _requestCancellation = null;
+        }
       }
       _scrollToBottom();
       return;
@@ -390,7 +421,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         suppressThinking: !_conversation.settings.thinkingEnabled,
       )) {
         if (!mounted) return;
-        if (_stopRequested) break;
+        if (_stopRequested || cancellation.isCancelled) break;
         if (plainFirstTokenMs < 0) {
           plainFirstTokenMs = plainStopwatch.elapsedMilliseconds;
         }
@@ -429,7 +460,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         totalMs: plainStopwatch.elapsedMilliseconds,
       );
       if (mounted) {
-        final stopped = _stopRequested;
+        final stopped = _stopRequested || cancellation.isCancelled;
         // 正文为空但有思考内容 = 模型把预算花在思考上了：给出可操作的说明，
         // 而不是留一个空气泡让用户以为"没回复"。
         final emptyWithThinking =
@@ -461,18 +492,26 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       if (mounted) {
         setState(() {
           _isGenerating = false;
+          final stopped = _stopRequested || cancellation.isCancelled;
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
-            text: tooLong
-                ? '这次请求超出上下文长度了。可以：\n'
-                    '· 点参数面板里的「立即整理上下文」（把旧内容折叠+摘要）；\n'
-                    '· 或把「上下文长度」调大一档；\n'
-                    '· 或开一个新对话继续这个话题。\n'
-                    '（原始错误：$message）'
-                : '生成失败: $message',
+            text: stopped
+                ? '（已停止生成）'
+                : tooLong
+                    ? '这次请求超出上下文长度了。可以：\n'
+                        '· 点参数面板里的「立即整理上下文」（把旧内容折叠+摘要）；\n'
+                        '· 或把「上下文长度」调大一档；\n'
+                        '· 或开一个新对话继续这个话题。\n'
+                        '（原始错误：$message）'
+                    : '生成失败: $message',
           ));
+          _stopRequested = false;
         });
+        await _store.save(_conversation);
       }
+    }
+    if (identical(_requestCancellation, cancellation)) {
+      _requestCancellation = null;
     }
     _scrollToBottom();
   }
@@ -1299,6 +1338,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
 
   @override
   void dispose() {
+    _requestCancellation?.cancel();
+    _requestCancellation = null;
     _controller.dispose();
     _scrollController.dispose();
     _streamRevision.dispose();
@@ -1577,7 +1618,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                                     ? () {
                                         setState(() => _stopRequested = true);
                                         // 真正中断底层推理（工具模式也生效）。
-                                        _engine.cancelGeneration();
+                                        _requestCancellation?.cancel();
                                       }
                                     : _send,
                               ),

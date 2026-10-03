@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 
 import '../../models/api_config.dart';
+import '../api_service.dart';
 import '../local_llm/local_llm_engine.dart';
 import 'ai_service.dart';
 import 'tool_registry.dart';
@@ -76,6 +77,7 @@ class AgentRunner {
 
     /// 流式增量回调：工具模式也能边生成边显示（不再"全想完才吐字"）。
     void Function(String delta)? onDelta,
+    ApiRequestCancellation? cancellation,
   }) async {
     final toolDocs = ToolRegistry.describeForPrompt(
       task: userPrompt,
@@ -116,10 +118,18 @@ class AgentRunner {
         // 本地对话必须走本地引擎，否则开插件后会去问全局 AI 设置
         // （表现为「AI 未配置」或偷偷花用户的云端额度）。
         allowCloudStreaming: cloudConfig != null,
+        cancellation: cancellation,
       );
       pendingImages.clear();
       final answer = reply.text;
       if (reply.thinking.isNotEmpty) thinkingBuffer.write(reply.thinking);
+      if (cancellation?.isCancelled == true) {
+        return AgentResult(
+          text: answer ?? '',
+          steps: steps,
+          thinking: thinkingBuffer.toString(),
+        );
+      }
       if (answer == null || answer.trim().isEmpty) {
         return AgentResult(
           text: steps.isEmpty ? '' : _summarizeSteps(steps),
@@ -137,6 +147,13 @@ class AgentRunner {
         );
       }
       final result = await ToolRegistry.execute(call.name, call.args);
+      if (cancellation?.isCancelled == true) {
+        return AgentResult(
+          text: '',
+          steps: steps,
+          thinking: thinkingBuffer.toString(),
+        );
+      }
       // 截屏 → 图片回灌（引擎支持看图时）。
       if (call.name == 'screenshot') {
         final path = ToolRegistry.lastScreenshotPath;
@@ -171,6 +188,7 @@ class AgentRunner {
       topP: topP,
       thinkingEnabled: thinkingEnabled,
       allowCloudStreaming: cloudConfig != null,
+      cancellation: cancellation,
     );
     if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
     return AgentResult(
@@ -248,6 +266,7 @@ class AgentRunner {
     double? temp,
     double? topP,
     bool thinkingEnabled = false,
+    ApiRequestCancellation? cancellation,
   }) async {
     // 路由规则（严格）：
     // · 云端对话页传了 cloudConfig → 一律走那个云端配置（绝不被本地引擎劫持）；
@@ -263,6 +282,7 @@ class AgentRunner {
         preferredConfig: cloudConfig,
         maxTokens: maxTokens,
         onDelta: onDelta,
+        cancellation: cancellation,
       );
       return (text: cloud, thinking: '');
     }
@@ -274,6 +294,10 @@ class AgentRunner {
     }
     final useLocal = engine != null && engine.isLoaded;
     if (useLocal) {
+      if (cancellation?.isCancelled == true) {
+        return (text: '', thinking: '');
+      }
+      cancellation?.setCancelHandler(engine.cancelGeneration);
       final messages = <LlamaChatMessage>[
         LlamaChatMessage.fromText(
             role: LlamaChatRole.system, text: systemPrompt),
@@ -308,6 +332,10 @@ class AgentRunner {
               thinkingEnabled: thinkingEnabled,
             )
             .timeout(const Duration(minutes: 4))) {
+          if (cancellation?.isCancelled == true) {
+            engine.cancelGeneration();
+            break;
+          }
           if (chunk.content != null) {
             content.write(chunk.content);
             onDelta?.call(chunk.content!);
@@ -330,6 +358,7 @@ class AgentRunner {
       preferredConfig: cloudConfig,
       maxTokens: maxTokens,
       onDelta: onDelta,
+      cancellation: cancellation,
     );
     return (text: cloud, thinking: '');
   }

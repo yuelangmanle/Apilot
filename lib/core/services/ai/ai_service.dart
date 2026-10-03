@@ -51,6 +51,7 @@ class AiService {
   /// 已加载的本地引擎共享给全部 AI 功能：
   /// 聊天页加载模型后注册到这里，AI 诊断/分析等无需重复加载。
   static LocalLlmEngine? _sharedEngine;
+  static String? _preferredLocalPath;
 
   static void registerLocalEngine(LocalLlmEngine? engine) {
     _sharedEngine = engine;
@@ -115,6 +116,10 @@ class AiService {
     /// 流式增量回调（云端工具模式用它显示进度）。
     void Function(String delta)? onDelta,
 
+    /// 返回 true 时停止继续消费云端流；用于停止按钮，确保底层连接及时关闭。
+    bool Function()? shouldStop,
+    ApiRequestCancellation? cancellation,
+
     /// 指定用哪个配置（云端对话页传自己的配置，不看全局设置）。
     ApiConfig? preferredConfig,
     int maxTokens = 512,
@@ -137,7 +142,7 @@ class AiService {
       );
 
       if (route == AiRoute.local) {
-        final engine = localEngine ?? sharedLocalEngine;
+        final engine = localEngine ?? await _preferredSharedEngine();
         if (engine == null || !engine.isLoaded) {
           // 没有已加载的引擎：尝试自动加载本机已下载的最小模型，
           // 否则"AI 设置里选本地模型"会静默失效。
@@ -172,7 +177,9 @@ class AiService {
       }
 
       return await _askCloud(config, userPrompt, systemPrompt, maxTokens,
-              onDelta: onDelta)
+              onDelta: onDelta,
+              shouldStop: shouldStop,
+              cancellation: cancellation)
           .timeout(_timeout);
     } on TimeoutException {
       lastError = '请求超时（${_timeout.inSeconds}s）：模型/中转站太慢或网络不通';
@@ -190,6 +197,8 @@ class AiService {
     String? systemPrompt,
     int maxTokens, {
     void Function(String delta)? onDelta,
+    bool Function()? shouldStop,
+    ApiRequestCancellation? cancellation,
   }) async {
     final model = config.selectedModel ??
         (config.models.isEmpty ? '' : config.models.first);
@@ -217,6 +226,8 @@ class AiService {
           'max_tokens': maxTokens,
           'temperature': 0.3,
         },
+        shouldStop: shouldStop,
+        cancellation: cancellation,
       )) {
         if (event.delta != null && event.delta!.isNotEmpty) {
           buffer.write(event.delta);
@@ -232,6 +243,9 @@ class AiService {
       }
     } catch (e) {
       streamError = e;
+    }
+    if (shouldStop?.call() == true || cancellation?.isCancelled == true) {
+      return buffer.isEmpty ? null : buffer.toString();
     }
     if (buffer.isNotEmpty) return buffer.toString();
     // 流式不可用（部分中转站不接受 stream / stream_options）→ 回退非流式，
@@ -281,13 +295,46 @@ class AiService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_localModelKey, filePath);
-      // 立刻换掉共享引擎，让下一次调用就用新模型。
-      final previous = _sharedEngine;
-      _sharedEngine = null;
-      await previous?.dispose();
+      _preferredLocalPath = filePath;
+      // 不能在这里直接 dispose 共享引擎：聊天页、工具或网关可能仍持有
+      // 同一个 native 句柄，切换设置会与 Vulkan/生成并发，导致闪退。
+      // 下一次 AI 调用会在同一引擎的加载队列中安全切换，旧调用自然完成。
     } catch (e) {
       debugPrint('[AiService] 保存本地模型选择失败: $e');
     }
+  }
+
+  static Future<LocalLlmEngine?> _preferredSharedEngine() async {
+    final engine = _sharedEngine;
+    if (engine == null || engine.isDisposed) return null;
+    final preferred = await _preferredModelPath();
+    if (preferred == null ||
+        preferred.isEmpty ||
+        engine.loadedModelPath == preferred) {
+      return engine.isLoaded ? engine : null;
+    }
+    if (!File(preferred).existsSync()) return null;
+    // 共享引擎可能正被聊天页、网关或工具调用使用。生成期间不要切换
+    // GGUF；空闲时仍允许设置页选中的模型正常生效，避免偏好设置永久
+    // 被旧的共享模型遮蔽。
+    if (engine.isGenerating) return engine;
+    if (engine.isLoading && !engine.isLoaded) return null;
+    try {
+      await engine.loadModel(preferred);
+      return engine;
+    } catch (e) {
+      debugPrint('[AiService] 切换偏好本地模型失败: $e');
+      return engine.isLoaded ? engine : null;
+    }
+  }
+
+  static Future<String?> _preferredModelPath() async {
+    if (_preferredLocalPath != null) return _preferredLocalPath;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _preferredLocalPath = prefs.getString(_localModelKey);
+    } catch (_) {}
+    return _preferredLocalPath;
   }
 
   static Future<LocalLlmEngine?> _tryAutoLoadLocalEngine() async {

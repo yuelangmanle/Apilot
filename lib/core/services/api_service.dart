@@ -37,6 +37,36 @@ class ModelListFetchResult {
   bool get isSuccess => errorMessage == null;
 }
 
+/// 可被界面或 Agent 取消的请求信号。
+///
+/// `sendRequestStream` 收到信号后会停止消费响应并释放 HTTP 连接，避免
+/// 停止按钮只停 UI、后台请求仍继续占用网络和服务端生成额度。
+class ApiRequestCancellation {
+  bool _cancelled = false;
+  Completer<void>? _completer;
+  void Function()? _cancelHandler;
+
+  bool get isCancelled => _cancelled;
+
+  Future<void> get whenCancelled {
+    if (_cancelled) return Future<void>.value();
+    return (_completer ??= Completer<void>()).future;
+  }
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    _cancelHandler?.call();
+    final completer = _completer;
+    if (completer != null && !completer.isCompleted) completer.complete();
+  }
+
+  void setCancelHandler(void Function() handler) {
+    _cancelHandler = handler;
+    if (_cancelled) handler();
+  }
+}
+
 class ApiService {
   /// 模块级共享连接池：体检 N 个 Key 复用 TLS 连接而非 N 次握手。
   static final http.Client _sharedClient = http.Client();
@@ -273,30 +303,33 @@ class ApiService {
         body,
         apiConfig.protocolId,
       );
-      final headers = ApiProtocolAdapter.authHeaders(
-        protocolId: apiConfig.protocolId,
-        apiKey: apiConfig.apiKey,
-      );
-
       // Key 池：健康优先的候选序列，首发即避开已知失效的 Key。
+      // 不能固定使用主 Key：如果它上一次已经失败，后面的故障转移索引
+      // 会和实际发出的 Key 错位，导致把备用 Key 错记为失败。
       final candidates = KeyPool.candidates(apiConfig);
+      final initialKey =
+          candidates.isEmpty ? apiConfig.apiKey : candidates.first;
       var candidateIndex = 0;
+      var currentKey = initialKey;
 
       http.Response response = await http
           .post(
             uri,
-            headers: headers,
+            headers: ApiProtocolAdapter.authHeaders(
+              protocolId: apiConfig.protocolId,
+              apiKey: initialKey,
+            ),
             body: jsonEncode(protocolBody),
           )
           .timeout(const Duration(seconds: 60));
 
       // 401/403 自动切换下一把候选 Key 重试。
       while (response.statusCode == 401 || response.statusCode == 403) {
-        final failedKey = candidates[candidateIndex];
-        KeyPool.markFailed(apiConfig.id, failedKey);
+        KeyPool.markFailed(apiConfig.id, currentKey);
         candidateIndex++;
         if (candidateIndex >= candidates.length) break;
         final nextKey = candidates[candidateIndex];
+        currentKey = nextKey;
         response = await http
             .post(
               uri,
@@ -310,6 +343,9 @@ class ApiService {
         if (response.statusCode != 401 && response.statusCode != 403) {
           KeyPool.markHealthy(apiConfig.id, nextKey);
         }
+      }
+      if (response.statusCode != 401 && response.statusCode != 403) {
+        KeyPool.markHealthy(apiConfig.id, currentKey);
       }
 
       stopwatch.stop();
@@ -343,6 +379,8 @@ class ApiService {
     required String model,
     required Map<String, dynamic> requestBody,
     bool includeUsage = true,
+    bool Function()? shouldStop,
+    ApiRequestCancellation? cancellation,
   }) async* {
     final protocolId = apiConfig.protocolId;
     final endpoint = ApiProtocolAdapter.defaultChatEndpoint(
@@ -362,27 +400,40 @@ class ApiService {
     }
     final protocolBody = ApiProtocolAdapter.requestBodyFor(body, protocolId);
 
+    final candidates = KeyPool.candidates(apiConfig);
+    final initialKey = candidates.isEmpty ? apiConfig.apiKey : candidates.first;
+    var candidateIndex = 0;
+    var currentKey = initialKey;
     final request = http.Request('POST', uri)
       ..headers.addAll(ApiProtocolAdapter.authHeaders(
         protocolId: protocolId,
-        apiKey: apiConfig.apiKey,
+        apiKey: initialKey,
       ))
       ..body = jsonEncode(protocolBody);
 
     final stopwatch = Stopwatch()..start();
     final client = http.Client();
+    cancellation?.setCancelHandler(client.close);
     try {
-      var response =
-          await client.send(request).timeout(const Duration(seconds: 30));
+      if (cancellation?.isCancelled == true) return;
+      final sendFuture =
+          client.send(request).timeout(const Duration(seconds: 30));
+      final sendResult = cancellation == null
+          ? await sendFuture
+          : await Future.any<Object?>([
+              sendFuture,
+              cancellation.whenCancelled.then<Object?>((_) => null),
+            ]);
+      if (sendResult == null) return;
+      var response = sendResult as http.StreamedResponse;
       // 流式故障转移：候选 Key 依次重试（非 200 时）。
-      final candidates = KeyPool.candidates(apiConfig);
-      var candidateIndex = 0;
       while (response.statusCode == 401 || response.statusCode == 403) {
-        final failedKey = candidates[candidateIndex];
-        KeyPool.markFailed(apiConfig.id, failedKey);
+        await response.stream.drain<void>();
+        KeyPool.markFailed(apiConfig.id, currentKey);
         candidateIndex++;
         if (candidateIndex >= candidates.length) break;
         final nextKey = candidates[candidateIndex];
+        currentKey = nextKey;
         final retry = http.Request('POST', uri)
           ..headers.addAll(ApiProtocolAdapter.authHeaders(
             protocolId: protocolId,
@@ -394,6 +445,9 @@ class ApiService {
         if (response.statusCode != 401 && response.statusCode != 403) {
           KeyPool.markHealthy(apiConfig.id, nextKey);
         }
+      }
+      if (response.statusCode != 401 && response.statusCode != 403) {
+        KeyPool.markHealthy(apiConfig.id, currentKey);
       }
       if (response.statusCode != 200) {
         final errorBody = await response.stream.bytesToString();
@@ -445,6 +499,7 @@ class ApiService {
       // SSE 规范：一个事件可由多行 data: 组成，空行表示事件结束。
       var dataBuffer = StringBuffer();
       var receivedDone = false;
+      var interrupted = false;
 
       StreamChatEvent? parseDataFrame(String data) {
         if (data.isEmpty) return null;
@@ -489,7 +544,26 @@ class ApiService {
         }
       }
 
-      await for (final line in lines) {
+      final iterator = StreamIterator<String>(lines);
+      while (true) {
+        if (shouldStop?.call() == true || cancellation?.isCancelled == true) {
+          interrupted = true;
+          await iterator.cancel();
+          break;
+        }
+        final moveNext = iterator.moveNext();
+        final hasLine = cancellation == null
+            ? await moveNext
+            : await Future.any<bool>([
+                moveNext,
+                cancellation.whenCancelled.then<bool>((_) => false),
+              ]);
+        if (!hasLine || cancellation?.isCancelled == true) {
+          interrupted = cancellation?.isCancelled == true;
+          await iterator.cancel();
+          break;
+        }
+        final line = iterator.current;
         final trimmed = line.trim();
         if (trimmed.isEmpty) {
           if (dataBuffer.isEmpty) continue;
@@ -508,6 +582,8 @@ class ApiService {
         if (event != null) yield event;
         if (receivedDone) break;
       }
+
+      if (interrupted || shouldStop?.call() == true) return;
 
       // 部分代理会在最后一个 data: 帧后直接关闭连接，没有 SSE 空行。
       if (!receivedDone && dataBuffer.isNotEmpty) {
@@ -614,7 +690,10 @@ class KeyPool {
 
   /// 返回按健康优先排序的候选 Key（含主 Key），供请求发起前选择。
   static List<String> candidates(ApiConfig config) {
-    final all = [config.apiKey, ...extraKeys(config)];
+    final all = [config.apiKey, ...extraKeys(config)]
+        .where((key) => key.trim().isNotEmpty)
+        .toSet()
+        .toList();
     final failed = _failedKeys[config.id] ?? const {};
     final healthy = all.where((k) => !failed.contains(k)).toList();
     final dead = all.where((k) => failed.contains(k)).toList();

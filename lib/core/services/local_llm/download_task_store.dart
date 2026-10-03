@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -37,8 +38,7 @@ class DownloadTask {
   bool get isCompleted => status == 'completed';
 
   String get receivedLabel => _formatBytes(receivedBytes);
-  String get totalLabel =>
-      totalBytes > 0 ? _formatBytes(totalBytes) : '未知大小';
+  String get totalLabel => totalBytes > 0 ? _formatBytes(totalBytes) : '未知大小';
 
   static String _formatBytes(int bytes) {
     if (bytes >= 1024 * 1024 * 1024) {
@@ -96,6 +96,7 @@ class DownloadTask {
 /// 下载任务的持久化存储（原子写）。
 class DownloadTaskStore {
   static const _maxTasks = 50;
+  static Future<void> _writeQueue = Future<void>.value();
 
   static Future<File> _file() async {
     final support = await getApplicationSupportDirectory();
@@ -123,34 +124,58 @@ class DownloadTaskStore {
   }
 
   static Future<void> upsert(DownloadTask task) async {
-    try {
-      final tasks = await list();
-      tasks.removeWhere((t) => t.id == task.id);
-      tasks.insert(0, task);
-      if (tasks.length > _maxTasks) tasks.removeRange(_maxTasks, tasks.length);
-      final file = await _file();
-      final tmp = File('${file.path}.tmp');
-      await tmp.writeAsString(
-          jsonEncode(tasks.map((t) => t.toJson()).toList()),
-          flush: true);
-      await tmp.rename(file.path);
-    } catch (e) {
-      debugPrint('[DownloadTasks] 写入失败: $e');
-    }
+    await _withWriteLock(() async {
+      try {
+        final tasks = await list();
+        tasks.removeWhere((t) => t.id == task.id);
+        tasks.insert(0, task);
+        if (tasks.length > _maxTasks) {
+          tasks.removeRange(_maxTasks, tasks.length);
+        }
+        await _write(tasks);
+      } catch (e) {
+        debugPrint('[DownloadTasks] 写入失败: $e');
+      }
+    });
   }
 
   static Future<void> remove(String id) async {
+    await _withWriteLock(() async {
+      try {
+        final tasks = await list();
+        tasks.removeWhere((t) => t.id == id);
+        await _write(tasks);
+      } catch (e) {
+        debugPrint('[DownloadTasks] 删除失败: $e');
+      }
+    });
+  }
+
+  static Future<void> _write(List<DownloadTask> tasks) async {
+    final file = await _file();
+    final tmp = File('${file.path}.tmp');
+    await tmp.writeAsString(
+      jsonEncode(tasks.map((t) => t.toJson()).toList()),
+      flush: true,
+    );
+    await tmp.rename(file.path);
+  }
+
+  /// upsert/remove 都是“读全量→修改→覆盖”的操作，必须串行化。
+  /// 否则多个下载同时落盘时，后完成的写入会覆盖前一个任务的最新状态。
+  static Future<void> _withWriteLock(Future<void> Function() operation) async {
+    final previous = _writeQueue;
+    final release = Completer<void>();
+    _writeQueue = release.future;
     try {
-      final tasks = await list();
-      tasks.removeWhere((t) => t.id == id);
-      final file = await _file();
-      final tmp = File('${file.path}.tmp');
-      await tmp.writeAsString(
-          jsonEncode(tasks.map((t) => t.toJson()).toList()),
-          flush: true);
-      await tmp.rename(file.path);
-    } catch (e) {
-      debugPrint('[DownloadTasks] 删除失败: $e');
+      await previous;
+    } catch (_) {
+      // 前一次写入失败不能阻断后续任务。
+    }
+    try {
+      await operation();
+    } finally {
+      release.complete();
     }
   }
 }
