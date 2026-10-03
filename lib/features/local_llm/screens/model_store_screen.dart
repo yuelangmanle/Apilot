@@ -611,6 +611,46 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 for (final model in LocalModelCatalog.builtin)
                   _buildModelCard(model),
                 const SizedBox(height: 16),
+                if (_orphanProjectors.isNotEmpty) ...[
+                  Text('未配对的视觉投影',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          color: secondary)),
+                  const SizedBox(height: 6),
+                  Text('这些投影文件还没有归属的模型（或主模型已删除）。'
+                      '投影是模型专用的，配错无法看图；确认不需要可以删掉，'
+                      '每个约几百 MB。',
+                      style: TextStyle(fontSize: 11, color: secondary)),
+                  const SizedBox(height: 8),
+                  for (final file in _orphanProjectors)
+                    Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.visibility_outlined,
+                            color: AppColors.warning),
+                        title: Text(file.uri.pathSegments.last,
+                            style: const TextStyle(fontSize: 13)),
+                        subtitle: Text(
+                          '${(file.lengthSync() / (1024 * 1024)).toStringAsFixed(0)} MB'
+                          ' · 未配对',
+                          style: TextStyle(fontSize: 11, color: secondary),
+                        ),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline,
+                              color: AppColors.error),
+                          tooltip: '删除投影文件',
+                          onPressed: () async {
+                            await ModelDownloadService.deleteModelFile(
+                                file.path);
+                            await _refreshDownloaded();
+                          },
+                        ),
+                      ),
+                    ),
+                  const Divider(height: 24),
+                ],
                 if (_savedModels.isNotEmpty) ...[
                   Row(
                     children: [
@@ -978,6 +1018,21 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     messenger.showSnackBar(SnackBar(
         content: Text('已配对：${model.name} ↔ ${picked.uri.pathSegments.last}'),
         backgroundColor: AppColors.success));
+  }
+
+  /// 未被任何主模型引用的投影（孤儿）：可删除，避免无声占用几百 MB。
+  List<File> get _orphanProjectors {
+    final referenced = <String>{};
+    for (final pair in _projectorPairs.entries) {
+      referenced.add(pair.value);
+    }
+    for (final model in _downloaded) {
+      final matched = _projectorFor(model);
+      if (matched != null) referenced.add(matched);
+    }
+    return _projectors
+        .where((f) => !referenced.contains(f.uri.pathSegments.last))
+        .toList();
   }
 
   /// 找该主模型配套的投影文件名（配对记录优先，其次单投影回退）。

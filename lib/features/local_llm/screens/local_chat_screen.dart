@@ -579,6 +579,23 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         '$first';
   }
 
+  /// 应用调参后重新加载模型（几秒）。
+  Future<void> _reloadForTuning() async {
+    try {
+      await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('已应用并重新加载模型'),
+            duration: Duration(seconds: 2)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('重新加载失败：$e'), backgroundColor: AppColors.error));
+      }
+    }
+  }
+
   String _shorten(String text) =>
       text.length > 160 ? '${text.substring(0, 160)}…' : text;
 
@@ -955,6 +972,98 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                             : () => _compressContext(),
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      childrenPadding: const EdgeInsets.only(bottom: 8),
+                      title: const Text('高级性能选项',
+                          style: TextStyle(fontSize: 13)),
+                      subtitle: Text('GPU 层数 / 线程 / FlashAttention / KV 量化',
+                          style: TextStyle(fontSize: 11, color: secondary)),
+                      children: [
+                        DropdownButtonFormField<int>(
+                          initialValue: LocalLlmTuning.gpuLayersOverride ?? -1,
+                          decoration: const InputDecoration(
+                            labelText: 'GPU 卸载层数',
+                            helperText: '-1=自动（推荐）· 0=纯 CPU · 层数越多越快也越吃显存',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: -1, child: Text('自动（推荐）')),
+                            DropdownMenuItem(value: 0, child: Text('0（纯 CPU）')),
+                            DropdownMenuItem(value: 16, child: Text('16 层')),
+                            DropdownMenuItem(value: 24, child: Text('24 层')),
+                            DropdownMenuItem(value: 32, child: Text('32 层')),
+                          ],
+                          onChanged: (v) async {
+                            if (v == null) return;
+                            setSheetState(() {});
+                            await LocalLlmTuning.setAdvanced(gpuLayers: v);
+                            await _reloadForTuning();
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<int>(
+                          initialValue: LocalLlmTuning.threadsOverride ?? 0,
+                          decoration: const InputDecoration(
+                            labelText: '生成线程数',
+                            helperText: '0=自动；手机通常 4 个线程最优（生成受内存带宽限制）',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 0, child: Text('自动（推荐）')),
+                            DropdownMenuItem(value: 2, child: Text('2')),
+                            DropdownMenuItem(value: 4, child: Text('4')),
+                            DropdownMenuItem(value: 6, child: Text('6')),
+                            DropdownMenuItem(value: 8, child: Text('8')),
+                          ],
+                          onChanged: (v) async {
+                            if (v == null) return;
+                            setSheetState(() {});
+                            await LocalLlmTuning.setAdvanced(threads: v);
+                            await _reloadForTuning();
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: const Text('FlashAttention',
+                              style: TextStyle(fontSize: 13)),
+                          subtitle: const Text('长上下文更快更省内存；个别机型可能不稳',
+                              style: TextStyle(fontSize: 11)),
+                          value: LocalLlmTuning.flashAttention,
+                          onChanged: (v) async {
+                            setSheetState(() {});
+                            await LocalLlmTuning.setAdvanced(flashAttention: v);
+                            await _reloadForTuning();
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: const Text('KV cache 量化（q8_0）',
+                              style: TextStyle(fontSize: 13)),
+                          subtitle: const Text('省一半 KV 内存；部分机型反而更慢，默认关',
+                              style: TextStyle(fontSize: 11)),
+                          value: LocalLlmTuning.kvQuantized,
+                          onChanged: (v) async {
+                            setSheetState(() {});
+                            await LocalLlmTuning.setAdvanced(kvQuantized: v);
+                            await _reloadForTuning();
+                          },
+                        ),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.restart_alt, size: 18),
+                            label: const Text('应用并重新加载模型'),
+                            onPressed: _reloadForTuning,
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 12),
                     const Text('系统提示词', style: TextStyle(fontSize: 13)),
                     const SizedBox(height: 6),
@@ -1018,16 +1127,27 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     );
   }
 
+  /// 新对话：**原地**换一个会话，复用已加载的引擎。
+  /// 之前用 pushReplacement 重建页面 → 引擎重新加载（大模型要几十秒）。
   void _newConversation() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (context) => LocalChatScreen(
-          modelPath: widget.modelPath,
-          modelName: widget.modelName,
-        ),
-      ),
-    );
+    setState(() {
+      _conversation = ChatConversation(
+        id: const Uuid().v4(),
+        title: widget.modelName,
+        modelPath: widget.modelPath,
+        modelName: widget.modelName,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        messages: [],
+      );
+      _memorySectionCache = null;
+      _streamText = '';
+      _streamThinking = '';
+      _pendingAttachments.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('已开启新对话（模型保持加载，无需等待）'),
+        duration: Duration(seconds: 2)));
   }
 
   void _openConversationList() {

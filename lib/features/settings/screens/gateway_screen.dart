@@ -33,6 +33,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   String _gatewayToken = '';
   String _lanIp = '';
   bool _loading = true;
+  bool _overlayOn = false;
   /// 网关目标来源：cloud = 转发云端配置；local = 本机模型离线推理。
   String _targetKind = 'cloud';
   List<DownloadedModel> _localModels = [];
@@ -304,6 +305,44 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           ),
                           onChanged: (value) =>
                               setState(() => _gatewayToken = value),
+                        ),
+                      ],
+                      if (Platform.isAndroid) ...[
+                        const SizedBox(height: 4),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('显示悬浮窗状态',
+                              style: TextStyle(fontSize: 14)),
+                          subtitle: const Text(
+                              '在其他应用上层显示"网关运行中"小胶囊（需授权），'
+                              '安卓切后台时也能一眼看到状态',
+                              style: TextStyle(fontSize: 12)),
+                          value: _overlayOn,
+                          onChanged: running
+                              ? (value) async {
+                                  final messenger =
+                                      ScaffoldMessenger.of(context);
+                                  if (value) {
+                                    final can = await LocalGatewayService
+                                        .canShowOverlay();
+                                    if (!can) {
+                                      await LocalGatewayService
+                                          .requestOverlayPermission();
+                                      if (mounted) {
+                                        messenger.showSnackBar(const SnackBar(
+                                                content: Text(
+                                                    '已打开系统设置：允许"显示在其他应用上层"后，回来再打开这个开关')));
+                                      }
+                                      return;
+                                    }
+                                  }
+                                  final ok = await LocalGatewayService
+                                      .setOverlayVisible(value);
+                                  if (mounted) {
+                                    setState(() => _overlayOn = value && ok);
+                                  }
+                                }
+                              : null,
                         ),
                       ],
                       const SizedBox(height: 12),

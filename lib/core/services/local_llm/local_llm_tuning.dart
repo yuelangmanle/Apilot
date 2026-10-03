@@ -80,8 +80,13 @@ class LocalLlmTuning {
     bool? flashAttention,
     bool? kvQuantized,
   }) async {
-    if (gpuLayers != null) _gpuLayersOverride = gpuLayers == 0 ? null : gpuLayers;
-    if (threads != null) _threadsOverride = threads == 0 ? null : threads;
+    // -1 = 自动（null）；0 = 强制纯 CPU；>0 = 指定层数。
+    if (gpuLayers != null) {
+      _gpuLayersOverride = gpuLayers < 0 ? null : gpuLayers;
+    }
+    if (threads != null) {
+      _threadsOverride = threads <= 0 ? null : threads;
+    }
     if (flashAttention != null) _flashAttention = flashAttention;
     if (kvQuantized != null) _kvQuantized = kvQuantized;
     try {

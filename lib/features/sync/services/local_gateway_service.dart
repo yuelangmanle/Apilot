@@ -93,6 +93,7 @@ class LocalGatewayService {
     _server = null;
     await server?.close(force: true);
     await _setForegroundService(running: false, port: _port);
+    await setOverlayVisible(false);
     final engine = _localEngine;
     _localEngine = null;
     _localTarget = null;
@@ -101,6 +102,58 @@ class LocalGatewayService {
 
   static const MethodChannel _foregroundChannel =
       MethodChannel('com.apilot/gateway_foreground');
+  static const MethodChannel _overlayChannel =
+      MethodChannel('com.apilot/gateway_overlay');
+
+  /// 网关是否已在别处成功处理过请求（悬浮窗展示用）。
+  static int handledRequests = 0;
+
+  /// 悬浮窗：是否可用（安卓且已授予"显示在其他应用上层"权限）。
+  static Future<bool> canShowOverlay() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _overlayChannel.invokeMethod<bool>('canShow') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 请求悬浮窗权限（跳到系统设置页）。
+  static Future<void> requestOverlayPermission() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _overlayChannel.invokeMethod<void>('requestPermission');
+    } catch (e) {
+      debugPrint('[Gateway] 申请悬浮窗权限失败: $e');
+    }
+  }
+
+  /// 显示/隐藏悬浮窗。
+  static Future<bool> setOverlayVisible(bool visible) async {
+    if (!Platform.isAndroid) return false;
+    try {
+      if (visible) {
+        final ok = await _overlayChannel.invokeMethod<bool>(
+                'show', {'port': _port, 'requests': handledRequests}) ??
+            false;
+        return ok;
+      }
+      await _overlayChannel.invokeMethod<void>('hide');
+      return true;
+    } catch (e) {
+      debugPrint('[Gateway] 悬浮窗操作失败: $e');
+      return false;
+    }
+  }
+
+  /// 刷新悬浮窗上的请求计数。
+  static Future<void> refreshOverlay() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _overlayChannel.invokeMethod<void>(
+          'update', {'port': _port, 'requests': handledRequests});
+    } catch (_) {}
+  }
 
   /// 开关安卓前台服务（桌面/其他平台是空操作）。
   static Future<void> _setForegroundService({
@@ -139,6 +192,8 @@ class LocalGatewayService {
   }
 
   static Future<void> _handle(HttpRequest request) async {
+    handledRequests++;
+    unawaited(refreshOverlay());
     final localModel = _localTarget;
     final target = _target;
     if (localModel == null && target == null) {

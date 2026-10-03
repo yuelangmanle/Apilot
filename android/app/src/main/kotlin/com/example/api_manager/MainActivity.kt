@@ -202,6 +202,49 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
+        // 网关悬浮窗通道：显示/隐藏状态胶囊 + 申请"显示在其他应用上层"权限。
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            GATEWAY_OVERLAY_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "canShow" -> result.success(GatewayOverlay.canShow(this))
+                    "show" -> {
+                        if (!GatewayOverlay.canShow(this)) {
+                            result.success(false)
+                        } else {
+                            GatewayOverlay.show(
+                                this,
+                                call.argument<Int>("port") ?: 8787,
+                                call.argument<Int>("requests") ?: 0
+                            )
+                            result.success(true)
+                        }
+                    }
+                    "update" -> {
+                        GatewayOverlay.update(
+                            call.argument<Int>("port") ?: 8787,
+                            call.argument<Int>("requests") ?: 0
+                        )
+                        result.success(true)
+                    }
+                    "hide" -> {
+                        GatewayOverlay.hide()
+                        result.success(true)
+                    }
+                    "isVisible" -> result.success(GatewayOverlay.visible)
+                    "requestPermission" -> {
+                        startActivity(GatewayOverlay.overlayPermissionIntent(this))
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            } catch (e: Exception) {
+                result.error("GATEWAY_OVERLAY", e.message, null)
+            }
+        }
+
         qrScannerChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             QR_SCANNER_CHANNEL_NAME
@@ -573,6 +616,7 @@ class MainActivity : FlutterFragmentActivity() {
         private const val API_CONFIG_PICK_CHANNEL_NAME = "com.apilot/third_party_api_config_pick"
         private const val GATEWAY_GRANT_CHANNEL_NAME = "com.apilot/third_party_gateway_grant"
         private const val GATEWAY_FOREGROUND_CHANNEL = "com.apilot/gateway_foreground"
+        private const val GATEWAY_OVERLAY_CHANNEL = "com.apilot/gateway_overlay"
         private const val ACTION_GRANT_GATEWAY = "com.apilot.intent.action.GRANT_GATEWAY"
         private const val EXTRA_GATEWAY_GRANT_JSON = "com.apilot.extra.GATEWAY_GRANT_JSON"
         private const val EXTRA_REQUESTED_SCOPE = "com.apilot.extra.REQUESTED_SCOPE"
