@@ -130,7 +130,7 @@ class LocalLlmEngine {
     debugPrint('[LocalLlm] 开始加载: ${filePath.split('/').last} '
         '(ctx=$contextSize)…');
     await unload();
-    final engine = LlamaEngine(LlamaBackend());
+    final engine = _engine ??= LlamaEngine(LlamaBackend());
     // 应用性能档位（线程 / GPU 卸载 / FlashAttention / KV 量化）。
     final threads = LocalLlmTuning.resolveThreads();
     final gpuLayers = LocalLlmTuning.resolveGpuLayers();
@@ -149,9 +149,6 @@ class LocalLlmEngine {
       await _loadWithBackend(
           engine, filePath, contextSize, threads, 0, GpuBackend.cpu);
     }
-    // 关键：把引擎挂到实例上（我重构后端回退时漏了这一行，
-    // 结果所有推理都报 "Bad state: 模型未加载"）。
-    _engine = engine;
     _loadedModelPath = filePath;
     _visionAvailable = false;
     _projectorError = null;
@@ -431,8 +428,13 @@ class LocalLlmEngine {
   Future<void> unload() async {
     final engine = _engine;
     if (engine != null) {
-      await engine.dispose();
-      _engine = null;
+      final visionLoad = _visionLoadFuture;
+      if (visionLoad != null) {
+        try {
+          await visionLoad;
+        } catch (_) {}
+      }
+      await engine.unloadModel();
       _loadedModelPath = null;
       _loadedKey = null;
       _visionAvailable = false;
@@ -461,6 +463,11 @@ class LocalLlmEngine {
       await _generationQueue;
     } catch (_) {}
     await unload();
+    final engine = _engine;
+    _engine = null;
+    if (engine != null) {
+      await engine.dispose();
+    }
   }
 }
 
