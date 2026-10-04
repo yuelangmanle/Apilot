@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
@@ -9,6 +10,7 @@ import '../../../core/services/ai/agent_runner.dart' as agent;
 import '../../../core/services/ai/memory_store.dart';
 import '../../../core/services/ai/tool_registry.dart';
 import '../../../core/services/api_service.dart';
+import '../../../core/services/ai/chat_attachment_encoder.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../shared/theme/color_scheme.dart';
 import '../widgets/chat_code_block.dart';
@@ -56,6 +58,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   int _requestId = 0;
   bool _toolsEnabled = ToolRegistry.masterEnabled;
   final List<agent.AgentStep> _pendingSteps = [];
+  final List<ChatAttachment> _pendingAttachments = [];
   Timer? _scrollTimer;
   Timer? _streamFlushTimer;
   StringBuffer? _liveTextBuffer;
@@ -114,7 +117,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
 
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty || _isGenerating) return;
+    final attachments = List<ChatAttachment>.from(_pendingAttachments);
+    if ((text.isEmpty && attachments.isEmpty) || _isGenerating) return;
 
     _controller.clear();
     final requestId = ++_requestId;
@@ -125,7 +129,12 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
     _liveTextBuffer = buffer;
     _liveThinkingBuffer = thinking;
     setState(() {
-      _conversation.messages.add(ChatMessageRecord(role: 'user', text: text));
+      _conversation.messages.add(ChatMessageRecord(
+        role: 'user',
+        text: text,
+        attachments: attachments,
+      ));
+      _pendingAttachments.clear();
       _isGenerating = true;
       _stopRequested = false;
       _streamText = '';
@@ -150,6 +159,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           configs: configs,
           // 用本对话自己的配置（不看全局 AI 设置）。
           cloudConfig: widget.apiConfig,
+          attachments: attachments,
           // 同上：完整历史，保证前缀稳定（上下文管理负责压缩）。
           history: history,
           onDelta: (delta) {
@@ -223,7 +233,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
           ? await MemoryStore.buildPromptSection(text)
           : '';
       final body = <String, dynamic>{
-        'messages': _buildMessages(memorySection: memorySection),
+        'messages': await _buildMessages(memorySection: memorySection),
         'temperature': _conversation.settings.temp,
         'max_tokens': _conversation.settings.maxTokens,
       };
@@ -289,7 +299,8 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
       text.length > 160 ? '${text.substring(0, 160)}…' : text;
 
   /// 构造发给云端的 messages（系统提示词 + 长期记忆 + 历史）。
-  List<Map<String, dynamic>> _buildMessages({String memorySection = ''}) {
+  Future<List<Map<String, dynamic>>> _buildMessages(
+      {String memorySection = ''}) async {
     final messages = <Map<String, dynamic>>[];
     final systemText = [
       if (_conversation.settings.systemPrompt.trim().isNotEmpty)
@@ -305,10 +316,69 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
       }
       // 工具协议行不进历史：否则云端模型会照着模仿（"回复 current_time"）。
       final cleaned = ToolRegistry.stripCall(record.text).trim();
-      if (cleaned.isEmpty) continue;
-      messages.add({'role': record.role, 'content': cleaned});
+      if (cleaned.isEmpty && record.attachments.isEmpty) continue;
+      messages.add({
+        'role': record.role,
+        'content': await ChatAttachmentEncoder.encodeUserContent(
+          cleaned,
+          record.attachments,
+        ),
+      });
     }
     return messages;
+  }
+
+  Future<void> _pickAttachment() async {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      withData: false,
+      type: FileType.custom,
+      allowedExtensions: const [
+        'png',
+        'jpg',
+        'jpeg',
+        'webp',
+        'txt',
+        'md',
+        'json',
+        'csv',
+        'log',
+        'yaml',
+        'yml',
+      ],
+    );
+    if (result == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final conversationId = _conversation.id;
+    for (final file in result.files) {
+      final path = file.path;
+      if (path == null) continue;
+      final extension = (file.extension ?? '').toLowerCase();
+      final type = const {'png', 'jpg', 'jpeg', 'webp'}.contains(extension)
+          ? 'image'
+          : 'text';
+      try {
+        _pendingAttachments.add(await _store.importAttachment(
+          conversationId,
+          sourcePath: path,
+          name: file.name,
+          type: type,
+        ));
+      } catch (error) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('导入 ${file.name} 失败: $error'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _removePendingAttachment(int index) async {
+    if (index < 0 || index >= _pendingAttachments.length) return;
+    final attachment = _pendingAttachments[index];
+    setState(() => _pendingAttachments.removeAt(index));
+    await _store.deleteAttachment(attachment.path);
   }
 
   void _showSettingsSheet() {
@@ -458,12 +528,16 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   }
 
   void _newConversation() {
+    final pending = List<ChatAttachment>.from(_pendingAttachments);
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (context) => ApiChatScreen(apiConfig: widget.apiConfig),
       ),
     );
+    for (final attachment in pending) {
+      unawaited(_store.deleteAttachment(attachment.path));
+    }
   }
 
   void _openConversationList() {
@@ -502,6 +576,9 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
 
   @override
   void dispose() {
+    for (final attachment in _pendingAttachments) {
+      unawaited(_store.deleteAttachment(attachment.path));
+    }
     _requestId++; // 作废在途流。
     _requestCancellation?.cancel();
     _requestCancellation = null;
@@ -615,6 +692,32 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                               },
                             ),
                     ),
+                    if (_pendingAttachments.isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        child: Wrap(
+                          spacing: 8,
+                          children: [
+                            for (var index = 0;
+                                index < _pendingAttachments.length;
+                                index++)
+                              Chip(
+                                avatar: Icon(
+                                  _pendingAttachments[index].type == 'image'
+                                      ? Icons.image
+                                      : Icons.description,
+                                  size: 16,
+                                ),
+                                label: Text(_pendingAttachments[index].name,
+                                    style: const TextStyle(fontSize: 11)),
+                                onDeleted: () =>
+                                    _removePendingAttachment(index),
+                              ),
+                          ],
+                        ),
+                      ),
                     const Divider(height: 1),
                     SafeArea(
                       child: Padding(
@@ -622,6 +725,11 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                             horizontal: 8, vertical: 6),
                         child: Row(
                           children: [
+                            IconButton(
+                              icon: const Icon(Icons.attach_file),
+                              tooltip: '添加附件（图片/文本）',
+                              onPressed: _isGenerating ? null : _pickAttachment,
+                            ),
                             Expanded(
                               child: TextField(
                                 controller: _controller,
@@ -720,6 +828,27 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (record.attachments.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Wrap(
+                  spacing: 6,
+                  children: [
+                    for (final attachment in record.attachments)
+                      Chip(
+                        avatar: Icon(
+                          attachment.type == 'image'
+                              ? Icons.image
+                              : Icons.description,
+                          size: 14,
+                        ),
+                        label: Text(attachment.name,
+                            style: const TextStyle(fontSize: 11)),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                  ],
+                ),
+              ),
             if (!isUser && record.toolSteps.isNotEmpty)
               _thinkingPanel(
                   record.toolSteps.join('\n\n'), index + 100000, isDark,

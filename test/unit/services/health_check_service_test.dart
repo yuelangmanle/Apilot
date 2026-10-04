@@ -2,8 +2,61 @@ import 'package:api_manager/core/models/request_history.dart';
 import 'package:api_manager/core/services/health_check_service.dart';
 import 'package:api_manager/core/services/usage_aggregator.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  group('HealthCheckService balance history', () {
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    test('records each available balance and restores history after reload',
+        () async {
+      final service = HealthCheckService();
+      await service.ensureLoaded();
+      final firstAt = DateTime(2026, 10, 2, 9);
+      final secondAt = DateTime(2026, 10, 3, 9);
+      await service.recordResult(
+        'config-a',
+        HealthCheckResult(
+          status: KeyHealthStatus.ok,
+          checkedAt: firstAt,
+          balanceText: 'CNY 12.50',
+        ),
+      );
+      await service.recordResult(
+        'config-a',
+        HealthCheckResult(
+          status: KeyHealthStatus.ok,
+          checkedAt: secondAt,
+          balanceText: 'CNY 10.25',
+        ),
+      );
+
+      final restored = HealthCheckService();
+      await restored.ensureLoaded();
+      final history = restored.balanceHistoryFor('config-a');
+      expect(history, hasLength(2));
+      expect(history.last.balanceText, 'CNY 10.25');
+      expect(history.last.checkedAt, secondAt);
+      expect(restored.lastCheckedAt('config-a'), secondAt);
+    });
+
+    test('does not append a history row when a provider has no balance API',
+        () async {
+      final service = HealthCheckService();
+      await service.ensureLoaded();
+      await service.recordResult(
+        'config-no-balance',
+        HealthCheckResult(
+          status: KeyHealthStatus.ok,
+          checkedAt: DateTime(2026, 10, 4),
+        ),
+      );
+      expect(service.balanceHistoryFor('config-no-balance'), isEmpty);
+    });
+  });
+
   group('BalanceParsers', () {
     test('deepseek extracts currency and balance', () {
       final text = BalanceParsers.deepseek({
@@ -71,7 +124,8 @@ void main() {
       final usages = UsageAggregator.byConfig([
         history('a', statusCode: 200, total: 100, prompt: 70, completion: 30),
         history('a', statusCode: 401, total: 5, prompt: 5, completion: 0),
-        history('b', statusCode: 200, total: 1000, prompt: 800, completion: 200),
+        history('b',
+            statusCode: 200, total: 1000, prompt: 800, completion: 200),
       ], names: {
         'a': 'DeepSeek',
         'b': 'OpenRouter'

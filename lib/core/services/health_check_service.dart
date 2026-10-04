@@ -48,13 +48,34 @@ class HealthCheckResult {
         (s) => s.name == json['status'],
         orElse: () => KeyHealthStatus.unknown,
       ),
-      checkedAt:
-          DateTime.tryParse(json['checkedAt'] as String? ?? '') ??
-              DateTime.fromMillisecondsSinceEpoch(0),
+      checkedAt: DateTime.tryParse(json['checkedAt'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
       modelCount: (json['modelCount'] as num?)?.toInt() ?? 0,
       detail: json['detail'] as String?,
       balanceText: json['balanceText'] as String?,
     );
+  }
+}
+
+class BalanceSnapshot {
+  final DateTime checkedAt;
+  final String balanceText;
+
+  const BalanceSnapshot({required this.checkedAt, required this.balanceText});
+
+  Map<String, String> toJson() => {
+        'checkedAt': checkedAt.toIso8601String(),
+        'balanceText': balanceText,
+      };
+
+  static BalanceSnapshot? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final checkedAt = DateTime.tryParse(value['checkedAt']?.toString() ?? '');
+    final balanceText = value['balanceText']?.toString();
+    if (checkedAt == null || balanceText == null || balanceText.isEmpty) {
+      return null;
+    }
+    return BalanceSnapshot(checkedAt: checkedAt, balanceText: balanceText);
   }
 }
 
@@ -102,9 +123,13 @@ class BalanceParsers {
 /// 不随配置同步/导出，避免陈旧状态污染其他设备）。
 class HealthCheckService {
   static const _prefsKey = 'apilot_key_health_v1';
+  static const _balanceHistoryKey = 'apilot_key_balance_history_v1';
+  static const int _maxBalanceSnapshotsPerConfig = 100;
 
   final Map<String, HealthCheckResult> _results = {};
+  final Map<String, List<BalanceSnapshot>> _balanceHistory = {};
   bool _loaded = false;
+  Future<void>? _loadFuture;
   bool _cancelled = false;
   bool _running = false;
 
@@ -123,6 +148,9 @@ class HealthCheckService {
 
   HealthCheckResult? resultFor(String configId) => _results[configId];
 
+  List<BalanceSnapshot> balanceHistoryFor(String configId) =>
+      List.unmodifiable(_balanceHistory[configId] ?? const []);
+
   /// 等待缓存加载完成（界面在 initState 里 await 它，再 setState 刷新）。
   /// 之前缓存是"构造即异步加载"且不通知界面，导致重启后详情页一直显示
   /// "未体检/无余额"，看起来像没有持久化。
@@ -131,29 +159,12 @@ class HealthCheckService {
   /// 记录一次单体检结果并立即落盘。
   /// （详情页"立即体检"之前只更新界面、不写缓存，返回后又会显示旧值——
   /// 余额这类信息尤其明显。）
-  Future<void> recordResult(
-      String configId, HealthCheckResult result) async {
+  Future<void> recordResult(String configId, HealthCheckResult result) async {
+    await _ensureLoaded();
     _results[configId] = result;
-    _lastCheckedAt[configId] = DateTime.now();
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        _prefsKey,
-        jsonEncode({
-          for (final entry in _results.entries)
-            entry.key: entry.value.toPrefsJson(),
-        }),
-      );
-      await prefs.setString(
-        _checkedAtKey,
-        jsonEncode({
-          for (final entry in _lastCheckedAt.entries)
-            entry.key: entry.value.toIso8601String(),
-        }),
-      );
-    } catch (e) {
-      debugPrint('[Health] 保存体检结果失败: $e');
-    }
+    _lastCheckedAt[configId] = result.checkedAt;
+    _appendBalanceSnapshot(configId, result);
+    await _writeToPrefs();
   }
 
   /// 上次体检时间（界面显示"更新于 …"）。
@@ -162,8 +173,12 @@ class HealthCheckService {
   final Map<String, DateTime> _lastCheckedAt = {};
   static const _checkedAtKey = 'apilot_health_checked_at';
 
-  Future<void> _ensureLoaded() async {
-    if (_loaded) return;
+  Future<void> _ensureLoaded() {
+    if (_loaded) return Future<void>.value();
+    return _loadFuture ??= _loadFromPrefs();
+  }
+
+  Future<void> _loadFromPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_prefsKey);
@@ -183,6 +198,18 @@ class HealthCheckService {
           if (parsed != null) _lastCheckedAt[key] = parsed;
         });
       }
+      final historyRaw = prefs.getString(_balanceHistoryKey);
+      if (historyRaw != null && historyRaw.isNotEmpty) {
+        final decodedHistory = jsonDecode(historyRaw) as Map<String, dynamic>;
+        decodedHistory.forEach((key, value) {
+          if (value is List) {
+            _balanceHistory[key] = value
+                .map(BalanceSnapshot.fromJson)
+                .whereType<BalanceSnapshot>()
+                .toList();
+          }
+        });
+      }
     } catch (e) {
       debugPrint('[Health] 读取体检缓存失败: $e');
     }
@@ -190,14 +217,49 @@ class HealthCheckService {
   }
 
   Future<void> _persist(Map<String, ApiConfig> validIds) async {
+    _results.removeWhere((id, _) => !validIds.containsKey(id));
+    _lastCheckedAt.removeWhere((id, _) => !validIds.containsKey(id));
+    _balanceHistory.removeWhere((id, _) => !validIds.containsKey(id));
+    await _writeToPrefs();
+  }
+
+  void _appendBalanceSnapshot(String configId, HealthCheckResult result) {
+    final balance = result.balanceText?.trim();
+    if (balance == null || balance.isEmpty) return;
+    final snapshots = _balanceHistory.putIfAbsent(configId, () => []);
+    snapshots.add(BalanceSnapshot(
+      checkedAt: result.checkedAt,
+      balanceText: balance,
+    ));
+    if (snapshots.length > _maxBalanceSnapshotsPerConfig) {
+      snapshots.removeRange(
+          0, snapshots.length - _maxBalanceSnapshotsPerConfig);
+    }
+  }
+
+  Future<void> _writeToPrefs() async {
     try {
-      _results.removeWhere((id, _) => !validIds.containsKey(id));
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
         _prefsKey,
         jsonEncode({
           for (final entry in _results.entries)
             entry.key: entry.value.toPrefsJson(),
+        }),
+      );
+      await prefs.setString(
+        _checkedAtKey,
+        jsonEncode({
+          for (final entry in _lastCheckedAt.entries)
+            entry.key: entry.value.toIso8601String(),
+        }),
+      );
+      await prefs.setString(
+        _balanceHistoryKey,
+        jsonEncode({
+          for (final entry in _balanceHistory.entries)
+            entry.key:
+                entry.value.map((snapshot) => snapshot.toJson()).toList(),
         }),
       );
     } catch (e) {
@@ -219,12 +281,14 @@ class HealthCheckService {
     try {
       for (final config in configs) {
         if (_cancelled) break;
-        _results[config.id] = await checkOne(config);
-        _lastCheckedAt[config.id] = DateTime.now();
+        final result = await checkOne(config);
+        _results[config.id] = result;
+        _lastCheckedAt[config.id] = result.checkedAt;
+        _appendBalanceSnapshot(config.id, result);
         done++;
+        await _persist({for (final c in configs) c.id: c});
         onProgress?.call(done, configs.length);
       }
-      await _persist({for (final c in configs) c.id: c});
     } finally {
       _running = false;
     }
@@ -233,8 +297,8 @@ class HealthCheckService {
 
   Future<HealthCheckResult> checkOne(ApiConfig config) async {
     final models = await ApiService().fetchAvailableModels(config);
+    final balanceText = await _fetchBalance(config);
     if (models.isSuccess) {
-      final balanceText = await _fetchBalance(config);
       return HealthCheckResult(
         status: KeyHealthStatus.ok,
         checkedAt: DateTime.now(),
@@ -248,6 +312,7 @@ class HealthCheckService {
       status: _statusFromError(error),
       checkedAt: DateTime.now(),
       detail: error,
+      balanceText: balanceText,
     );
   }
 
@@ -277,8 +342,7 @@ class HealthCheckService {
         Uri.parse(endpoint),
         headers: {
           'Authorization': 'Bearer ${config.apiKey}',
-          if (host == 'api.anthropic.com')
-            ..._anthropicHeaders(config.apiKey),
+          if (host == 'api.anthropic.com') ..._anthropicHeaders(config.apiKey),
         },
       ).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return null;
@@ -327,7 +391,8 @@ String healthBadgeText(HealthCheckResult? result) {
   switch (result.status) {
     case KeyHealthStatus.ok:
       final age = DateTime.now().difference(result.checkedAt);
-      final ago = age.inHours >= 1 ? '${age.inHours}小时前' : '${age.inMinutes}分钟前';
+      final ago =
+          age.inHours >= 1 ? '${age.inHours}小时前' : '${age.inMinutes}分钟前';
       return result.balanceText == null
           ? '正常 · $ago'
           : '${result.balanceText} · $ago';

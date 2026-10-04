@@ -106,8 +106,7 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
               final navigator = Navigator.of(context);
               try {
                 await context.read<ApiProvider>().updateApiConfig(
-                      _apiConfig.copyWith(
-                          isFavorite: !_apiConfig.isFavorite),
+                      _apiConfig.copyWith(isFavorite: !_apiConfig.isFavorite),
                     );
                 if (mounted) navigator.pop(true);
               } catch (e) {
@@ -213,6 +212,7 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                 copyLabel: 'API Key'),
             const SizedBox(height: 12),
             _buildHealthRow(),
+            _buildBalanceHistory(),
             if (_apiConfig.group != null) ...[
               const SizedBox(height: 12),
               _buildInfoRow(context, '分组', _apiConfig.group!, canCopy: false),
@@ -263,7 +263,8 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
       children: [
         SizedBox(
             width: 80,
-            child: Text('体检', style: TextStyle(color: secondary, fontSize: 14))),
+            child:
+                Text('体检', style: TextStyle(color: secondary, fontSize: 14))),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -289,6 +290,34 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2))
               : const Text('立即体检'),
         ),
+      ],
+    );
+  }
+
+  Widget _buildBalanceHistory() {
+    final snapshots = _healthService.balanceHistoryFor(_apiConfig.id);
+    if (snapshots.isEmpty) return const SizedBox.shrink();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final secondary =
+        isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: EdgeInsets.zero,
+      dense: true,
+      title: Text('余额历史（${snapshots.length} 次）',
+          style: TextStyle(fontSize: 13, color: secondary)),
+      children: [
+        for (final snapshot in snapshots.reversed.take(10))
+          ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.only(left: 12, right: 8),
+            title: Text(snapshot.balanceText,
+                style: const TextStyle(fontSize: 13)),
+            trailing: Text(
+              _formatCheckedAt(snapshot.checkedAt),
+              style: TextStyle(fontSize: 11, color: secondary),
+            ),
+          ),
       ],
     );
   }
@@ -683,13 +712,11 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('导出配置文件'),
-        content: const Text(
-            '含密钥版本可用于完整迁移，请妥善保管；'
+        content: const Text('含密钥版本可用于完整迁移，请妥善保管；'
             '脱敏版本不含 API Key，适合分享给他人参考。'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消')),
+              onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
               onPressed: () => Navigator.pop(context, 'sanitized'),
               child: const Text('脱敏导出')),
@@ -709,9 +736,8 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(includeKey
-            ? '已复制完整配置（含密钥，60秒后自动清空剪贴板）'
-            : '已复制脱敏配置（不含 API Key）'),
+        content: Text(
+            includeKey ? '已复制完整配置（含密钥，60秒后自动清空剪贴板）' : '已复制脱敏配置（不含 API Key）'),
         backgroundColor: AppColors.success,
         duration: const Duration(seconds: 2),
       ),
@@ -720,8 +746,8 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
 
   /// 把配置导出成其他工具可直接使用的格式，完成"快速切换"的最后一公里。
   void _showExportSheet() {
-    final defaultModel =
-        _apiConfig.selectedModel ?? (_apiConfig.models.isEmpty ? '' : _apiConfig.models.first);
+    final defaultModel = _apiConfig.selectedModel ??
+        (_apiConfig.models.isEmpty ? '' : _apiConfig.models.first);
     showModalBottomSheet(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -734,11 +760,13 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
               subtitle: const Text('可直接在终端执行'),
               onTap: () {
                 Navigator.pop(sheetContext);
-                _copyExported(ApiConfigExportFormatter.toCurl(
-                  baseUrl: _apiConfig.baseUrl,
-                  apiKey: _apiConfig.apiKey,
-                  model: defaultModel,
-                ), 'cURL 命令');
+                _copyExported(
+                    ApiConfigExportFormatter.toCurl(
+                      baseUrl: _apiConfig.baseUrl,
+                      apiKey: _apiConfig.apiKey,
+                      model: defaultModel,
+                    ),
+                    'cURL 命令');
               },
             ),
             ListTile(
@@ -747,12 +775,14 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
               subtitle: const Text('BASE_URL / API_KEY / MODEL'),
               onTap: () {
                 Navigator.pop(sheetContext);
-                _copyExported(ApiConfigExportFormatter.toEnv(
-                  name: _apiConfig.name,
-                  baseUrl: _apiConfig.baseUrl,
-                  apiKey: _apiConfig.apiKey,
-                  model: defaultModel.isEmpty ? null : defaultModel,
-                ), '环境变量');
+                _copyExported(
+                    ApiConfigExportFormatter.toEnv(
+                      name: _apiConfig.name,
+                      baseUrl: _apiConfig.baseUrl,
+                      apiKey: _apiConfig.apiKey,
+                      model: defaultModel.isEmpty ? null : defaultModel,
+                    ),
+                    '环境变量');
               },
             ),
             ListTile(
@@ -761,11 +791,14 @@ class _ApiDetailScreenState extends State<ApiDetailScreen> {
               subtitle: const Text('Python 客户端示例'),
               onTap: () {
                 Navigator.pop(sheetContext);
-                _copyExported(ApiConfigExportFormatter.toOpenAiClientSnippet(
-                  baseUrl: _apiConfig.baseUrl,
-                  apiKey: _apiConfig.apiKey,
-                  model: defaultModel.isEmpty ? 'gpt-3.5-turbo' : defaultModel,
-                ), 'SDK 片段');
+                _copyExported(
+                    ApiConfigExportFormatter.toOpenAiClientSnippet(
+                      baseUrl: _apiConfig.baseUrl,
+                      apiKey: _apiConfig.apiKey,
+                      model:
+                          defaultModel.isEmpty ? 'gpt-3.5-turbo' : defaultModel,
+                    ),
+                    'SDK 片段');
               },
             ),
           ],

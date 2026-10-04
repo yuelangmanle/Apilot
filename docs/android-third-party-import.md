@@ -5,7 +5,7 @@ Apilot 面向任意第三方 Android App 开放 API 方案互操作。所有导�
 当前 Android 包名：`com.example.api_manager`
 
 > 版本兼容：V1 导入在所有版本可用；V2（`schemaVersion: 2`）需要 **Apilot ≥ 1.20.0**。
-> 本文档按 Apilot `2.8.2+68` 的行为维护，最后更新于 2026-10-04。
+> 本文档按 Apilot `2.8.3+69` 的行为维护，最后更新于 2026-10-04。
 
 ## 协议版本
 

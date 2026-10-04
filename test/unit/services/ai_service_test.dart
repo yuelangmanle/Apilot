@@ -16,6 +16,23 @@ void main() {
       expect(text, '推荐 Q4_K_M');
     });
 
+    test('extracts OpenAI multimodal text content blocks', () {
+      final text = AiService.extractAssistantText({
+        'choices': [
+          {
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'output_text', 'text': 'HTML '},
+                {'type': 'text', 'text': '已生成'},
+              ],
+            },
+          }
+        ],
+      });
+      expect(text, 'HTML 已生成');
+    });
+
     test('extracts Anthropic shape', () {
       final text = AiService.extractAssistantText({
         'content': [

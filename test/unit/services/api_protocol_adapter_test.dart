@@ -75,6 +75,64 @@ void main() {
       );
       expect(converted['max_tokens'], 2048);
     });
+
+    test('anthropic converts OpenAI image blocks to base64 image sources', () {
+      final converted = ApiProtocolAdapter.requestBodyFor(
+        {
+          'model': 'claude-sonnet',
+          'messages': [
+            {
+              'role': 'user',
+              'content': [
+                {'type': 'text', 'text': '看这张图'},
+                {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url': 'data:image/png;base64,aGVsbG8=',
+                  },
+                },
+              ],
+            },
+          ],
+          'max_tokens': 256,
+        },
+        'anthropic_messages',
+      );
+
+      final blocks = (converted['messages'] as List).single['content'] as List;
+      expect(blocks[0], {'type': 'text', 'text': '看这张图'});
+      expect(blocks[1], {
+        'type': 'image',
+        'source': {
+          'type': 'base64',
+          'media_type': 'image/png',
+          'data': 'aGVsbG8=',
+        },
+      });
+    });
+  });
+
+  group('ApiProtocolAdapter.extractAssistantText', () {
+    test('extracts text from content block arrays', () {
+      expect(
+        ApiProtocolAdapter.extractAssistantText(
+          {
+            'choices': [
+              {
+                'message': {
+                  'content': [
+                    {'type': 'text', 'text': '页面已完成'},
+                    {'type': 'output_text', 'text': '，可预览。'},
+                  ],
+                },
+              },
+            ],
+          },
+          'openai_compatible',
+        ),
+        '页面已完成，可预览。',
+      );
+    });
   });
 
   group('ApiProtocolAdapter.defaultChatEndpoint', () {
@@ -96,6 +154,17 @@ void main() {
         ApiProtocolAdapter.defaultChatEndpoint(
             'https://api.deepseek.com/v1', 'openai_compatible'),
         '/chat/completions',
+      );
+    });
+
+    test('openai-compatible exposes the independent file upload endpoint', () {
+      expect(
+        ApiProtocolAdapter.defaultFileUploadEndpoint('openai_compatible'),
+        '/files',
+      );
+      expect(
+        ApiProtocolAdapter.defaultFileUploadEndpoint('anthropic_messages'),
+        isNull,
       );
     });
   });
@@ -127,7 +196,8 @@ void main() {
 
     test('returns null for missing usage', () {
       expect(ApiProtocolAdapter.extractUsage({}, 'openai_compatible'), isNull);
-      expect(ApiProtocolAdapter.extractUsage(null, 'openai_compatible'), isNull);
+      expect(
+          ApiProtocolAdapter.extractUsage(null, 'openai_compatible'), isNull);
     });
   });
 

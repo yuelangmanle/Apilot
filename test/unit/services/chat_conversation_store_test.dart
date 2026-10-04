@@ -27,13 +27,43 @@ void main() {
       updatedAt: DateTime(2026, 10, 1),
       messages: [
         ChatMessageRecord(role: 'user', text: text ?? '你好'),
-        const ChatMessageRecord(
-            role: 'assistant', text: '你好！有什么可以帮你的？'),
+        const ChatMessageRecord(role: 'assistant', text: '你好！有什么可以帮你的？'),
       ],
     );
   }
 
   group('ChatConversationStore', () {
+    test('copies image attachments into conversation storage and deletes them',
+        () async {
+      final source = File(p.join(tmpDir.path, 'picked.png'))
+        ..writeAsBytesSync([1, 2, 3]);
+      final attachment = await store.importAttachment(
+        'with-image',
+        sourcePath: source.path,
+        name: 'picked.png',
+        type: 'image',
+      );
+
+      expect(attachment.path, isNot(source.path));
+      expect(await File(attachment.path!).readAsBytes(), [1, 2, 3]);
+      await store.deleteAttachment(attachment.path);
+      expect(await File(attachment.path!).exists(), isFalse);
+    });
+
+    test('stores bounded text attachment content inline', () async {
+      final source = File(p.join(tmpDir.path, 'notes.md'))
+        ..writeAsStringSync('# 标题');
+      final attachment = await store.importAttachment(
+        'text',
+        sourcePath: source.path,
+        name: 'notes.md',
+        type: 'text',
+      );
+
+      expect(attachment.content, '# 标题');
+      expect(attachment.path, isNull);
+    });
+
     test('save then load round-trips all fields', () async {
       final conv = makeConversation('c1');
       conv.settings = const ChatGenerationSettings(

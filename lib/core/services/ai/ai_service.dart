@@ -8,9 +8,12 @@ import 'package:llamadart/llamadart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/api_config.dart';
+import '../api_protocol_adapter.dart';
 import '../api_service.dart';
+import '../local_llm/chat_conversation_store.dart';
 import '../local_llm/local_llm_engine.dart';
 import '../local_llm/model_download_service.dart';
+import 'chat_attachment_encoder.dart';
 
 enum AiRoute { cloud, local, unavailable }
 
@@ -120,6 +123,10 @@ class AiService {
     bool Function()? shouldStop,
     ApiRequestCancellation? cancellation,
 
+    /// 云端 Agent 多轮工具调用的历史上下文。
+    List<Map<String, String>> history = const [],
+    List<ChatAttachment> attachments = const [],
+
     /// 指定用哪个配置（云端对话页传自己的配置，不看全局设置）。
     ApiConfig? preferredConfig,
     int maxTokens = 512,
@@ -177,6 +184,8 @@ class AiService {
       }
 
       return await _askCloud(config, userPrompt, systemPrompt, maxTokens,
+              history: history,
+              attachments: attachments,
               onDelta: onDelta,
               shouldStop: shouldStop,
               cancellation: cancellation)
@@ -196,6 +205,8 @@ class AiService {
     String userPrompt,
     String? systemPrompt,
     int maxTokens, {
+    List<Map<String, String>> history = const [],
+    List<ChatAttachment> attachments = const [],
     void Function(String delta)? onDelta,
     bool Function()? shouldStop,
     ApiRequestCancellation? cancellation,
@@ -207,15 +218,24 @@ class AiService {
       return null;
     }
 
+    final userContent = await ChatAttachmentEncoder.encodeUserContent(
+      userPrompt,
+      attachments,
+    );
     final messages = <Map<String, dynamic>>[
       if (systemPrompt != null && systemPrompt.isNotEmpty)
         {'role': 'system', 'content': systemPrompt},
-      {'role': 'user', 'content': userPrompt},
+      for (final turn in history)
+        if ((turn['role'] == 'user' || turn['role'] == 'assistant') &&
+            (turn['content'] ?? '').isNotEmpty)
+          {'role': turn['role'], 'content': turn['content']},
+      {'role': 'user', 'content': userContent},
     ];
 
     // 走流式：文本边到边显示（onDelta），且失败马上暴露——
     // 之前用非流式 sendRequest，遇到慢中转站会一直转圈、停止按钮也没用。
     final buffer = StringBuffer();
+    final reasoningFallback = StringBuffer();
     Object? streamError;
     try {
       await for (final event in ApiService().sendRequestStream(
@@ -233,6 +253,9 @@ class AiService {
           buffer.write(event.delta);
           onDelta?.call(event.delta!);
         }
+        if (event.reasoning != null && event.reasoning!.isNotEmpty) {
+          reasoningFallback.write(event.reasoning);
+        }
         if (event.isDone && event.response != null) {
           final response = event.response!;
           final text = extractAssistantText(
@@ -248,6 +271,7 @@ class AiService {
       return buffer.isEmpty ? null : buffer.toString();
     }
     if (buffer.isNotEmpty) return buffer.toString();
+    if (reasoningFallback.isNotEmpty) return reasoningFallback.toString();
     // 流式不可用（部分中转站不接受 stream / stream_options）→ 回退非流式，
     // 否则用户会看到"AI 未配置、调用失败"，而其实只是协议差异。
     debugPrint('[AiService] 云端流式失败，回退非流式: $streamError');
@@ -371,23 +395,12 @@ class AiService {
   /// 从响应体中提取助手文本（兼容 OpenAI 与 Anthropic 两种形状）。
   static String? extractAssistantText(Object? body) {
     if (body is! Map) return null;
-    final choices = body['choices'];
-    if (choices is List && choices.isNotEmpty) {
-      final first = choices.first;
-      if (first is Map) {
-        final message = first['message'];
-        if (message is Map && message['content'] is String) {
-          return message['content'] as String;
-        }
-      }
-    }
-    final content = body['content'];
-    if (content is List && content.isNotEmpty) {
-      final first = content.first;
-      if (first is Map && first['text'] is String) {
-        return first['text'] as String;
-      }
-    }
-    return null;
+    final response = Map<String, dynamic>.from(body);
+    final topLevel = ApiProtocolAdapter.extractTextContent(response['content']);
+    if (topLevel != null && topLevel.isNotEmpty) return topLevel;
+    return ApiProtocolAdapter.extractAssistantText(
+      response,
+      'openai_compatible',
+    );
   }
 }

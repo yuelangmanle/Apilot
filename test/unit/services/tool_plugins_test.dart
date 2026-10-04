@@ -162,8 +162,8 @@ void main() {
       ToolHost.screenshot = () async => '/tmp/fake-screen.png';
       ToolHost.visionEnabled = true;
       final result = await ToolRegistry.execute('screenshot', {});
-      expect(result, contains('/tmp/fake-screen.png'));
-      expect(result, contains('你可以直接分析画面'));
+      expect(result, contains('截图已保存至'));
+      expect(result, contains('你可以直接分析收到的截图'));
       expect(ToolRegistry.lastScreenshotPath, '/tmp/fake-screen.png');
     });
   });

@@ -63,7 +63,7 @@ class LocalLlmEngine {
   /// 界面用它判断"可以直接生成"，比 [isLoaded] 严格——isLoaded 只说明
   /// 引擎里装着*某个*模型，未必是当前会话要的那个。
   bool isReadyFor(String filePath, {int contextSize = 4096}) =>
-      !isLoading && isLoaded && _loadedModelPath == filePath;
+      !isLoading && isLoaded && _loadedKey == _keyFor(filePath, contextSize);
 
   static String _keyFor(String filePath, int contextSize) =>
       '$filePath#$contextSize';
@@ -180,8 +180,7 @@ class LocalLlmEngine {
         contextSize: contextSize,
         numberOfThreads: threads,
         numberOfThreadsBatch: threads == 0 ? 0 : math.max(threads, 4),
-        // 预填充批量：给足 batch，首字更快（内存紧张时库会自动收紧）。
-        batchSize: 512,
+        batchSize: LocalLlmTuning.resolveBatchSize(),
         preferredBackend: backend,
         // null → 999（= 库默认"能卸就卸"）；0 → 纯 CPU（省电档）。
         gpuLayers: gpuLayers ?? ModelParams.maxGpuLayers,

@@ -38,13 +38,33 @@ class AiTool {
   /// 执行；返回给模型的文本结果。
   final Future<String> Function(Map<String, dynamic> args) run;
 
+  /// 可选的结构化执行器。结构化结果只供宿主使用，不会直接暴露给模型。
+  final Future<ToolExecutionResult> Function(Map<String, dynamic> args)?
+      runDetailed;
+
   const AiTool({
     required this.name,
     required this.description,
     required this.parameters,
     required this.category,
     required this.run,
+    this.runDetailed,
   });
+}
+
+/// 工具执行结果。截图等工具可以把供下一轮推理使用的附件路径交给宿主，
+/// 不再依赖一个容易被并发请求覆盖的全局“最近路径”。
+class ToolExecutionResult {
+  final String text;
+  final String? attachmentPath;
+
+  const ToolExecutionResult({required this.text, this.attachmentPath});
+
+  ToolExecutionResult copyWith({String? text, String? attachmentPath}) =>
+      ToolExecutionResult(
+        text: text ?? this.text,
+        attachmentPath: attachmentPath ?? this.attachmentPath,
+      );
 }
 
 /// AI 工具注册表（内置插件）。
@@ -216,6 +236,8 @@ class ToolRegistry {
     _tools.clear();
     _disabled.clear();
     _htmlProjects = HtmlProjectStore();
+    lastScreenshotPath = null;
+    ToolHost.screenshotLocation = null;
   }
 
   @visibleForTesting
@@ -440,18 +462,34 @@ class ToolRegistry {
 
   /// 执行工具（尊重开关：被关掉的分类一律拒绝执行）。
   static Future<String> execute(String name, Map<String, dynamic> args) async {
+    final result = await executeDetailed(name, args);
+    return result.text;
+  }
+
+  /// 执行工具并保留宿主侧元数据（例如截图附件路径）。
+  static Future<ToolExecutionResult> executeDetailed(
+    String name,
+    Map<String, dynamic> args,
+  ) async {
     final tool = byName(name);
-    if (tool == null) return '错误：没有名为 $name 的工具';
+    if (tool == null) {
+      return ToolExecutionResult(text: '错误：没有名为 $name 的工具');
+    }
     if (!isCategoryEnabled(tool.category)) {
-      return '错误：插件「${tool.category}」已被用户关闭，请在对话页插件面板里开启';
+      return ToolExecutionResult(
+        text: '错误：插件「${tool.category}」已被用户关闭，请在对话页插件面板里开启',
+      );
     }
     try {
-      final result = await tool.run(args).timeout(const Duration(seconds: 45));
-      return result.length > 6000
-          ? '${result.substring(0, 6000)}…（已截断）'
-          : result;
+      final result = await (tool.runDetailed?.call(args) ??
+              tool.run(args).then((text) => ToolExecutionResult(text: text)))
+          .timeout(const Duration(seconds: 45));
+      if (result.text.length <= 6000) return result;
+      return result.copyWith(
+        text: '${result.text.substring(0, 6000)}…（已截断）',
+      );
     } catch (e) {
-      return '工具 $name 执行失败：$e';
+      return ToolExecutionResult(text: '工具 $name 执行失败：$e');
     }
   }
 
@@ -1112,19 +1150,31 @@ class ToolRegistry {
   static final AiTool _screenshotTool = AiTool(
     name: 'screenshot',
     category: 'screen',
-    description: '截取 Apilot 当前屏幕。多模态模型会直接看到这张图；'
-        '纯文本模型只会得到"已截屏"的说明。',
+    description: '截取 Apilot 当前屏幕并保存到下载目录；如果当前路由支持图片输入，'
+        '下一轮会附上截图，否则只返回保存结果。',
     parameters: '{}',
-    run: (args) async {
-      final handler = ToolHost.screenshot;
-      if (handler == null) return '截屏不可用（宿主未注册）';
-      final path = await handler();
-      if (path == null) return '截屏失败：无法获取屏幕画面';
-      lastScreenshotPath = path;
-      return '已截屏并保存到 $path。'
-          '${ToolHost.visionEnabled ? '（图片会附在下一轮对话里，你可以直接分析画面）' : '（当前模型不支持看图，无法分析画面内容）'}';
-    },
+    run: (args) async => (await _runScreenshot(args)).text,
+    runDetailed: _runScreenshot,
   );
+
+  static Future<ToolExecutionResult> _runScreenshot(
+    Map<String, dynamic> args,
+  ) async {
+    final handler = ToolHost.screenshot;
+    if (handler == null) {
+      return const ToolExecutionResult(text: '截屏不可用（宿主未注册）');
+    }
+    final path = await handler();
+    if (path == null) {
+      return const ToolExecutionResult(text: '截屏失败：无法获取屏幕画面');
+    }
+    lastScreenshotPath = path;
+    return ToolExecutionResult(
+      text: '截图已保存至系统 Download/Apilot/Screenshots。'
+          '${ToolHost.visionEnabled ? '你可以直接分析收到的截图。' : '图片已生成；只有实际支持图片输入的模型才能描述画面。'}',
+      attachmentPath: path,
+    );
+  }
 
   // ── 基础设施 ────────────────────────────────────────────────────
   static Future<String?> _httpGet(Uri uri) async {
@@ -1275,11 +1325,15 @@ class ToolRegistry {
 class ToolHost {
   ToolHost._();
 
+  /// 兼容旧宿主的状态字段。新代码由 AgentRunner 按实际引擎能力设置，
+  /// 截图工具本身不会再依赖它决定是否回灌图片。
+  static bool visionEnabled = false;
+
   /// 截屏（返回保存路径）。
   static Future<String?> Function()? screenshot;
 
-  /// 当前模型是否支持看图（决定截屏能否被"看见"）。
-  static bool visionEnabled = false;
+  /// 截图用户可访问的位置，与推理用临时文件路径分离。
+  static String? screenshotLocation;
 
   /// 模型搜索（返回真实候选清单文本）。
   static Future<String> Function(String query)? searchModels;

@@ -6,7 +6,9 @@ import 'package:llamadart/llamadart.dart';
 
 import '../../models/api_config.dart';
 import '../api_service.dart';
+import '../local_llm/chat_conversation_store.dart';
 import '../local_llm/local_llm_engine.dart';
+import '../screenshot_storage.dart';
 import 'ai_service.dart';
 import 'tool_registry.dart';
 
@@ -68,6 +70,7 @@ class AgentRunner {
     LocalLlmEngine? localEngine,
     List<ChatTurn> history = const [],
     String? extraSystemPrompt,
+    List<ChatAttachment> attachments = const [],
     int maxTokens = 0,
     double? temp,
     double? topP,
@@ -79,6 +82,7 @@ class AgentRunner {
     void Function(String delta)? onDelta,
     ApiRequestCancellation? cancellation,
   }) async {
+    ToolHost.visionEnabled = localEngine?.supportsVision ?? false;
     final toolDocs = ToolRegistry.describeForPrompt(
       task: userPrompt,
       compact: localEngine != null,
@@ -86,13 +90,6 @@ class AgentRunner {
     if (toolDocs.isEmpty) {
       return const AgentResult(text: '', error: '没有可用工具');
     }
-    final systemPrompt = [
-      '你是一个会使用工具的助手。回答要简洁，直接给结论。',
-      if (extraSystemPrompt != null && extraSystemPrompt.isNotEmpty)
-        extraSystemPrompt,
-      toolDocs,
-    ].join('\n\n');
-
     // 动态预算：写 HTML/长文给大预算，普通问答给小预算（快且省）。
     final effectiveMaxTokens =
         maxTokens > 0 ? maxTokens : budgetFor(userPrompt);
@@ -101,25 +98,52 @@ class AgentRunner {
     var prompt = userPrompt;
     // 截屏工具产出的图片：下一轮作为图片附件回灌（多模态模型才能"看"）。
     final pendingImages = <String>[];
+    String buildSystemPrompt() {
+      final hasImageInput =
+          attachments.any((a) => a.type == 'image') || pendingImages.isNotEmpty;
+      return [
+        '你是一个会使用工具的助手。回答要简洁，直接给结论。',
+        if (cloudConfig != null)
+          hasImageInput
+              ? '本次请求已包含真实图片附件。不要仅依据模型名称、旧上下文或训练记忆声称自己是纯文本模型；'
+                  '如果服务端明确拒绝图片输入，再如实说明无法分析。'
+              : '本次请求没有图片附件，不要声称看过未收到的图片；是否支持视觉由服务端实际能力决定。',
+        if (localEngine != null)
+          '当前本地模型视觉输入状态：${localEngine.supportsVision ? '已启用' : '未启用'}。'
+              '只有收到图片附件且视觉输入已启用时，才可描述画面内容。',
+        if (extraSystemPrompt != null && extraSystemPrompt.isNotEmpty)
+          extraSystemPrompt,
+        toolDocs,
+      ].join('\n\n');
+    }
+
+    ToolRegistry.lastScreenshotPath = null;
+    ToolHost.screenshotLocation = null;
 
     final stepLimit = maxToolSteps ?? (localEngine != null ? 3 : maxSteps);
     for (var step = 0; step < stepLimit; step++) {
-      final reply = await _ask(
-        systemPrompt: systemPrompt,
-        userPrompt: prompt,
-        history: history,
-        configs: configs,
-        cloudConfig: cloudConfig,
-        localEngine: localEngine,
-        maxTokens: effectiveMaxTokens,
-        imagePaths: List<String>.from(pendingImages),
-        onDelta: onDelta,
-        // 只有云端对话（传了 cloudConfig）才走云端流式；
-        // 本地对话必须走本地引擎，否则开插件后会去问全局 AI 设置
-        // （表现为「AI 未配置」或偷偷花用户的云端额度）。
-        allowCloudStreaming: cloudConfig != null,
-        cancellation: cancellation,
-      );
+      final requestImages = List<String>.from(pendingImages);
+      final requestAttachments =
+          step == 0 ? attachments : const <ChatAttachment>[];
+      late final ({String? text, String thinking}) reply;
+      try {
+        reply = await _ask(
+          systemPrompt: buildSystemPrompt(),
+          userPrompt: prompt,
+          history: history,
+          configs: configs,
+          cloudConfig: cloudConfig,
+          localEngine: localEngine,
+          maxTokens: effectiveMaxTokens,
+          imagePaths: requestImages,
+          attachments: requestAttachments,
+          onDelta: onDelta,
+          allowCloudStreaming: cloudConfig != null,
+          cancellation: cancellation,
+        );
+      } finally {
+        await _deleteTemporaryScreenshots(requestImages);
+      }
       pendingImages.clear();
       final answer = reply.text;
       if (reply.thinking.isNotEmpty) thinkingBuffer.write(reply.thinking);
@@ -146,21 +170,36 @@ class AgentRunner {
           thinking: thinkingBuffer.toString(),
         );
       }
-      final result = await ToolRegistry.execute(call.name, call.args);
+      final execution =
+          await ToolRegistry.executeDetailed(call.name, call.args);
+      final result = execution.text;
+      // 截屏 → 图片回灌（引擎支持看图时）。
+      if (call.name == 'screenshot') {
+        final path =
+            execution.attachmentPath ?? ToolRegistry.lastScreenshotPath;
+        final engineForVision = localEngine;
+        if (engineForVision != null &&
+            !engineForVision.supportsVision &&
+            engineForVision.hasVisionCandidate) {
+          await engineForVision.ensureVision();
+          ToolHost.visionEnabled = engineForVision.supportsVision;
+        }
+        if (path != null &&
+            (cloudConfig != null ||
+                (engineForVision?.supportsVision ?? false))) {
+          pendingImages.add(path);
+        } else if (path != null) {
+          await ScreenshotStorage.deleteTemporary(path);
+          ToolRegistry.lastScreenshotPath = null;
+        }
+      }
       if (cancellation?.isCancelled == true) {
+        await _deleteTemporaryScreenshots(pendingImages);
         return AgentResult(
           text: '',
           steps: steps,
           thinking: thinkingBuffer.toString(),
         );
-      }
-      // 截屏 → 图片回灌（引擎支持看图时）。
-      if (call.name == 'screenshot') {
-        final path = ToolRegistry.lastScreenshotPath;
-        final engineForVision = localEngine ?? AiService.sharedLocalEngine;
-        if (path != null && (engineForVision?.supportsVision ?? false)) {
-          pendingImages.add(path);
-        }
       }
       final recorded = AgentStep(
         tool: call.name,
@@ -174,22 +213,30 @@ class AgentRunner {
     }
 
     // 步数用尽：把已有的工具结果整理成回答。
-    final wrapUp = await _ask(
-      systemPrompt: systemPrompt,
-      userPrompt: '请直接总结已有信息回答用户，不要再调用工具。'
-          '用户问题：$userPrompt\n\n已获得的信息：\n${_summarizeSteps(steps)}',
-      history: history,
-      configs: configs,
-      cloudConfig: cloudConfig,
-      localEngine: localEngine,
-      maxTokens: effectiveMaxTokens,
-      onDelta: onDelta,
-      temp: temp,
-      topP: topP,
-      thinkingEnabled: thinkingEnabled,
-      allowCloudStreaming: cloudConfig != null,
-      cancellation: cancellation,
-    );
+    final wrapUpImages = List<String>.from(pendingImages);
+    late final ({String? text, String thinking}) wrapUp;
+    try {
+      wrapUp = await _ask(
+        systemPrompt: buildSystemPrompt(),
+        userPrompt: '请直接总结已有信息回答用户，不要再调用工具。'
+            '用户问题：$userPrompt\n\n已获得的信息：\n${_summarizeSteps(steps)}',
+        history: history,
+        configs: configs,
+        cloudConfig: cloudConfig,
+        localEngine: localEngine,
+        maxTokens: effectiveMaxTokens,
+        imagePaths: wrapUpImages,
+        attachments: attachments,
+        onDelta: onDelta,
+        temp: temp,
+        topP: topP,
+        thinkingEnabled: thinkingEnabled,
+        allowCloudStreaming: cloudConfig != null,
+        cancellation: cancellation,
+      );
+    } finally {
+      await _deleteTemporaryScreenshots(wrapUpImages);
+    }
     if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
     return AgentResult(
       text: (wrapUp.text == null || wrapUp.text!.isEmpty)
@@ -208,6 +255,14 @@ class AgentRunner {
       buffer.writeln();
     }
     return buffer.toString().trim();
+  }
+
+  static Future<void> _deleteTemporaryScreenshots(
+    Iterable<String> paths,
+  ) async {
+    for (final path in paths) {
+      await ScreenshotStorage.deleteTemporary(path);
+    }
   }
 
   /// 单次问答：优先本地引擎，否则走 AiService（云端）。
@@ -261,6 +316,7 @@ class AgentRunner {
     LocalLlmEngine? localEngine,
     required int maxTokens,
     List<String> imagePaths = const [],
+    List<ChatAttachment> attachments = const [],
     void Function(String delta)? onDelta,
     bool allowCloudStreaming = false,
     double? temp,
@@ -281,6 +337,22 @@ class AgentRunner {
         configs: configs,
         preferredConfig: cloudConfig,
         maxTokens: maxTokens,
+        history: [
+          for (final turn in history)
+            {
+              'role': turn.isUser ? 'user' : 'assistant',
+              'content': turn.text,
+            },
+        ],
+        attachments: [
+          ...attachments,
+          for (final path in imagePaths)
+            ChatAttachment(
+              name: path.split('/').last,
+              type: 'image',
+              path: path,
+            ),
+        ],
         onDelta: onDelta,
         cancellation: cancellation,
       );
@@ -294,6 +366,31 @@ class AgentRunner {
     }
     final useLocal = engine != null && engine.isLoaded;
     if (useLocal) {
+      final inputImages = [
+        ...attachments.where((attachment) => attachment.type == 'image'),
+        for (final path in imagePaths)
+          ChatAttachment(name: path.split('/').last, type: 'image', path: path),
+      ];
+      if (inputImages.isNotEmpty && !engine.supportsVision) {
+        return (
+          text: '当前本地模型尚未启用视觉投影，暂时无法分析图片。'
+              '请先下载并配对该模型对应的 mmproj 文件，再重新发送。',
+          thinking: '',
+        );
+      }
+      final promptWithFiles = StringBuffer(userPrompt);
+      for (final attachment
+          in attachments.where((attachment) => attachment.type == 'text')) {
+        final content = attachment.content ?? '';
+        if (content.isNotEmpty) {
+          promptWithFiles
+            ..writeln()
+            ..writeln('文件「${attachment.name}」内容：')
+            ..writeln('```')
+            ..writeln(content)
+            ..writeln('```');
+        }
+      }
       if (cancellation?.isCancelled == true) {
         return (text: '', thinking: '');
       }
@@ -306,17 +403,21 @@ class AgentRunner {
             role: turn.isUser ? LlamaChatRole.user : LlamaChatRole.assistant,
             text: turn.text,
           ),
-        if (imagePaths.isNotEmpty && engine.supportsVision)
+        if (inputImages.isNotEmpty && engine.supportsVision)
           // 截屏回灌：文本 + 图片（引擎已启用视觉投影）。
           LlamaChatMessage.withContent(
             role: LlamaChatRole.user,
             content: [
-              LlamaTextContent(userPrompt),
-              for (final path in imagePaths) LlamaImageContent(path: path),
+              LlamaTextContent(promptWithFiles.toString()),
+              for (final image in inputImages)
+                if (image.path != null) LlamaImageContent(path: image.path!),
             ],
           )
         else
-          LlamaChatMessage.fromText(role: LlamaChatRole.user, text: userPrompt),
+          LlamaChatMessage.fromText(
+            role: LlamaChatRole.user,
+            text: promptWithFiles.toString(),
+          ),
       ];
       try {
         // 用流式收集：正文与思考都拿到（工具模式也要能看到思考过程）。
@@ -330,6 +431,7 @@ class AgentRunner {
               topP: topP ?? 0.9,
               // 会话里的"深度思考"开关在工具模式下也要生效。
               thinkingEnabled: thinkingEnabled,
+              suppressThinking: !thinkingEnabled,
             )
             .timeout(const Duration(minutes: 4))) {
           if (cancellation?.isCancelled == true) {

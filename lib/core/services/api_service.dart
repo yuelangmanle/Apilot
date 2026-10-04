@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -68,6 +69,8 @@ class ApiRequestCancellation {
 }
 
 class ApiService {
+  static const int maxUploadBytes = 100 * 1024 * 1024;
+
   /// 模块级共享连接池：体检 N 个 Key 复用 TLS 连接而非 N 次握手。
   static final http.Client _sharedClient = http.Client();
 
@@ -277,6 +280,105 @@ class ApiService {
     );
   }
 
+  /// 通过 OpenAI 兼容的 `/files` 接口上传文件。
+  ///
+  /// 聊天附件仍然可以以内联文本或图片 data URL 发送；这个方法用于需要
+  /// 服务端持久化文件、异步处理或后续引用 `file_id` 的场景。请求使用流式
+  /// multipart，不会先把整个文件读进 Dart 堆内存，并沿用 Key 池的鉴权故障转移。
+  Future<ApiFileUploadResult> uploadFile({
+    required ApiConfig apiConfig,
+    required String filePath,
+    String purpose = 'assistants',
+    String? fileName,
+  }) async {
+    final endpoint = ApiProtocolAdapter.defaultFileUploadEndpoint(
+      apiConfig.protocolId,
+    );
+    if (endpoint == null) {
+      throw const ApiException(
+        statusCode: HttpStatus.notImplemented,
+        body: '当前协议没有通用文件上传接口；请把文件以内联附件随消息发送',
+      );
+    }
+
+    final file = File(filePath);
+    if (!await file.exists()) {
+      throw FileSystemException('待上传文件不存在', filePath);
+    }
+    final length = await file.length();
+    if (length <= 0) {
+      throw FileSystemException('不能上传空文件', filePath);
+    }
+    if (length > maxUploadBytes) {
+      throw FileSystemException(
+        '文件超过 ${maxUploadBytes ~/ (1024 * 1024)} MB 上传上限',
+        filePath,
+      );
+    }
+
+    final url = buildUrl(apiConfig.baseUrl, endpoint);
+    final uri = Uri.parse(url);
+    final candidates = KeyPool.candidates(apiConfig);
+    final keys = candidates.isEmpty ? [apiConfig.apiKey] : candidates;
+    ApiFileUploadResult? lastResult;
+
+    for (var index = 0; index < keys.length; index++) {
+      final key = keys[index];
+      final request = http.MultipartRequest('POST', uri);
+      final headers = ApiProtocolAdapter.authHeaders(
+        protocolId: apiConfig.protocolId,
+        apiKey: key,
+      )..remove('Content-Type');
+      request.headers.addAll(headers);
+      if (purpose.trim().isNotEmpty) request.fields['purpose'] = purpose.trim();
+      request.files.add(await http.MultipartFile.fromPath(
+        'file',
+        filePath,
+        filename: fileName?.trim().isNotEmpty == true
+            ? fileName!.trim()
+            : file.uri.pathSegments.last,
+      ));
+
+      final response = await _sharedClient
+          .send(request)
+          .timeout(const Duration(seconds: 120));
+      final full = await http.Response.fromStream(response);
+      final decoded = _decodeResponseBody(full.body);
+      lastResult = ApiFileUploadResult(
+        statusCode: full.statusCode,
+        body: decoded,
+        headers: Map<String, String>.from(full.headers),
+      );
+
+      if (full.statusCode == 401 || full.statusCode == 403) {
+        KeyPool.markFailed(apiConfig.id, key);
+        continue;
+      }
+      if (full.statusCode < 200 || full.statusCode >= 300) {
+        throw ApiException(
+          statusCode: full.statusCode,
+          body: full.body,
+        );
+      }
+      KeyPool.markHealthy(apiConfig.id, key);
+      return lastResult;
+    }
+
+    final result = lastResult;
+    throw ApiException(
+      statusCode: result?.statusCode ?? HttpStatus.unauthorized,
+      body: result == null ? '文件上传失败' : jsonEncode(result.body),
+    );
+  }
+
+  static Map<String, dynamic> _decodeResponseBody(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    } catch (_) {}
+    return {'raw': body};
+  }
+
   Future<Map<String, dynamic>> _sendRequest({
     required ApiConfig apiConfig,
     required String model,
@@ -479,6 +581,25 @@ class ApiService {
           contentBuffer.write(text);
           yield StreamChatEvent.delta(text);
         }
+        if ((text == null || text.isEmpty) &&
+            responseBody['choices'] is List &&
+            (responseBody['choices'] as List).isNotEmpty) {
+          final first = (responseBody['choices'] as List).first;
+          if (first is Map) {
+            final message = first['message'];
+            if (message is Map) {
+              final fallback = ApiProtocolAdapter.extractTextContent(
+                message['reasoning_content'] ??
+                    message['reasoning'] ??
+                    message['thinking'],
+              );
+              if (fallback != null && fallback.isNotEmpty) {
+                reasoningBuffer.write(fallback);
+                yield StreamChatEvent.reasoning(fallback);
+              }
+            }
+          }
+        }
         usage = ApiProtocolAdapter.extractUsage(responseBody, protocolId);
         stopwatch.stop();
         yield StreamChatEvent.done(
@@ -661,6 +782,22 @@ class ApiException implements Exception {
   @override
   String toString() => 'API 返回 $statusCode: '
       '${body.length > 200 ? '${body.substring(0, 200)}…' : body}';
+}
+
+/// 文件上传的统一结果，保留原始响应字段，便于调用方取 `id`、`bytes` 等
+/// 服务商扩展字段，而不要求所有兼容服务返回完全相同的 JSON。
+class ApiFileUploadResult {
+  final int statusCode;
+  final Map<String, dynamic> body;
+  final Map<String, String> headers;
+
+  const ApiFileUploadResult({
+    required this.statusCode,
+    required this.body,
+    required this.headers,
+  });
+
+  String? get id => body['id']?.toString();
 }
 
 /// Key 池：每个配置可挂多把备用 Key（metadata.extraKeys）。

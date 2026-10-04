@@ -104,7 +104,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           messages: [],
         );
     // 加载模型（复用已加载的引擎则跳过）。
-    if (!_engine.isLoaded || _engine.loadedModelPath != widget.modelPath) {
+    if (!_engine.isReadyFor(widget.modelPath, contextSize: _contextSize)) {
       try {
         await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
       } catch (e) {
@@ -119,8 +119,6 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     if (mounted) {
       // 注册为共享引擎：AI 诊断/分析等其他 AI 功能直接复用，无需重复加载。
       AiService.registerLocalEngine(_engine);
-      // 截屏工具是否"能被看见"取决于当前模型有没有视觉能力。
-      ToolHost.visionEnabled = _engine.supportsVision;
       setState(() => _modelReady = true);
       _scrollToBottom();
     }
@@ -151,7 +149,6 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         await _engine.loadModel(widget.modelPath, contextSize: _contextSize);
         if (mounted) {
           AiService.registerLocalEngine(_engine);
-          ToolHost.visionEnabled = _engine.supportsVision;
         }
       } catch (e) {
         if (mounted) {
@@ -184,8 +181,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         if (action == 'bind') {
           final bound = await _bindProjector();
           if (bound && mounted) {
-            setState(() =>
-                _pendingAttachments.removeWhere((a) => a.type == 'image'));
+            await _discardPendingImages();
+            if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text('已绑定视觉投影，请重新发送图片'),
                 backgroundColor: AppColors.success));
@@ -193,8 +190,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
           return;
         }
         if (action != 'text') return;
-        setState(
-            () => _pendingAttachments.removeWhere((a) => a.type == 'image'));
+        await _discardPendingImages();
         text = _controller.text.trim();
         if (text.isEmpty && _pendingAttachments.isEmpty) {
           if (mounted) {
@@ -302,12 +298,12 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             final now = DateTime.now();
             final shouldUpdate = lastToolUiUpdate == null ||
                 now.difference(lastToolUiUpdate!) >=
-                    const Duration(milliseconds: 80);
+                    const Duration(milliseconds: 160);
             if (!isToolProtocol && shouldUpdate) {
               lastToolUiUpdate = now;
               _streamText = streamed.toString();
               _streamRevision.value++;
-              _scrollToBottom(animate: false);
+              if (_isNearBottom) _scrollToBottom(animate: false);
             }
           },
           onStep: (step) {
@@ -441,13 +437,13 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         final shouldUpdate = chunkCount == 1 ||
             lastPlainUiUpdate == null ||
             now.difference(lastPlainUiUpdate) >=
-                const Duration(milliseconds: 80);
+                const Duration(milliseconds: 160);
         if (shouldUpdate) {
           lastPlainUiUpdate = now;
           _streamText = buffer.toString();
           _streamThinking = thinking.toString();
           _streamRevision.value++;
-          _scrollToBottom(animate: false);
+          if (_isNearBottom) _scrollToBottom(animate: false);
         }
       }
 
@@ -680,8 +676,12 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 应用调参后重新加载模型（几秒）。
   Future<void> _reloadForTuning() async {
     try {
+      final restoreVision = _engine.supportsVision;
       await _engine.loadModel(widget.modelPath,
           contextSize: _contextSize, force: true);
+      if (restoreVision && _engine.hasVisionCandidate) {
+        await _engine.ensureVision();
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text('已应用并重新加载模型'), duration: Duration(seconds: 2)));
@@ -822,6 +822,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   List<LlamaChatMessage> _buildEngineMessages({String memorySection = ''}) {
     final messages = <LlamaChatMessage>[];
     final systemText = [
+      _engine.supportsVision
+          ? '当前本地模型已经成功启用视觉投影，可处理本轮收到的图片附件。'
+          : _engine.hasVisionCandidate
+              ? '当前本地模型有配套视觉投影，但尚未启用；不要声称已经看过图片。'
+              : '当前本地模型没有可用的视觉投影，只能处理文本和文本文件，不要声称看过图片。',
       if (_conversation.settings.systemPrompt.trim().isNotEmpty)
         _conversation.settings.systemPrompt.trim(),
       if (_conversation.summary.isNotEmpty)
@@ -892,21 +897,50 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       final ext = (file.extension ?? '').toLowerCase();
       const imageExts = {'png', 'jpg', 'jpeg', 'webp'};
       if (imageExts.contains(ext)) {
-        _pendingAttachments
-            .add(ChatAttachment(name: file.name, type: 'image', path: path));
-      } else {
         try {
-          final content = await File(path).readAsString();
-          _pendingAttachments.add(
-              ChatAttachment(name: file.name, type: 'text', content: content));
+          _pendingAttachments.add(await _store.importAttachment(
+            _conversation.id,
+            sourcePath: path,
+            name: file.name,
+            type: 'image',
+          ));
         } catch (e) {
           messenger.showSnackBar(SnackBar(
-              content: Text('读取 ${file.name} 失败: $e'),
+              content: Text('导入 ${file.name} 失败: $e'),
+              backgroundColor: AppColors.error));
+        }
+      } else {
+        try {
+          _pendingAttachments.add(await _store.importAttachment(
+            _conversation.id,
+            sourcePath: path,
+            name: file.name,
+            type: 'text',
+          ));
+        } catch (e) {
+          messenger.showSnackBar(SnackBar(
+              content: Text('导入 ${file.name} 失败: $e'),
               backgroundColor: AppColors.error));
         }
       }
     }
     if (mounted) setState(() {});
+  }
+
+  Future<void> _removePendingAttachment(int index) async {
+    if (index < 0 || index >= _pendingAttachments.length) return;
+    final attachment = _pendingAttachments[index];
+    setState(() => _pendingAttachments.removeAt(index));
+    await _store.deleteAttachment(attachment.path);
+  }
+
+  Future<void> _discardPendingImages() async {
+    final removed =
+        _pendingAttachments.where((a) => a.type == 'image').toList();
+    setState(() => _pendingAttachments.removeWhere((a) => a.type == 'image'));
+    for (final attachment in removed) {
+      await _store.deleteAttachment(attachment.path);
+    }
   }
 
   void _showSettingsSheet() {
@@ -972,8 +1006,8 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                     DropdownButtonFormField<LocalLlmPreset>(
                       initialValue: LocalLlmTuning.preset,
                       decoration: InputDecoration(
-                        labelText: '性能档位（改完下一条消息生效）',
-                        helperText: LocalLlmTuning.describe(),
+                        labelText: '性能档位（推荐直接选“均衡”）',
+                        helperText: LocalLlmTuning.preset.description,
                         border: const OutlineInputBorder(),
                         isDense: true,
                       ),
@@ -982,18 +1016,12 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           DropdownMenuItem(
                               value: preset, child: Text(preset.label)),
                       ],
-                      onChanged: (value) {
+                      onChanged: (value) async {
                         if (value == null) return;
+                        await LocalLlmTuning.setPreset(value);
+                        if (!sheetContext.mounted) return;
                         setSheetState(() {});
-                        LocalLlmTuning.setPreset(value).then((_) async {
-                          // 重新加载模型让新参数生效。
-                          try {
-                            await _engine.loadModel(widget.modelPath,
-                                contextSize: _contextSize, force: true);
-                          } catch (e) {
-                            debugPrint('[Tuning] 重载失败: $e');
-                          }
-                        });
+                        await _reloadForTuning();
                       },
                     ),
                     const SizedBox(height: 8),
@@ -1111,19 +1139,20 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       childrenPadding: const EdgeInsets.only(bottom: 8),
                       title:
                           const Text('高级性能选项', style: TextStyle(fontSize: 13)),
-                      subtitle: Text('GPU 层数 / 线程 / FlashAttention / KV 量化',
+                      subtitle: Text('通常无需调整。卡顿或闪退时保持“均衡”；GPU 加速只建议逐步试。',
                           style: TextStyle(fontSize: 11, color: secondary)),
                       children: [
                         DropdownButtonFormField<int>(
                           initialValue: LocalLlmTuning.gpuLayersOverride ?? -1,
                           decoration: const InputDecoration(
                             labelText: 'GPU 卸载层数',
-                            helperText: '-1=自动（推荐）· 0=纯 CPU · 层数越多越快也越吃显存',
+                            helperText: '跟随档位=均衡关闭 GPU；只有设备稳定且有余量时再调高',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
                           items: const [
-                            DropdownMenuItem(value: -1, child: Text('自动（推荐）')),
+                            DropdownMenuItem(
+                                value: -1, child: Text('跟随档位（推荐）')),
                             DropdownMenuItem(value: 0, child: Text('0（纯 CPU）')),
                             DropdownMenuItem(value: 16, child: Text('16 层')),
                             DropdownMenuItem(value: 24, child: Text('24 层')),
@@ -1141,7 +1170,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                           initialValue: LocalLlmTuning.threadsOverride ?? 0,
                           decoration: const InputDecoration(
                             labelText: '生成线程数',
-                            helperText: '0=自动；手机通常 4 个线程最优（生成受内存带宽限制）',
+                            helperText: '一般保持自动；线程过多可能更慢、更热',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
@@ -1159,50 +1188,60 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                             await _reloadForTuning();
                           },
                         ),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                          title: const Text('FlashAttention',
+                        ExpansionTile(
+                          tilePadding: EdgeInsets.zero,
+                          childrenPadding: EdgeInsets.zero,
+                          title: const Text('实验性开关（一般不要改）',
                               style: TextStyle(fontSize: 13)),
-                          subtitle: const Text('长上下文更快更省内存；个别机型可能不稳',
+                          subtitle: const Text('只有需要排查兼容性或长上下文内存时再开启',
                               style: TextStyle(fontSize: 11)),
-                          value: LocalLlmTuning.flashAttention,
-                          onChanged: (v) async {
-                            setSheetState(() {});
-                            await LocalLlmTuning.setAdvanced(flashAttention: v);
-                            await _reloadForTuning();
-                          },
-                        ),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                          title: const Text('KV cache 量化（q8_0）',
-                              style: TextStyle(fontSize: 13)),
-                          subtitle: const Text('省一半 KV 内存；部分机型反而更慢，默认关',
-                              style: TextStyle(fontSize: 11)),
-                          value: LocalLlmTuning.kvQuantized,
-                          onChanged: (v) async {
-                            setSheetState(() {});
-                            await LocalLlmTuning.setAdvanced(kvQuantized: v);
-                            await _reloadForTuning();
-                          },
-                        ),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                          title: const Text('投机解码（n-gram 自推测）',
-                              style: TextStyle(fontSize: 13)),
-                          subtitle: const Text(
-                              '零额外内存；代码/HTML 等重复多的输出可快 1.5~2 倍。'
-                              '不支持时自动降级，不影响使用',
-                              style: TextStyle(fontSize: 11)),
-                          value: LocalLlmTuning.speculativeNgram,
-                          onChanged: (v) async {
-                            setSheetState(() {});
-                            await LocalLlmTuning.setAdvanced(
-                                speculativeNgram: v);
-                            await _reloadForTuning();
-                          },
+                          children: [
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              dense: true,
+                              title: const Text('FlashAttention',
+                                  style: TextStyle(fontSize: 13)),
+                              subtitle: const Text('长上下文可能更快更省内存；个别机型不稳定',
+                                  style: TextStyle(fontSize: 11)),
+                              value: LocalLlmTuning.flashAttention,
+                              onChanged: (v) async {
+                                setSheetState(() {});
+                                await LocalLlmTuning.setAdvanced(
+                                    flashAttention: v);
+                                await _reloadForTuning();
+                              },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              dense: true,
+                              title: const Text('KV cache 量化（q8_0）',
+                                  style: TextStyle(fontSize: 13)),
+                              subtitle: const Text('降低长上下文内存占用，但可能变慢；默认关闭',
+                                  style: TextStyle(fontSize: 11)),
+                              value: LocalLlmTuning.kvQuantized,
+                              onChanged: (v) async {
+                                setSheetState(() {});
+                                await LocalLlmTuning.setAdvanced(
+                                    kvQuantized: v);
+                                await _reloadForTuning();
+                              },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              dense: true,
+                              title: const Text('投机解码（n-gram 自推测）',
+                                  style: TextStyle(fontSize: 13)),
+                              subtitle: const Text('代码可能提速；不支持时自动关闭，默认关闭',
+                                  style: TextStyle(fontSize: 11)),
+                              value: LocalLlmTuning.speculativeNgram,
+                              onChanged: (v) async {
+                                setSheetState(() {});
+                                await LocalLlmTuning.setAdvanced(
+                                    speculativeNgram: v);
+                                await _reloadForTuning();
+                              },
+                            ),
+                          ],
                         ),
                         SizedBox(
                           width: double.infinity,
@@ -1279,6 +1318,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 新对话：**原地**换一个会话，复用已加载的引擎。
   /// 之前用 pushReplacement 重建页面 → 引擎重新加载（大模型要几十秒）。
   void _newConversation() {
+    final pending = List<ChatAttachment>.from(_pendingAttachments);
     setState(() {
       _conversation = ChatConversation(
         id: const Uuid().v4(),
@@ -1294,6 +1334,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
       _streamThinking = '';
       _pendingAttachments.clear();
     });
+    for (final attachment in pending) {
+      unawaited(_store.deleteAttachment(attachment.path));
+    }
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('已开启新对话（模型保持加载，无需等待）'), duration: Duration(seconds: 2)));
   }
@@ -1336,8 +1379,17 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
     });
   }
 
+  bool get _isNearBottom =>
+      !_scrollController.hasClients ||
+      _scrollController.position.maxScrollExtent -
+              _scrollController.position.pixels <
+          160;
+
   @override
   void dispose() {
+    for (final attachment in _pendingAttachments) {
+      unawaited(_store.deleteAttachment(attachment.path));
+    }
     _requestCancellation?.cancel();
     _requestCancellation = null;
     _controller.dispose();
@@ -1570,8 +1622,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                                 ),
                                 label: Text(_pendingAttachments[i].name,
                                     style: const TextStyle(fontSize: 11)),
-                                onDeleted: () => setState(
-                                    () => _pendingAttachments.removeAt(i)),
+                                onDeleted: () => _removePendingAttachment(i),
                               ),
                           ],
                         ),

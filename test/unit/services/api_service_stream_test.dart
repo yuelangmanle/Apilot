@@ -52,6 +52,41 @@ void main() {
     expect(events.last.isDone, isTrue);
   });
 
+  test('兼容 OpenAI 非 SSE 多内容块响应，不会把 HTML 判为空', () async {
+    server.listen((request) {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'model': 'test-model',
+        'choices': [
+          {
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'output_text', 'text': '<html>'},
+                {'type': 'text', 'text': 'ok</html>'},
+              ],
+            },
+          }
+        ],
+      }));
+      request.response.close();
+    });
+
+    final events = await ApiService().sendRequestStream(
+      apiConfig: config(),
+      model: 'test-model',
+      requestBody: const {
+        'messages': [
+          {'role': 'user', 'content': '写一个 HTML'},
+        ],
+      },
+    ).toList();
+
+    expect(events.where((event) => event.delta == '<html>ok</html>'),
+        hasLength(1));
+    expect(events.last.isDone, isTrue);
+  });
+
   test('处理没有空行结尾的 SSE 最后一帧', () async {
     server.listen((request) {
       request.response.headers.contentType =
@@ -170,5 +205,45 @@ void main() {
     );
     expect(second['statusCode'], 200);
     expect(seenKeys.last, 'Bearer backup-key');
+  });
+
+  test('通过 OpenAI 兼容 files 端点上传文件并返回 file id', () async {
+    late String contentType;
+    late String requestBody;
+    server.listen((request) async {
+      contentType = request.headers.contentType.toString();
+      requestBody = await utf8.decoder.bind(request).join();
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'id': 'file-test-1',
+        'object': 'file',
+        'purpose': 'assistants',
+      }));
+      await request.response.close();
+    });
+
+    final root = await Directory.systemTemp.createTemp('apilot_upload_');
+    addTearDown(() => root.delete(recursive: true));
+    final source = File('${root.path}/page.html')
+      ..writeAsStringSync('<html>ok</html>');
+    final apiConfig = ApiConfig(
+      id: 'upload-${DateTime.now().microsecondsSinceEpoch}',
+      name: '文件上传测试',
+      baseUrl: 'http://${server.address.address}:${server.port}/v1',
+      apiKey: 'upload-key',
+      models: const ['test-model'],
+      environment: 'test',
+    );
+
+    final result = await ApiService().uploadFile(
+      apiConfig: apiConfig,
+      filePath: source.path,
+    );
+
+    expect(result.statusCode, 200);
+    expect(result.id, 'file-test-1');
+    expect(contentType, startsWith('multipart/form-data;'));
+    expect(requestBody, contains('page.html'));
+    expect(requestBody, contains('<html>ok</html>'));
   });
 }

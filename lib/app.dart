@@ -13,6 +13,7 @@ import 'core/services/api_key_cipher.dart';
 import 'core/services/cost_estimator.dart';
 import 'core/services/database_service.dart';
 import 'core/services/secret_store.dart';
+import 'core/services/screenshot_storage.dart';
 import 'features/api_management/providers/api_provider.dart';
 import 'features/api_testing/providers/history_provider.dart';
 import 'features/settings/providers/settings_provider.dart';
@@ -31,9 +32,6 @@ import 'features/third_party_import/services/share_channel.dart';
 import 'features/third_party_import/screens/third_party_import_docs_screen.dart';
 import 'features/third_party_import/screens/third_party_api_config_pick_screen.dart';
 import 'dart:ui' as ui;
-
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import 'core/services/ai/app_tools.dart';
 import 'core/services/local_llm/community_model_service.dart';
@@ -168,8 +166,7 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell>
-    with WidgetsBindingObserver {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   static const _tabPrefsKey = 'apilot_last_tab';
   int _selectedIndex = 0;
 
@@ -216,9 +213,8 @@ class _AppShellState extends State<AppShell>
           screen = const GroupManageScreen();
           break;
         case 'api-detail':
-          final matches = provider.allApiConfigs
-              .where((c) => c.id == saved.value)
-              .toList();
+          final matches =
+              provider.allApiConfigs.where((c) => c.id == saved.value).toList();
           if (matches.isEmpty) {
             await PersistedRoute.clear();
             return;
@@ -286,16 +282,13 @@ class _AppShellState extends State<AppShell>
         // 初始化失败（如平台通道不可用）不应成为未捕获异常。
         _thirdPartyImportChannel
             .initialize(onRequest: _handleThirdPartyImportRequest)
-            .catchError((Object e) =>
-                debugPrint('[Apilot] 第三方导入通道初始化失败: $e'));
+            .catchError((Object e) => debugPrint('[Apilot] 第三方导入通道初始化失败: $e'));
         _thirdPartyApiConfigPickChannel
             .initialize(onRequest: _handleThirdPartyApiConfigPickRequest)
-            .catchError((Object e) =>
-                debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
+            .catchError((Object e) => debugPrint('[Apilot] 第三方选择通道初始化失败: $e'));
         _gatewayGrantChannel
             .initialize(onRequest: _handleGatewayGrantRequest)
-            .catchError((Object e) =>
-                debugPrint('[Apilot] 网关授权通道初始化失败: $e'));
+            .catchError((Object e) => debugPrint('[Apilot] 网关授权通道初始化失败: $e'));
         _initAiTools();
         _initShareTarget();
       }
@@ -306,8 +299,8 @@ class _AppShellState extends State<AppShell>
   /// 系统分享目标：其他 App 分享文本进来 → 识别 → 表单预填。
   Future<void> _initShareTarget() async {
     ShareChannel.initialize();
-    _shareSubscription = ShareChannel.shareTextStream.listen(
-        (text) => unawaited(_handleSharedText(text)));
+    _shareSubscription = ShareChannel.shareTextStream
+        .listen((text) => unawaited(_handleSharedText(text)));
     try {
       final initial = await ShareChannel.getInitialShareText();
       if (initial != null && initial.trim().isNotEmpty && mounted) {
@@ -461,8 +454,8 @@ class _AppShellState extends State<AppShell>
     unawaited(LocalLlmTuning.load());
     unawaited(ModelStorageSettings.load());
     unawaited(PersistedRoute.loadEnabled());
-    ToolHost.visionEnabled = false;
     ToolHost.screenshot = _captureScreenForTools;
+    unawaited(ScreenshotStorage.cleanupStaleTemporaryFiles());
     AppToolHost.listApis = () async {
       final configs = context.read<ApiProvider>().allApiConfigs;
       if (configs.isEmpty) return '用户还没有保存任何 API 方案。';
@@ -480,10 +473,9 @@ class _AppShellState extends State<AppShell>
       final names = {for (final c in configs) c.id: c.name};
       final usages = UsageAggregator.byConfig(history, names: names);
       if (usages.isEmpty) return '还没有请求历史。';
-      final totalTokens =
-          usages.fold<int>(0, (sum, u) => sum + u.totalTokens);
-      final buffer = StringBuffer(
-          '共 ${usages.length} 个配置有记录，累计 $totalTokens tokens：\n');
+      final totalTokens = usages.fold<int>(0, (sum, u) => sum + u.totalTokens);
+      final buffer =
+          StringBuffer('共 ${usages.length} 个配置有记录，累计 $totalTokens tokens：\n');
       for (final usage in usages.take(10)) {
         buffer.writeln('- ${usage.configName}：${usage.requestCount} 次请求，'
             '成功 ${usage.successCount}，${usage.totalTokens} tokens');
@@ -578,14 +570,13 @@ class _AppShellState extends State<AppShell>
       final boundary = _rootBoundaryKey.currentContext?.findRenderObject()
           as RenderRepaintBoundary?;
       if (boundary == null) return null;
-      final image = await boundary.toImage(pixelRatio: 1.0);
+      final image = await boundary.toImage(pixelRatio: 0.75);
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       if (data == null) return null;
-      final dir = await getTemporaryDirectory();
-      final file = File(
-          p.join(dir.path, 'screenshot_${DateTime.now().millisecondsSinceEpoch}.png'));
-      await file.writeAsBytes(data.buffer.asUint8List(), flush: true);
-      return file.path;
+      final bytes = data.buffer.asUint8List();
+      ToolHost.screenshotLocation =
+          await ScreenshotStorage.saveToDownloads(bytes);
+      return await ScreenshotStorage.saveTemporaryForModel(bytes);
     } catch (e) {
       debugPrint('[Apilot] 截屏失败: $e');
       return null;
@@ -593,15 +584,13 @@ class _AppShellState extends State<AppShell>
   }
 
   /// 第三方 App 请求"使用本地网关"：弹确认页 → 启动网关 → 回传地址与 Token。
-  Future<void> _handleGatewayGrantRequest(
-      GatewayGrantRequest request) async {
+  Future<void> _handleGatewayGrantRequest(GatewayGrantRequest request) async {
     if (!mounted) return;
     await context.read<ApiProvider>().loadApiConfigs();
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) =>
-            ThirdPartyGatewayGrantScreen(request: request),
+        builder: (context) => ThirdPartyGatewayGrantScreen(request: request),
       ),
     );
   }

@@ -2,12 +2,15 @@ package com.example.api_manager
 
 import android.content.Intent
 import android.app.Activity
+import android.content.ContentValues
 import android.os.Bundle
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.provider.MediaStore
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,8 +24,10 @@ import io.flutter.plugin.common.MethodChannel
 import java.security.MessageDigest
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterFragmentActivity() {
+    private val screenshotWriter = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -100,6 +105,32 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            SCREENSHOT_STORAGE_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            if (call.method != "saveToDownloads") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+            val name = call.argument<String>("name")
+            val bytes = call.argument<ByteArray>("bytes")
+            if (name.isNullOrBlank() || bytes == null || bytes.isEmpty()) {
+                result.error("SCREENSHOT_INPUT", "截图文件名或内容为空", null)
+                return@setMethodCallHandler
+            }
+            screenshotWriter.execute {
+                try {
+                    val location = saveScreenshotToDownloads(name, bytes)
+                    runOnUiThread { result.success(location) }
+                } catch (error: Exception) {
+                    runOnUiThread {
+                        result.error("SCREENSHOT_SAVE", error.message, null)
+                    }
+                }
+            }
+        }
 
         shareChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -325,6 +356,56 @@ class MainActivity : FlutterFragmentActivity() {
         } else {
             channel.invokeMethod("onImportRequest", request)
         }
+    }
+
+    override fun onDestroy() {
+        screenshotWriter.shutdown()
+        super.onDestroy()
+    }
+
+    private fun saveScreenshotToDownloads(name: String, bytes: ByteArray): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_DOWNLOADS}/Apilot/Screenshots",
+                )
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                values,
+            ) ?: throw IllegalStateException("无法在系统下载目录创建截图")
+            try {
+                contentResolver.openOutputStream(uri, "w")?.use { output ->
+                    output.write(bytes)
+                    output.flush()
+                } ?: throw IllegalStateException("无法写入截图文件")
+                contentResolver.update(
+                    uri,
+                    ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    },
+                    null,
+                    null,
+                )
+            } catch (error: Exception) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            }
+            return "Download/Apilot/Screenshots/$name"
+        }
+
+        val downloads = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: filesDir
+        val directory = File(downloads, "Apilot/Screenshots")
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("无法创建截图目录")
+        }
+        File(directory, name).writeBytes(bytes)
+        return "应用文件/Download/Apilot/Screenshots/$name"
     }
 
     private fun reportQrPermissionDenied() {
@@ -652,6 +733,7 @@ class MainActivity : FlutterFragmentActivity() {
         private const val GATEWAY_FOREGROUND_CHANNEL = "com.apilot/gateway_foreground"
         private const val GATEWAY_OVERLAY_CHANNEL = "com.apilot/gateway_overlay"
         private const val STORAGE_PERMISSION_CHANNEL = "com.apilot/storage_permission"
+        private const val SCREENSHOT_STORAGE_CHANNEL = "com.apilot/screenshot_storage"
         private const val ACTION_GRANT_GATEWAY = "com.apilot.intent.action.GRANT_GATEWAY"
         private const val EXTRA_GATEWAY_GRANT_JSON = "com.apilot.extra.GATEWAY_GRANT_JSON"
         private const val EXTRA_REQUESTED_SCOPE = "com.apilot.extra.REQUESTED_SCOPE"

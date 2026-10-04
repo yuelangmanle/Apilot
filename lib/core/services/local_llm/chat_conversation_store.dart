@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -48,9 +49,7 @@ class ChatMessageRecord {
                     ChatAttachment.fromJson(Map<String, dynamic>.from(a)))
                 .toList() ??
             const [],
-        toolSteps: (json['toolSteps'] as List?)
-                ?.whereType<String>()
-                .toList() ??
+        toolSteps: (json['toolSteps'] as List?)?.whereType<String>().toList() ??
             const [],
         speed: json['speed'] as String?,
       );
@@ -58,6 +57,9 @@ class ChatMessageRecord {
 
 /// 附件（图片或文本文件）。
 class ChatAttachment {
+  static const int maxImageBytes = 12 * 1024 * 1024;
+  static const int maxTextBytes = 1024 * 1024;
+
   final String name;
   final String type; // image / text
   final String? path; // 本地文件路径（图片用）
@@ -125,8 +127,7 @@ class ChatGenerationSettings {
         maxTokens: maxTokens ?? this.maxTokens,
         thinkingEnabled: thinkingEnabled ?? this.thinkingEnabled,
         systemPrompt: systemPrompt ?? this.systemPrompt,
-        autoCompressAtChars:
-            autoCompressAtChars ?? this.autoCompressAtChars,
+        autoCompressAtChars: autoCompressAtChars ?? this.autoCompressAtChars,
       );
 
   Map<String, dynamic> toJson() => {
@@ -249,8 +250,8 @@ class ChatConversationStore {
         try {
           final decoded = jsonDecode(await file.readAsString());
           if (decoded is Map) {
-            results.add(ChatConversation.fromJson(
-                Map<String, dynamic>.from(decoded)));
+            results.add(
+                ChatConversation.fromJson(Map<String, dynamic>.from(decoded)));
           }
         } catch (e) {
           debugPrint('[ChatStore] 跳过损坏的对话 ${file.path}: $e');
@@ -294,8 +295,74 @@ class ChatConversationStore {
     try {
       final file = await _fileFor(id);
       if (file.existsSync()) await file.delete();
+      final attachmentDir = Directory(
+        p.join((await _dir()).path, 'attachments', _safeId(id)),
+      );
+      if (attachmentDir.existsSync()) {
+        await attachmentDir.delete(recursive: true);
+      }
     } catch (e) {
       debugPrint('[ChatStore] 删除对话失败: $e');
     }
   }
+
+  Future<ChatAttachment> importAttachment(
+    String conversationId, {
+    required String sourcePath,
+    required String name,
+    required String type,
+  }) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw FileSystemException('附件文件不存在', sourcePath);
+    }
+    if (type == 'text') {
+      final length = await source.length();
+      if (length > ChatAttachment.maxTextBytes) {
+        throw FileSystemException('文本附件超过 1 MB 限制', sourcePath);
+      }
+      final content =
+          utf8.decode(await source.readAsBytes(), allowMalformed: true);
+      return ChatAttachment(name: name, type: type, content: content);
+    }
+    if (type != 'image') {
+      throw ArgumentError.value(type, 'type', '不支持的附件类型');
+    }
+    final length = await source.length();
+    if (length > ChatAttachment.maxImageBytes) {
+      throw FileSystemException('图片附件超过 12 MB 限制', sourcePath);
+    }
+    final directory = Directory(p.join(
+      (await _dir()).path,
+      'attachments',
+      _safeId(conversationId),
+    ));
+    await directory.create(recursive: true);
+    final extension = p.extension(name).toLowerCase();
+    final safeExtension =
+        RegExp(r'^\.[a-z0-9]{1,8}$').hasMatch(extension) ? extension : '.img';
+    final destination = File(p.join(
+      directory.path,
+      '${DateTime.now().microsecondsSinceEpoch}_${math.Random.secure().nextInt(1 << 32)}$safeExtension',
+    ));
+    await source.copy(destination.path);
+    return ChatAttachment(name: name, type: type, path: destination.path);
+  }
+
+  Future<void> deleteAttachment(String? path) async {
+    if (path == null || path.isEmpty) return;
+    try {
+      final root = p.join((await _dir()).path, 'attachments');
+      final normalizedRoot = p.normalize(root);
+      final normalizedPath = p.normalize(path);
+      if (!p.isWithin(normalizedRoot, normalizedPath)) return;
+      final file = File(normalizedPath);
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      debugPrint('[ChatStore] 删除附件失败: $e');
+    }
+  }
+
+  static String _safeId(String id) =>
+      id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
 }

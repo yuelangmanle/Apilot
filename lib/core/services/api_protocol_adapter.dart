@@ -36,12 +36,17 @@ class ApiProtocolAdapter {
   static String defaultChatEndpoint(String baseUrl, String protocolId) {
     if (!isAnthropic(protocolId)) return '/chat/completions';
     final base = baseUrl.trim();
-    if (base.endsWith('/v1') ||
-        base.endsWith('/v2') ||
-        base.endsWith('/v3')) {
+    if (base.endsWith('/v1') || base.endsWith('/v2') || base.endsWith('/v3')) {
       return '/messages';
     }
     return '/v1/messages';
+  }
+
+  /// 独立文件上传端点。OpenAI 兼容服务通常提供 `/files`；Anthropic
+  /// Messages 没有同等的通用文件上传接口，附件应随消息以内联内容发送。
+  static String? defaultFileUploadEndpoint(String protocolId) {
+    if (isAnthropic(protocolId)) return null;
+    return '/files';
   }
 
   /// OpenAI 形状的请求体 → 协议原生请求体。
@@ -65,7 +70,7 @@ class ApiProtocolAdapter {
         if (content is String && content.isNotEmpty) systemParts.add(content);
         continue;
       }
-      chatMessages.add(message);
+      chatMessages.add(_anthropicMessage(message));
     }
     return {
       'model': openAiBody['model'],
@@ -93,19 +98,95 @@ class ApiProtocolAdapter {
       final first = choices.first;
       if (first is! Map) return null;
       final message = first['message'];
-      if (message is Map) return message['content']?.toString();
+      if (message is Map) {
+        return extractTextContent(message['content']) ??
+            extractTextContent(message['refusal']) ??
+            _extractFallbackText(message);
+      }
+      if (first['text'] is String) return first['text'] as String;
       return null;
     }
-    final content = response['content'];
+    return extractTextContent(response['content']) ??
+        _extractFallbackText(response);
+  }
+
+  /// 一些推理模型/中转站没有标准 content 字段：
+  /// - OpenAI 兼容：reasoning_content / reasoning / text
+  /// - Anthropic 兼容：thinking / output_text
+  /// 正文为空时保留这些文本，避免界面误报“流式与非流式都没有内容”。
+  static String? _extractFallbackText(Map<Object?, Object?> value) {
+    const keys = [
+      'reasoning_content',
+      'reasoning',
+      'thinking',
+      'text',
+      'output_text',
+    ];
+    for (final key in keys) {
+      final text = extractTextContent(value[key]);
+      if (text != null && text.isNotEmpty) return text;
+    }
+    final output = value['output'];
+    if (output is List) {
+      final text = extractTextContent(output);
+      if (text != null && text.isNotEmpty) return text;
+    }
+    return null;
+  }
+
+  static String? extractTextContent(Object? content) {
+    if (content is String) return content.isEmpty ? null : content;
     if (content is! List) return null;
     final buffer = StringBuffer();
     for (final block in content) {
-      if (block is Map && block['type'] == 'text') {
-        buffer.write(block['text']?.toString() ?? '');
+      if (block is String) {
+        buffer.write(block);
+      } else if (block is Map) {
+        final type = block['type']?.toString();
+        if (type == null ||
+            type == 'text' ||
+            type == 'output_text' ||
+            type == 'text_delta') {
+          final text =
+              block['text'] ?? block['content'] ?? block['output_text'];
+          if (text is String) buffer.write(text);
+        }
       }
     }
     final text = buffer.toString();
     return text.isEmpty ? null : text;
+  }
+
+  static Map<String, dynamic> _anthropicMessage(
+    Map<String, dynamic> message,
+  ) {
+    final content = message['content'];
+    if (content is! List) return message;
+    return {
+      ...message,
+      'content': [for (final block in content) _anthropicContentBlock(block)],
+    };
+  }
+
+  static Object _anthropicContentBlock(Object? block) {
+    if (block is! Map || block['type'] != 'image_url') {
+      return block ?? const <String, dynamic>{};
+    }
+    final imageUrl = block['image_url'];
+    final url = imageUrl is Map ? imageUrl['url']?.toString() : null;
+    final match = url == null
+        ? null
+        : RegExp(r'^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$', dotAll: true)
+            .firstMatch(url);
+    if (match == null) return block;
+    return {
+      'type': 'image',
+      'source': {
+        'type': 'base64',
+        'media_type': match.group(1),
+        'data': match.group(2),
+      },
+    };
   }
 
   static TokenUsage? extractUsage(
@@ -125,13 +206,16 @@ class ApiProtocolAdapter {
     // OpenAI: input_tokens_details.cached_tokens /
     //         output_tokens_details.reasoning_tokens
     final inputDetails = usage['input_tokens_details'];
-    final outputDetails = usage['completion_tokens_details'] ?? usage['output_tokens_details'];
+    final outputDetails =
+        usage['completion_tokens_details'] ?? usage['output_tokens_details'];
     return TokenUsage(
       promptTokens: _asInt(usage['prompt_tokens']),
       completionTokens: _asInt(usage['completion_tokens']),
-      cachedTokens: inputDetails is Map ? _asInt(inputDetails['cached_tokens']) : null,
-      reasoningTokens:
-          outputDetails is Map ? _asInt(outputDetails['reasoning_tokens']) : null,
+      cachedTokens:
+          inputDetails is Map ? _asInt(inputDetails['cached_tokens']) : null,
+      reasoningTokens: outputDetails is Map
+          ? _asInt(outputDetails['reasoning_tokens'])
+          : null,
     );
   }
 
@@ -205,9 +289,7 @@ class SseStreamParser {
           } else if (deltaMap['reasoning'] is String) {
             reasoningDelta = deltaMap['reasoning'] as String;
           }
-          if (deltaMap['content'] is String) {
-            delta = deltaMap['content'] as String;
-          }
+          delta = ApiProtocolAdapter.extractTextContent(deltaMap['content']);
         }
       }
     }
