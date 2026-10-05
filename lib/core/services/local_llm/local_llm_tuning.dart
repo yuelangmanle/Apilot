@@ -15,7 +15,8 @@ enum LocalLlmPreset {
   balanced('balanced', '均衡（推荐）', '安全 CPU 推理、4 线程、适中批量；优先保证不卡死和不闪退'),
 
   /// 只有用户明确选择时才打开 Vulkan，避免首次使用就触发设备驱动风险。
-  performance('performance', 'GPU 加速（实验）', 'Vulkan 全量卸载；可能更快，但会发热、耗内存或受驱动影响');
+  performance(
+      'performance', 'GPU 加速（实验）', 'Vulkan 保守卸载 16 层；可能更快，但会发热、耗内存或受驱动影响');
 
   final String id;
   final String label;
@@ -124,10 +125,10 @@ class LocalLlmTuning {
   }) async {
     // -1 = 自动（null）；0 = 强制纯 CPU；>0 = 指定层数。
     if (gpuLayers != null) {
-      _gpuLayersOverride = gpuLayers < 0 ? null : gpuLayers;
+      _gpuLayersOverride = gpuLayers < 0 ? null : gpuLayers.clamp(0, 64);
     }
     if (threads != null) {
-      _threadsOverride = threads <= 0 ? null : threads;
+      _threadsOverride = threads <= 0 ? null : threads.clamp(1, 8);
     }
     if (flashAttention != null) _flashAttention = flashAttention;
     if (kvQuantized != null) _kvQuantized = kvQuantized;
@@ -154,37 +155,45 @@ class LocalLlmTuning {
   /// 生成是内存带宽受限——大核 4 线程通常最优，省电档降到 2。
   static int resolveThreads() {
     if (_threadsOverride != null && _threadsOverride! > 0) {
-      return _threadsOverride!;
+      return _threadsOverride!.clamp(1, 8);
     }
-    return switch (_preset) {
+    final preferred = switch (_preset) {
       LocalLlmPreset.saver => 2,
       LocalLlmPreset.balanced => 4,
       LocalLlmPreset.performance => 6,
     };
+    return preferred.clamp(1, Platform.numberOfProcessors);
   }
 
   /// null = 跟随档位；0 = 纯 CPU；>0 = 指定卸载层数。
   static int? resolveGpuLayers() {
-    if (_gpuLayersOverride != null) return _gpuLayersOverride;
+    if (_gpuLayersOverride != null) {
+      return _gpuLayersOverride!.clamp(0, 64);
+    }
     return switch (_preset) {
       LocalLlmPreset.saver => 0,
       LocalLlmPreset.balanced => 0,
-      LocalLlmPreset.performance => null,
+      // null 在 llamadart 中等于 ModelParams.maxGpuLayers，也就是把整张
+      // 模型尽可能塞进 GPU。移动端这不是“自动”，而是最容易触发显存峰值
+      // 和驱动崩溃的组合；实验档也只给一个保守的起点，用户仍可手动调高。
+      LocalLlmPreset.performance => 16,
     };
   }
 
   static int resolveBatchSize() => switch (_preset) {
         LocalLlmPreset.saver => 64,
         LocalLlmPreset.balanced => 128,
-        LocalLlmPreset.performance => 256,
+        // GPU 档也不放大 batch：移动端最常见的卡死来自预填充峰值，
+        // 128 已经能保留吞吐收益，同时避免一次申请过大的临时 buffer。
+        LocalLlmPreset.performance => 128,
       };
 
   /// 推理后端。Android 默认使用 CPU 兼容路径；只有性能档或用户在高级项
   /// 明确指定了 GPU 层数时才请求 Vulkan。这样 GPU 是可选加速，不是启动风险。
   static GpuBackend resolveBackend() {
     if (Platform.isAndroid) {
-      if (_gpuLayersOverride != null && _gpuLayersOverride! > 0) {
-        return GpuBackend.vulkan;
+      if (_gpuLayersOverride != null) {
+        return _gpuLayersOverride! > 0 ? GpuBackend.vulkan : GpuBackend.cpu;
       }
       return switch (_preset) {
         LocalLlmPreset.saver => GpuBackend.cpu,
@@ -220,4 +229,20 @@ class LocalLlmTuning {
     ];
     return parts.join(' · ');
   }
+
+  /// 供网关诊断和后端测试使用的当前生效参数。
+  /// 不包含用户隐私，也不依赖 native 引擎已经加载成功。
+  static Map<String, dynamic> diagnostics() => {
+        'preset': _preset.id,
+        'threads': resolveThreads(),
+        'threadsOverride': _threadsOverride,
+        'gpuLayers': resolveGpuLayers(),
+        'gpuLayersOverride': _gpuLayersOverride,
+        'backend': resolveBackend().name,
+        'batchSize': resolveBatchSize(),
+        'flashAttention': _flashAttention,
+        'kvCache': resolveKvCacheType().name,
+        'speculativeNgram': _speculativeNgram,
+        'description': describe(),
+      };
 }

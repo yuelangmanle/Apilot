@@ -136,6 +136,15 @@ class ApiProtocolAdapter {
 
   static String? extractTextContent(Object? content) {
     if (content is String) return content.isEmpty ? null : content;
+    if (content is Map) {
+      // 部分中转站把单个文本块直接放成对象，而不是标准的字符串或数组：
+      // {"type":"text","text":"..."} / {"content":"..."}。
+      for (final key in const ['text', 'output_text', 'content', 'value']) {
+        final nested = extractTextContent(content[key]);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+      return null;
+    }
     if (content is! List) return null;
     final buffer = StringBuffer();
     for (final block in content) {

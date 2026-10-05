@@ -62,14 +62,16 @@ class ChatAttachment {
 
   final String name;
   final String type; // image / text
-  final String? path; // 本地文件路径（图片用）
+  final String? path; // 本地文件路径
   final String? content; // 文本文件内容（内联进提示词）
+  final String? remoteFileId; // 云端 /files 上传后返回的服务端文件 ID
 
   const ChatAttachment({
     required this.name,
     required this.type,
     this.path,
     this.content,
+    this.remoteFileId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -77,6 +79,8 @@ class ChatAttachment {
         'type': type,
         if (path != null) 'path': path,
         if (content != null) 'content': content,
+        if (remoteFileId != null && remoteFileId!.isNotEmpty)
+          'remoteFileId': remoteFileId,
       };
 
   static ChatAttachment fromJson(Map<String, dynamic> json) => ChatAttachment(
@@ -84,6 +88,22 @@ class ChatAttachment {
         type: json['type'] as String? ?? 'text',
         path: json['path'] as String?,
         content: json['content'] as String?,
+        remoteFileId: json['remoteFileId'] as String?,
+      );
+
+  ChatAttachment copyWith({
+    String? name,
+    String? type,
+    String? path,
+    String? content,
+    String? remoteFileId,
+  }) =>
+      ChatAttachment(
+        name: name ?? this.name,
+        type: type ?? this.type,
+        path: path ?? this.path,
+        content: content ?? this.content,
+        remoteFileId: remoteFileId ?? this.remoteFileId,
       );
 }
 
@@ -323,7 +343,23 @@ class ChatConversationStore {
       }
       final content =
           utf8.decode(await source.readAsBytes(), allowMalformed: true);
-      return ChatAttachment(name: name, type: type, content: content);
+      final directory = Directory(p.join(
+        (await _dir()).path,
+        'attachments',
+        _safeId(conversationId),
+      ));
+      await directory.create(recursive: true);
+      final destination = File(p.join(
+        directory.path,
+        '${DateTime.now().microsecondsSinceEpoch}_${math.Random.secure().nextInt(1 << 32)}.txt',
+      ));
+      await source.copy(destination.path);
+      return ChatAttachment(
+        name: name,
+        type: type,
+        path: destination.path,
+        content: content,
+      );
     }
     if (type != 'image') {
       throw ArgumentError.value(type, 'type', '不支持的附件类型');

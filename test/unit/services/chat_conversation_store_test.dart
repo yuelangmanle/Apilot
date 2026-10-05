@@ -61,7 +61,14 @@ void main() {
       );
 
       expect(attachment.content, '# 标题');
-      expect(attachment.path, isNull);
+      expect(attachment.path, isNotNull);
+      expect(await File(attachment.path!).readAsString(), '# 标题');
+
+      final uploaded = attachment.copyWith(remoteFileId: 'file_test_123');
+      expect(
+        ChatAttachment.fromJson(uploaded.toJson()).remoteFileId,
+        'file_test_123',
+      );
     });
 
     test('save then load round-trips all fields', () async {

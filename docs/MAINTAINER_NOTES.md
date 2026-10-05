@@ -1,11 +1,11 @@
 # Apilot 维护交接说明
 
-更新时间：2026-07-27
+更新时间：2026-10-05
 
 ## 当前版本
 
-- 应用版本：`1.21.0+26`
-- GitHub Release 标签建议：`v1.21.0`
+- 应用版本：`2.8.4+70`
+- GitHub Release 标签建议：`v2.8.4`
 - 项目/软件名称统一为：`Apilot`
 
 ## 发布验证记录
@@ -14,6 +14,8 @@
 - 已核验该 Release 含 `Apilot-v1.19.0.apk`、`Apilot-v1.19.0.dmg`、`Apilot-v1.19.0-windows-setup.exe` 和 `Apilot-v1.19.0-windows-portable.zip` 四类资产。
 - `v1.20.0` 对应提交 `3f047b0`，GitHub Actions 的验证、Android、macOS、Windows 和 Release job 均已通过。
 - 已核验该 Release 含 `Apilot-v1.20.0.apk`、`Apilot-v1.20.0.dmg`、`Apilot-v1.20.0-windows-setup.exe` 和 `Apilot-v1.20.0-windows-portable.zip` 四类资产。
+- `v2.8.3` 对应提交 `681b621`，完成本地模型稳定性、网关诊断和 Android 后端测试脚手架回归。
+- `v2.8.4` 本轮补充本地性能调参边界、云端文件上传、余额历史和一键验证脚本；发布前以 `tool/apilot_verify.sh` 和 release APK 构建结果为准。
 
 ## Android 签名策略
 
@@ -85,10 +87,8 @@
 2. 更新 `CHANGELOG.md` 顶部版本说明。
 3. 确认 Android 签名文件没有被替换。
 4. 本地运行：
-   - `flutter pub get`
-   - `dart analyze lib test`
-   - `flutter test`
-   - `flutter build apk --release`
+   - `tool/apilot_verify.sh`
+   - `APILOT_BUILD_APK=release tool/apilot_verify.sh`
    - `flutter build macos --release`
 5. 打标签并推送：
    - `git tag vX.Y.Z`

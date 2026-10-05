@@ -298,7 +298,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             final now = DateTime.now();
             final shouldUpdate = lastToolUiUpdate == null ||
                 now.difference(lastToolUiUpdate!) >=
-                    const Duration(milliseconds: 160);
+                    const Duration(milliseconds: 240);
             if (!isToolProtocol && shouldUpdate) {
               lastToolUiUpdate = now;
               _streamText = streamed.toString();
@@ -345,12 +345,15 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
             _streamText = '';
             _conversation.messages.add(ChatMessageRecord(
               role: 'assistant',
-              text: finalText.isEmpty
-                  ? (stopped
-                      ? '（已停止生成）'
-                      : '${result.error ?? '（没有返回内容）'}'
-                          '${AiService.lastError == null ? '' : '\n原因：${AiService.lastError}'}')
-                  : (stopped ? '$finalText（已停止）' : finalText),
+              text: stopped
+                  ? (finalText.isEmpty ? '（已停止生成）' : '$finalText（已停止）')
+                  : result.error != null
+                      ? (finalText.isEmpty
+                          ? result.error!
+                          : '$finalText\n\n调用失败：${result.error}')
+                      : (finalText.isEmpty
+                          ? (AiService.lastError ?? '（没有返回内容）')
+                          : finalText),
               // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
               thinking: result.thinking.isEmpty ? null : result.thinking,
               speed: speed,
@@ -437,7 +440,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         final shouldUpdate = chunkCount == 1 ||
             lastPlainUiUpdate == null ||
             now.difference(lastPlainUiUpdate) >=
-                const Duration(milliseconds: 160);
+                const Duration(milliseconds: 240);
         if (shouldUpdate) {
           lastPlainUiUpdate = now;
           _streamText = buffer.toString();
@@ -1139,54 +1142,83 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                       childrenPadding: const EdgeInsets.only(bottom: 8),
                       title:
                           const Text('高级性能选项', style: TextStyle(fontSize: 13)),
-                      subtitle: Text('通常无需调整。卡顿或闪退时保持“均衡”；GPU 加速只建议逐步试。',
+                      subtitle: Text('不知道怎么选就保持“均衡（推荐）”；卡顿/闪退不要打开 GPU 实验档。',
                           style: TextStyle(fontSize: 11, color: secondary)),
                       children: [
-                        DropdownButtonFormField<int>(
-                          initialValue: LocalLlmTuning.gpuLayersOverride ?? -1,
-                          decoration: const InputDecoration(
-                            labelText: 'GPU 卸载层数',
-                            helperText: '跟随档位=均衡关闭 GPU；只有设备稳定且有余量时再调高',
-                            border: OutlineInputBorder(),
-                            isDense: true,
+                        Card(
+                          margin: EdgeInsets.zero,
+                          color: AppColors.primary.withValues(alpha: 0.06),
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: Text(
+                              '当前生效：${LocalLlmTuning.describe()}\n'
+                              '建议先用均衡档完成一次稳定对话，再逐项尝试；每次修改都会重载模型。',
+                              style: TextStyle(fontSize: 11, color: secondary),
+                            ),
                           ),
-                          items: const [
-                            DropdownMenuItem(
-                                value: -1, child: Text('跟随档位（推荐）')),
-                            DropdownMenuItem(value: 0, child: Text('0（纯 CPU）')),
-                            DropdownMenuItem(value: 16, child: Text('16 层')),
-                            DropdownMenuItem(value: 24, child: Text('24 层')),
-                            DropdownMenuItem(value: 32, child: Text('32 层')),
-                          ],
-                          onChanged: (v) async {
-                            if (v == null) return;
-                            setSheetState(() {});
-                            await LocalLlmTuning.setAdvanced(gpuLayers: v);
-                            await _reloadForTuning();
-                          },
                         ),
-                        const SizedBox(height: 8),
-                        DropdownButtonFormField<int>(
-                          initialValue: LocalLlmTuning.threadsOverride ?? 0,
-                          decoration: const InputDecoration(
-                            labelText: '生成线程数',
-                            helperText: '一般保持自动；线程过多可能更慢、更热',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: 0, child: Text('自动（推荐）')),
-                            DropdownMenuItem(value: 2, child: Text('2')),
-                            DropdownMenuItem(value: 4, child: Text('4')),
-                            DropdownMenuItem(value: 6, child: Text('6')),
-                            DropdownMenuItem(value: 8, child: Text('8')),
+                        ExpansionTile(
+                          tilePadding: EdgeInsets.zero,
+                          childrenPadding: EdgeInsets.zero,
+                          title: const Text('手动覆盖（仅兼容性排查）',
+                              style: TextStyle(fontSize: 13)),
+                          subtitle: const Text('正常使用不要改线程数或 GPU 层数',
+                              style: TextStyle(fontSize: 11)),
+                          children: [
+                            DropdownButtonFormField<int>(
+                              initialValue:
+                                  LocalLlmTuning.gpuLayersOverride ?? -1,
+                              decoration: const InputDecoration(
+                                labelText: 'GPU 卸载层数',
+                                helperText: '自动=按档位；0=纯 CPU；GPU 建议从 16 层开始',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                    value: -1, child: Text('跟随档位（推荐）')),
+                                DropdownMenuItem(
+                                    value: 0, child: Text('0（纯 CPU）')),
+                                DropdownMenuItem(value: 8, child: Text('8 层')),
+                                DropdownMenuItem(
+                                    value: 16, child: Text('16 层')),
+                                DropdownMenuItem(
+                                    value: 24, child: Text('24 层')),
+                                DropdownMenuItem(
+                                    value: 32, child: Text('32 层')),
+                              ],
+                              onChanged: (v) async {
+                                if (v == null) return;
+                                setSheetState(() {});
+                                await LocalLlmTuning.setAdvanced(gpuLayers: v);
+                                await _reloadForTuning();
+                              },
+                            ),
+                            const SizedBox(height: 8),
+                            DropdownButtonFormField<int>(
+                              initialValue: LocalLlmTuning.threadsOverride ?? 0,
+                              decoration: const InputDecoration(
+                                labelText: '生成线程数',
+                                helperText: '自动最稳；线程越多不一定越快，可能更热',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: const [
+                                DropdownMenuItem(
+                                    value: 0, child: Text('自动（推荐）')),
+                                DropdownMenuItem(value: 2, child: Text('2')),
+                                DropdownMenuItem(value: 4, child: Text('4')),
+                                DropdownMenuItem(value: 6, child: Text('6')),
+                                DropdownMenuItem(value: 8, child: Text('8')),
+                              ],
+                              onChanged: (v) async {
+                                if (v == null) return;
+                                setSheetState(() {});
+                                await LocalLlmTuning.setAdvanced(threads: v);
+                                await _reloadForTuning();
+                              },
+                            ),
                           ],
-                          onChanged: (v) async {
-                            if (v == null) return;
-                            setSheetState(() {});
-                            await LocalLlmTuning.setAdvanced(threads: v);
-                            await _reloadForTuning();
-                          },
                         ),
                         ExpansionTile(
                           tilePadding: EdgeInsets.zero,
@@ -1728,7 +1760,7 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
                 _thinkingPanel(_streamThinking, -1, isDark),
               Text(_streamText.isEmpty && _streamThinking.isNotEmpty
                   ? '（思考中…）'
-                  : (_streamText.isEmpty ? '…' : _streamText)),
+                  : (_streamText.isEmpty ? '…' : _streamPreview(_streamText))),
             ],
           ),
         ),
@@ -1832,10 +1864,9 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
   /// 思考过程面板：默认折叠，点击展开/收起。
   Widget _thinkingPanel(String thinking, int index, bool isDark,
       {String? title}) {
-    // 生成中的思考面板（index == -1）默认展开：否则用户只看到"没动静"。
-    final expanded = index == -1
-        ? !_expandedThinking.contains(-1)
-        : _expandedThinking.contains(index);
+    // 生成中的思考文本会持续增长；默认展开会让每个增量都重新布局整段
+    // 长文本，低端手机会明显掉帧甚至触发系统看门狗。用户仍可点击查看。
+    final expanded = _expandedThinking.contains(index);
     final color =
         isDark ? AppColors.darkTextSecondary : AppColors.textSecondary;
     return Container(
@@ -1883,5 +1914,11 @@ class _LocalChatScreenState extends State<LocalChatScreen> {
         ],
       ),
     );
+  }
+
+  String _streamPreview(String text) {
+    const maxPreviewCharacters = 12000;
+    if (text.length <= maxPreviewCharacters) return text;
+    return '${text.substring(0, maxPreviewCharacters)}\n…仍在生成，最终回复会保留完整内容…';
   }
 }

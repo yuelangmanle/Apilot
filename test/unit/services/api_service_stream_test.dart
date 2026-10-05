@@ -87,6 +87,37 @@ void main() {
     expect(events.last.isDone, isTrue);
   });
 
+  test('兼容单个对象形式的 content 文本块', () async {
+    server.listen((request) {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'model': 'test-model',
+        'choices': [
+          {
+            'message': {
+              'role': 'assistant',
+              'content': {'type': 'text', 'text': '<html>ok</html>'},
+            },
+          }
+        ],
+      }));
+      request.response.close();
+    });
+
+    final events = await ApiService().sendRequestStream(
+      apiConfig: config(),
+      model: 'test-model',
+      requestBody: const {
+        'messages': [
+          {'role': 'user', 'content': '写 HTML'},
+        ],
+      },
+    ).toList();
+
+    expect(events.where((event) => event.delta == '<html>ok</html>'),
+        hasLength(1));
+  });
+
   test('处理没有空行结尾的 SSE 最后一帧', () async {
     server.listen((request) {
       request.response.headers.contentType =
@@ -245,5 +276,27 @@ void main() {
     expect(contentType, startsWith('multipart/form-data;'));
     expect(requestBody, contains('page.html'));
     expect(requestBody, contains('<html>ok</html>'));
+  });
+
+  test('兼容 file_id 和嵌套 data.id 上传响应', () {
+    const headers = <String, String>{};
+    expect(
+      const ApiFileUploadResult(
+        statusCode: 200,
+        body: {'file_id': 'file-compat'},
+        headers: headers,
+      ).id,
+      'file-compat',
+    );
+    expect(
+      const ApiFileUploadResult(
+        statusCode: 200,
+        body: {
+          'data': {'id': 'file-nested'}
+        },
+        headers: headers,
+      ).id,
+      'file-nested',
+    );
   });
 }

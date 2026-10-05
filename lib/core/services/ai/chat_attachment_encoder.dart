@@ -15,8 +15,14 @@ class ChatAttachmentEncoder {
   ) async {
     final textFiles = attachments.where((a) => a.type == 'text').toList();
     final images = attachments.where((a) => a.type == 'image').toList();
+    final remoteFiles = attachments
+        .where((a) => a.remoteFileId?.trim().isNotEmpty == true)
+        .toList();
     final messageText = StringBuffer(text);
     for (final attachment in textFiles) {
+      // 用户已经主动上传到当前 API 时，优先引用服务端文件，避免把大文件
+      // 再内联一次；没有 file_id 的附件继续走原来的文本内联兼容路径。
+      if (attachment.remoteFileId?.trim().isNotEmpty == true) continue;
       final content = attachment.content ?? '';
       if (content.isEmpty) continue;
       final clipped = content.length > maxTextCharacters
@@ -30,12 +36,22 @@ class ChatAttachmentEncoder {
         ..writeln('```');
     }
 
-    if (images.isEmpty) return messageText.toString();
+    if (images.isEmpty && remoteFiles.isEmpty) return messageText.toString();
 
     final normalizedText = messageText.toString();
     final blocks = <Map<String, dynamic>>[
       if (normalizedText.isNotEmpty) {'type': 'text', 'text': normalizedText},
     ];
+    for (final file in remoteFiles) {
+      final fileId = file.remoteFileId!.trim();
+      // `file` 是 OpenAI 兼容服务目前最常见的 Chat Completions 文件块；
+      // 同时保留顶层 file_id，兼容部分中转站的简化解析器。
+      blocks.add({
+        'type': 'file',
+        'file': {'file_id': fileId},
+        'file_id': fileId,
+      });
+    }
     for (final image in images) {
       final bytes = await _readImageBytes(image);
       if (bytes.length > maxImageBytes) {

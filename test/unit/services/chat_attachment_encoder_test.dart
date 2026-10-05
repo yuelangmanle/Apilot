@@ -57,5 +57,29 @@ void main() {
         throwsA(isA<FileSystemException>()),
       );
     });
+
+    test('uses uploaded remote file id instead of reinlining text content',
+        () async {
+      final content = await ChatAttachmentEncoder.encodeUserContent(
+        '请读取文件',
+        const [
+          ChatAttachment(
+            name: 'report.txt',
+            type: 'text',
+            content: '很长的本地文件内容',
+            remoteFileId: 'file-123',
+          ),
+        ],
+      );
+
+      expect(content, [
+        {'type': 'text', 'text': '请读取文件'},
+        {
+          'type': 'file',
+          'file': {'file_id': 'file-123'},
+          'file_id': 'file-123',
+        },
+      ]);
+    });
   });
 }

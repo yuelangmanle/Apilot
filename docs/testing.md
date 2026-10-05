@@ -1,6 +1,37 @@
 # Apilot 后端测试脚手架
 
-本项目现在把验证拆成四层，优先使用后端输出，不依赖截图；只有要确认视觉布局时才需要截图：
+本项目现在提供一个统一入口，优先使用后端输出，不依赖截图；只有要确认视觉布局时才需要截图：
+
+## 一键验证（推荐）
+
+在项目根目录执行：
+
+```bash
+tool/apilot_verify.sh
+```
+
+它会自动执行格式检查、`flutter analyze`、全量 `flutter test`，并生成一个总的
+`build/apilot_verify/<时间>/summary.json`。没有连接 Android 真机或模拟器时，设备步骤会
+标记为 `skipped`，不会阻塞本地代码回归；如果这次必须有设备，则执行：
+
+```bash
+APILOT_REQUIRE_DEVICE=1 tool/apilot_verify.sh
+```
+
+需要顺便构建 APK 时：
+
+```bash
+APILOT_BUILD_APK=debug tool/apilot_verify.sh
+APILOT_BUILD_APK=release tool/apilot_verify.sh
+```
+
+网关已经在手机上启动、希望一并做 API 冒烟时：
+
+```bash
+APILOT_RUN_GATEWAY_SMOKE=1 tool/apilot_verify.sh
+```
+
+每个步骤的完整输出都保存在同一目录，不需要打开 IDE 或查看截图排查后端问题。
 
 ## 1. Dart/Flutter 单测
 

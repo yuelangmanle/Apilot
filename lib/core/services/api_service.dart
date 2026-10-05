@@ -797,7 +797,20 @@ class ApiFileUploadResult {
     required this.headers,
   });
 
-  String? get id => body['id']?.toString();
+  String? get id {
+    final direct = body['id'] ?? body['file_id'] ?? body['fileId'];
+    if (direct != null && direct.toString().isNotEmpty) {
+      return direct.toString();
+    }
+    final data = body['data'];
+    if (data is Map) {
+      final nested = data['id'] ?? data['file_id'] ?? data['fileId'];
+      if (nested != null && nested.toString().isNotEmpty) {
+        return nested.toString();
+      }
+    }
+    return null;
+  }
 }
 
 /// Key 池：每个配置可挂多把备用 Key（metadata.extraKeys）。

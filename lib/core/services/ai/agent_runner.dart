@@ -125,7 +125,7 @@ class AgentRunner {
       final requestImages = List<String>.from(pendingImages);
       final requestAttachments =
           step == 0 ? attachments : const <ChatAttachment>[];
-      late final ({String? text, String thinking}) reply;
+      late final _AgentReply reply;
       try {
         reply = await _ask(
           systemPrompt: buildSystemPrompt(),
@@ -151,6 +151,14 @@ class AgentRunner {
         return AgentResult(
           text: answer ?? '',
           steps: steps,
+          thinking: thinkingBuffer.toString(),
+        );
+      }
+      if (reply.error != null) {
+        return AgentResult(
+          text: steps.isEmpty ? '' : _summarizeSteps(steps),
+          steps: steps,
+          error: reply.error,
           thinking: thinkingBuffer.toString(),
         );
       }
@@ -214,7 +222,7 @@ class AgentRunner {
 
     // 步数用尽：把已有的工具结果整理成回答。
     final wrapUpImages = List<String>.from(pendingImages);
-    late final ({String? text, String thinking}) wrapUp;
+    late final _AgentReply wrapUp;
     try {
       wrapUp = await _ask(
         systemPrompt: buildSystemPrompt(),
@@ -238,6 +246,14 @@ class AgentRunner {
       await _deleteTemporaryScreenshots(wrapUpImages);
     }
     if (wrapUp.thinking.isNotEmpty) thinkingBuffer.write(wrapUp.thinking);
+    if (wrapUp.error != null) {
+      return AgentResult(
+        text: _summarizeSteps(steps),
+        steps: steps,
+        error: wrapUp.error,
+        thinking: thinkingBuffer.toString(),
+      );
+    }
     return AgentResult(
       text: (wrapUp.text == null || wrapUp.text!.isEmpty)
           ? _summarizeSteps(steps)
@@ -307,7 +323,7 @@ class AgentRunner {
         (trimmed.contains('<html') && !trimmed.contains('</html>'));
   }
 
-  static Future<({String? text, String thinking})> _ask({
+  static Future<_AgentReply> _ask({
     required String systemPrompt,
     required String userPrompt,
     required List<ChatTurn> history,
@@ -356,7 +372,11 @@ class AgentRunner {
         onDelta: onDelta,
         cancellation: cancellation,
       );
-      return (text: cloud, thinking: '');
+      return _AgentReply(
+        text: cloud,
+        thinking: '',
+        error: cloud == null ? AiService.lastError : null,
+      );
     }
     if (cloudConfig == null && (engine == null || !engine.isLoaded)) {
       final shared = AiService.sharedLocalEngine;
@@ -372,7 +392,7 @@ class AgentRunner {
           ChatAttachment(name: path.split('/').last, type: 'image', path: path),
       ];
       if (inputImages.isNotEmpty && !engine.supportsVision) {
-        return (
+        return const _AgentReply(
           text: '当前本地模型尚未启用视觉投影，暂时无法分析图片。'
               '请先下载并配对该模型对应的 mmproj 文件，再重新发送。',
           thinking: '',
@@ -392,7 +412,7 @@ class AgentRunner {
         }
       }
       if (cancellation?.isCancelled == true) {
-        return (text: '', thinking: '');
+        return const _AgentReply(text: '', thinking: '');
       }
       cancellation?.setCancelHandler(engine.cancelGeneration);
       final messages = <LlamaChatMessage>[
@@ -444,12 +464,15 @@ class AgentRunner {
           }
           if (chunk.thinking != null) thinking.write(chunk.thinking);
         }
-        return (text: content.toString(), thinking: thinking.toString());
+        return _AgentReply(
+          text: content.toString(),
+          thinking: thinking.toString(),
+        );
       } catch (e) {
         debugPrint('[Agent] 本地推理失败: $e');
         final message = '本地模型调用失败：$e';
         AiService.lastError = message;
-        return (text: message, thinking: '');
+        return _AgentReply(text: null, thinking: '', error: message);
       }
     }
     final cloud = await AiService.ask(
@@ -462,7 +485,11 @@ class AgentRunner {
       onDelta: onDelta,
       cancellation: cancellation,
     );
-    return (text: cloud, thinking: '');
+    return _AgentReply(
+      text: cloud,
+      thinking: '',
+      error: cloud == null ? AiService.lastError : null,
+    );
   }
 
   /// 供测试：解析 + 执行的纯函数部分。
@@ -489,4 +516,12 @@ class ChatTurn {
   final String text;
 
   const ChatTurn({required this.isUser, required this.text});
+}
+
+class _AgentReply {
+  final String? text;
+  final String thinking;
+  final String? error;
+
+  const _AgentReply({this.text, this.thinking = '', this.error});
 }

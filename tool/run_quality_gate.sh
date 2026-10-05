@@ -13,16 +13,19 @@ dart format --output=none --set-exit-if-changed \
   lib/core/services/local_llm/chat_conversation_store.dart \
   lib/core/services/local_llm/local_llm_engine.dart \
   lib/core/services/local_llm/local_llm_tuning.dart \
+  lib/core/services/local_llm/model_storage_settings.dart \
   lib/core/services/screenshot_storage.dart \
   lib/features/api_management/screens/api_detail_screen.dart \
   lib/features/local_llm/screens/api_chat_screen.dart \
   lib/features/local_llm/screens/local_chat_screen.dart \
+  lib/features/sync/services/local_gateway_service.dart \
   test/unit/services/ai_service_test.dart \
   test/unit/services/api_protocol_adapter_test.dart \
   test/unit/services/api_service_stream_test.dart \
   test/unit/services/chat_attachment_encoder_test.dart \
   test/unit/services/chat_conversation_store_test.dart \
   test/unit/services/health_check_service_test.dart \
+  test/unit/services/local_llm_tuning_test.dart \
   test/unit/services/local_gateway_service_test.dart \
   test/unit/services/tool_plugins_test.dart
 flutter analyze

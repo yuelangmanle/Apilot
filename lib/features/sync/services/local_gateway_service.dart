@@ -347,14 +347,7 @@ class LocalGatewayService {
         'ready': modelReady,
       },
       'engine': {
-        'loaded': engine?.isLoaded ?? false,
-        'loading': engine?.isLoading ?? false,
-        'generating': engine?.isGenerating ?? false,
-        'loadedModel': _baseName(engine?.loadedModelPath),
-        'visionEnabled': engine?.supportsVision ?? false,
-        'projector': _baseName(engine?.projectorPath),
-        'projectorCandidate': engine?.hasVisionCandidate ?? false,
-        'projectorError': engine?.projectorError,
+        ...?engine?.diagnostics,
       },
       if (detailed)
         'tools': {
@@ -383,11 +376,6 @@ class LocalGatewayService {
     request.response.headers.contentType = ContentType.json;
     if (request.method != 'HEAD') request.response.write(jsonEncode(body));
     await request.response.close();
-  }
-
-  static String? _baseName(String? path) {
-    if (path == null || path.isEmpty) return null;
-    return File(path).uri.pathSegments.last;
   }
 
   /// 本地模型：/v1/models 返回当前加载的模型。

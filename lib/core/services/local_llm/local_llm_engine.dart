@@ -20,6 +20,8 @@ class LocalLlmEngine {
   String? _projectorPath;
   String? _pendingProjectorPath;
   String? _projectorError;
+  String? _loadError;
+  String? _generationError;
   bool _disposed = false;
   Future<bool>? _visionLoadFuture;
 
@@ -59,6 +61,25 @@ class LocalLlmEngine {
 
   bool get isGenerating => _generationBusy;
 
+  /// 最近一次加载/生成错误，供诊断接口使用；不把完整路径返回给外部。
+  String? get loadError => _loadError;
+
+  String? get generationError => _generationError;
+
+  Map<String, dynamic> get diagnostics => {
+        'loaded': isLoaded,
+        'loading': isLoading,
+        'generating': isGenerating,
+        'loadedModel': _baseName(_loadedModelPath),
+        'visionEnabled': supportsVision,
+        'projector': _baseName(_projectorPath),
+        'projectorCandidate': hasVisionCandidate,
+        'projectorError': projectorError,
+        'loadError': loadError,
+        'generationError': generationError,
+        'tuning': LocalLlmTuning.diagnostics(),
+      };
+
   /// 引擎当前已加载的模型是否就是 [filePath]（且没有别的加载在跑）。
   /// 界面用它判断"可以直接生成"，比 [isLoaded] 严格——isLoaded 只说明
   /// 引擎里装着*某个*模型，未必是当前会话要的那个。
@@ -67,6 +88,11 @@ class LocalLlmEngine {
 
   static String _keyFor(String filePath, int contextSize) =>
       '$filePath#$contextSize';
+
+  static String? _baseName(String? path) {
+    if (path == null || path.isEmpty) return null;
+    return File(path).uri.pathSegments.last;
+  }
 
   /// 从本地文件路径加载 GGUF 模型。
   ///
@@ -127,10 +153,11 @@ class LocalLlmEngine {
       await _generationQueue;
     } catch (_) {}
     final sw = Stopwatch()..start();
+    _loadError = null;
     debugPrint('[LocalLlm] 开始加载: ${filePath.split('/').last} '
         '(ctx=$contextSize)…');
     await unload();
-    final engine = _engine ??= LlamaEngine(LlamaBackend());
+    var engine = _engine ??= LlamaEngine(LlamaBackend());
     // 应用性能档位（线程 / GPU 卸载 / FlashAttention / KV 量化）。
     final threads = LocalLlmTuning.resolveThreads();
     final gpuLayers = LocalLlmTuning.resolveGpuLayers();
@@ -144,10 +171,31 @@ class LocalLlmEngine {
       await _loadWithBackend(
           engine, filePath, contextSize, threads, gpuLayers, backend);
     } catch (e) {
-      if (backend == GpuBackend.cpu) rethrow;
+      if (backend == GpuBackend.cpu) {
+        _loadError = '$e';
+        rethrow;
+      }
       debugPrint('[LocalLlm] ${backend.name} 加载失败，回退 CPU: $e');
-      await _loadWithBackend(
-          engine, filePath, contextSize, threads, 0, GpuBackend.cpu);
+      // Vulkan/Metal 加载失败后不能在同一个 native handle 上直接重试：
+      // 部分驱动已经创建了不完整的 allocator，继续复用会把一次可恢复的
+      // 加载错误变成 SIGABRT/SIGSEGV。彻底销毁后再创建干净的 CPU 引擎。
+      try {
+        await engine.unloadModel();
+      } catch (_) {}
+      if (identical(_engine, engine)) {
+        try {
+          await engine.dispose();
+        } catch (_) {}
+        _engine = LlamaEngine(LlamaBackend());
+      }
+      engine = _engine!;
+      try {
+        await _loadWithBackend(
+            engine, filePath, contextSize, threads, 0, GpuBackend.cpu);
+      } catch (fallbackError) {
+        _loadError = 'GPU 加载失败：$e；CPU 回退也失败：$fallbackError';
+        rethrow;
+      }
     }
     _loadedModelPath = filePath;
     _visionAvailable = false;
@@ -310,12 +358,17 @@ class LocalLlmEngine {
       final buffer = StringBuffer();
       await for (final chunk in engine.create(
         messages,
+        enableThinking: false,
         params: GenerationParams(maxTokens: maxTokens, temp: temp, topP: topP),
       )) {
         final text = chunk.choices.first.delta.content;
         if (text != null) buffer.write(text);
       }
+      _generationError = null;
       return buffer.toString();
+    } catch (error) {
+      _generationError = '$error';
+      rethrow;
     } finally {
       _generationBusy = false;
       if (!release.isCompleted) release.complete();
@@ -387,6 +440,7 @@ class LocalLlmEngine {
               yield LocalLlmChunk(content: content, thinking: thinking);
             }
           }
+          _generationError = null;
           return;
         } catch (e) {
           if (speculative && !yielded) {
@@ -395,6 +449,7 @@ class LocalLlmEngine {
             speculative = false;
             continue;
           }
+          _generationError = '$e';
           rethrow;
         }
       }

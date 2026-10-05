@@ -60,12 +60,11 @@ class ModelStorageSettings {
       if (!granted) {
         final status = await Permission.manageExternalStorage.request();
         if (!status.isGranted) {
-          // 这是特殊应用访问权限，不会出现在普通运行时权限弹窗里。
-          // 某些 Android/permission_handler 组合 request() 只返回 denied，
-          // 因此主动打开正确的系统设置入口，避免用户在权限管理里找不到。
-          if (status.isPermanentlyDenied || status.isRestricted) {
-            await openAppSettings();
-          }
+          // 这是特殊应用访问权限，不会出现在普通“应用权限”列表里。
+          // request() 在 Android 11+ 常常只返回 denied，不能等
+          // isPermanentlyDenied；每次拒绝都直接打开“所有文件访问”专页，
+          // 否则用户会看到“请授权”却找不到任何可授权的入口。
+          await openPublicStorageSettings();
           return (
             await _privateDir(),
             '没有"所有文件访问"权限，已继续使用应用私有目录；'

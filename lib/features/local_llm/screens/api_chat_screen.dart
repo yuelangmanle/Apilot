@@ -10,6 +10,7 @@ import '../../../core/services/ai/agent_runner.dart' as agent;
 import '../../../core/services/ai/memory_store.dart';
 import '../../../core/services/ai/tool_registry.dart';
 import '../../../core/services/api_service.dart';
+import '../../../core/services/api_protocol_adapter.dart';
 import '../../../core/services/ai/chat_attachment_encoder.dart';
 import '../../../core/services/local_llm/chat_conversation_store.dart';
 import '../../../shared/theme/color_scheme.dart';
@@ -59,6 +60,7 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
   bool _toolsEnabled = ToolRegistry.masterEnabled;
   final List<agent.AgentStep> _pendingSteps = [];
   final List<ChatAttachment> _pendingAttachments = [];
+  final Set<String> _uploadingAttachmentPaths = {};
   Timer? _scrollTimer;
   Timer? _streamFlushTimer;
   StringBuffer? _liveTextBuffer;
@@ -184,9 +186,13 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
         setState(() {
           _conversation.messages.add(ChatMessageRecord(
             role: 'assistant',
-            text: result.text.isEmpty
-                ? (stopped ? '（已停止生成）' : (result.error ?? '（没有返回内容）'))
-                : (stopped ? '${result.text}（已停止）' : result.text),
+            text: stopped
+                ? (result.text.isEmpty ? '（已停止生成）' : '${result.text}（已停止）')
+                : result.error != null
+                    ? (result.text.isEmpty
+                        ? result.error!
+                        : '${result.text}\n\n调用失败：${result.error}')
+                    : (result.text.isEmpty ? '（没有返回内容）' : result.text),
             // 工具模式也把思考过程留下来（之前完全不收集，所以"看不到思考"）。
             thinking: result.thinking.isEmpty ? null : result.thinking,
             toolSteps: [
@@ -379,6 +385,74 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
     final attachment = _pendingAttachments[index];
     setState(() => _pendingAttachments.removeAt(index));
     await _store.deleteAttachment(attachment.path);
+  }
+
+  Future<void> _uploadPendingAttachment(int index) async {
+    if (index < 0 || index >= _pendingAttachments.length) return;
+    final attachment = _pendingAttachments[index];
+    final path = attachment.path;
+    if (attachment.remoteFileId?.isNotEmpty == true) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('这个附件已经上传过了'),
+        duration: Duration(seconds: 2),
+      ));
+      return;
+    }
+    if (path == null || path.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('这个附件没有可上传的本地副本'),
+        backgroundColor: AppColors.warning,
+      ));
+      return;
+    }
+    if (ApiProtocolAdapter.defaultFileUploadEndpoint(
+          widget.apiConfig.protocolId,
+        ) ==
+        null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('当前协议没有通用 /files 接口，聊天仍可使用内联附件'),
+        backgroundColor: AppColors.warning,
+      ));
+      return;
+    }
+
+    setState(() => _uploadingAttachmentPaths.add(path));
+    try {
+      final result = await _apiService.uploadFile(
+        apiConfig: widget.apiConfig,
+        filePath: path,
+        purpose: 'assistants',
+        fileName: attachment.name,
+      );
+      final fileId = result.id;
+      if (fileId == null || fileId.isEmpty) {
+        throw StateError('服务端没有返回 file_id');
+      }
+      if (!mounted) return;
+      final currentIndex = _pendingAttachments.indexWhere(
+        (item) => item.path == path,
+      );
+      if (currentIndex >= 0) {
+        setState(() {
+          _pendingAttachments[currentIndex] =
+              _pendingAttachments[currentIndex].copyWith(remoteFileId: fileId);
+        });
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('已上传 ${attachment.name}，file_id：$fileId'),
+        backgroundColor: AppColors.success,
+        duration: const Duration(seconds: 4),
+      ));
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('上传 ${attachment.name} 失败：$error'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingAttachmentPaths.remove(path));
+    }
   }
 
   void _showSettingsSheet() {
@@ -703,17 +777,46 @@ class _ApiChatScreenState extends State<ApiChatScreen> {
                             for (var index = 0;
                                 index < _pendingAttachments.length;
                                 index++)
-                              Chip(
-                                avatar: Icon(
-                                  _pendingAttachments[index].type == 'image'
-                                      ? Icons.image
-                                      : Icons.description,
-                                  size: 16,
+                              Tooltip(
+                                message: _pendingAttachments[index]
+                                            .remoteFileId
+                                            ?.isNotEmpty ==
+                                        true
+                                    ? '已上传：${_pendingAttachments[index].remoteFileId}'
+                                    : '点击上传到当前 API 的 /files；不上传也可以以内联附件发送',
+                                child: InputChip(
+                                  avatar: _uploadingAttachmentPaths.contains(
+                                          _pendingAttachments[index].path)
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        )
+                                      : Icon(
+                                          _pendingAttachments[index]
+                                                      .remoteFileId
+                                                      ?.isNotEmpty ==
+                                                  true
+                                              ? Icons.cloud_done
+                                              : (_pendingAttachments[index]
+                                                          .type ==
+                                                      'image'
+                                                  ? Icons.image
+                                                  : Icons.description),
+                                          size: 16,
+                                        ),
+                                  label: Text(
+                                    _pendingAttachments[index].name,
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                  onPressed: _uploadingAttachmentPaths.contains(
+                                          _pendingAttachments[index].path)
+                                      ? null
+                                      : () => _uploadPendingAttachment(index),
+                                  onDeleted: () =>
+                                      _removePendingAttachment(index),
                                 ),
-                                label: Text(_pendingAttachments[index].name,
-                                    style: const TextStyle(fontSize: 11)),
-                                onDeleted: () =>
-                                    _removePendingAttachment(index),
                               ),
                           ],
                         ),
