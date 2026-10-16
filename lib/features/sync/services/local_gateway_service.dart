@@ -520,6 +520,8 @@ class LocalGatewayService {
       }
       return;
     }
+    var generationActive = false;
+    var responseClosed = false;
     try {
       final engine = await _ensureEngine(model);
       if (engine == null) {
@@ -544,21 +546,30 @@ class LocalGatewayService {
         return;
       }
 
+      void cancelIfDisconnected() {
+        if (generationActive && !responseClosed) {
+          debugPrint('[Gateway] 客户端已断开，取消本地生成');
+          engine.cancelGeneration();
+        }
+      }
+
+      // HttpResponse.done 在客户端断开时会完成（通常带错误），监听它可以
+      // 及时释放 native 推理；正常 close 前先标记 responseClosed，避免误取消。
+      unawaited(request.response.done.then<void>(
+        (_) => cancelIfDisconnected(),
+        onError: (Object _, StackTrace __) => cancelIfDisconnected(),
+      ));
+
       final id = 'chatcmpl-local-${DateTime.now().millisecondsSinceEpoch}';
       final created = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      generationActive = true;
       if (stream) {
         request.response.headers.contentType =
             ContentType('text', 'event-stream', charset: 'utf-8');
-        final thinkingFallback = StringBuffer();
-        var sawContent = false;
         await for (final chunk in engine.generateStream(messages,
             maxTokens: maxTokens, temp: temp, suppressThinking: true)) {
-          if (chunk.thinking != null && chunk.thinking!.isNotEmpty) {
-            thinkingFallback.write(chunk.thinking);
-          }
           final delta = chunk.content;
           if (delta == null || delta.isEmpty) continue;
-          sawContent = true;
           request.response.write('data: ${jsonEncode({
                 'id': id,
                 'object': 'chat.completion.chunk',
@@ -574,33 +585,12 @@ class LocalGatewayService {
               })}\n\n');
           await request.response.flush();
         }
-        // 全是思考、没有正文时，把思考内容当结果返回（否则客户端拿到空回复）。
-        if (!sawContent && thinkingFallback.isNotEmpty) {
-          request.response.write('data: ${jsonEncode({
-                'id': id,
-                'object': 'chat.completion.chunk',
-                'created': created,
-                'model': model.id,
-                'choices': [
-                  {
-                    'index': 0,
-                    'delta': {'content': thinkingFallback.toString()},
-                    'finish_reason': null,
-                  }
-                ],
-              })}\n\n');
-        }
         request.response.write('data: [DONE]\n\n');
       } else {
         final buffer = StringBuffer();
-        final thinking = StringBuffer();
         await for (final chunk in engine.generateStream(messages,
             maxTokens: maxTokens, temp: temp, suppressThinking: true)) {
           if (chunk.content != null) buffer.write(chunk.content);
-          if (chunk.thinking != null) thinking.write(chunk.thinking);
-        }
-        if (buffer.isEmpty && thinking.isNotEmpty) {
-          buffer.write(thinking.toString());
         }
         request.response.headers.contentType = ContentType.json;
         request.response.write(jsonEncode({
@@ -620,10 +610,14 @@ class LocalGatewayService {
           ],
         }));
       }
+      generationActive = false;
+      responseClosed = true;
       await request.response.close();
     } catch (e) {
+      generationActive = false;
       debugPrint('[Gateway] 本地推理失败: $e');
       try {
+        responseClosed = true;
         request.response.statusCode = HttpStatus.internalServerError;
         request.response.write(jsonEncode({
           'error': {'message': '本地推理失败: $e'}
@@ -631,6 +625,7 @@ class LocalGatewayService {
         await request.response.close();
       } catch (_) {}
     } finally {
+      generationActive = false;
       completer.complete();
     }
   }

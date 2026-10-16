@@ -483,6 +483,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       return buffer.toString();
     };
     ToolHost.searchModels = (query) async {
+      if (ModelRepoImporter.parseTarget(query) != null) {
+        return ModelRepoImporter.importRepo(query);
+      }
       final results = await Future.wait([
         CommunityModelService.fetchHuggingFaceModels(query: query, limit: 6),
         CommunityModelService.fetchModelScopeModels(query: query, limit: 6),
@@ -497,14 +500,13 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             '${model.quantization}'
             '${model.tags.contains('多模态') ? '｜多模态' : ''}');
       }
-      buffer.writeln('用 model_save 把选中的仓库写入「我的社区模型」（可同时下载）。');
+      buffer.writeln('用 model_save 解析仓库并列出全部文件；这一步不会下载。');
       return buffer.toString();
     };
-    ToolHost.saveModel = (repo, download) async {
+    ToolHost.saveModel = (repo) async {
       final saved = await ModelRepoImporter.importRepo(
         repo,
         deviceRamMb: null,
-        download: download,
       );
       return saved;
     };
@@ -531,14 +533,54 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       }
       return buffer.toString();
     };
-    // AI 触发的下载用独立下载服务：不必先打开模型商店也能下。
-    ModelRepoImporter.onDownload = (url, fileName) async {
-      final downloader = ModelDownloadService();
-      try {
-        await downloader.download(url, fileName, expectedFileName: fileName);
-      } finally {
-        downloader.dispose();
+    ToolHost.requestModelDownload = (repo, fileName) async {
+      final entry = await ModelRepoImporter.savedRepo(repo);
+      if (!mounted) return '未开始下载：应用页面已关闭。';
+      final navigator = Navigator.of(context);
+      if (entry == null) return '未开始下载：请先用 model_save 解析该仓库。';
+      final candidate = [...entry.info.variants, ...entry.info.projectors]
+          .where((file) => file.fileName == fileName)
+          .firstOrNull;
+      if (candidate == null) return '未开始下载：file_name 不在已解析的文件列表中。';
+      final dialogContext = navigator.overlay?.context;
+      if (dialogContext == null || !dialogContext.mounted) {
+        return '未开始下载：请到模型商店选择文件。';
       }
+      final confirmed = await showDialog<bool>(
+        context: dialogContext,
+        builder: (context) => AlertDialog(
+          title: const Text('确认模型下载'),
+          content: Text('仓库：${entry.info.name}\n文件：$fileName\n'
+              '大小：${candidate.sizeLabel}\n精度：${candidate.quantization}\n\n'
+              '仅下载这个文件，不会附带其他模型或视觉投影。'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('不下载')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('确认下载')),
+          ],
+        ),
+      );
+      if (confirmed != true) return '用户未确认，未开始下载。';
+      final taskId = 'ai_${DateTime.now().microsecondsSinceEpoch}';
+      await DownloadTaskStore.upsert(DownloadTask(
+        id: taskId,
+        url: candidate.downloadUrl,
+        fileName: fileName.split('/').last,
+        status: 'downloading',
+        receivedBytes: 0,
+        totalBytes: candidate.sizeBytes,
+        updatedAt: DateTime.now(),
+      ));
+      final downloader = ModelDownloadService();
+      unawaited(downloader
+          .download(candidate.downloadUrl, taskId, expectedFileName: fileName)
+          .then<void>((_) {}, onError: (Object error, StackTrace stack) {
+        debugPrint('[AI download] $error');
+      }).whenComplete(downloader.dispose));
+      return '用户已确认，下载任务已创建：$taskId\n文件：$fileName\n请到下载管理查看实时进度。';
     };
     AppToolHost.openPage = (page) async {
       if (!mounted) return 'App 未就绪';

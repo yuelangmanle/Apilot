@@ -10,6 +10,7 @@ import '../local_llm/chat_conversation_store.dart';
 import '../local_llm/local_llm_engine.dart';
 import '../screenshot_storage.dart';
 import 'ai_service.dart';
+import 'agent_output_decoder.dart';
 import 'tool_registry.dart';
 
 /// 一次工具调用记录（界面展示用）。
@@ -80,6 +81,8 @@ class AgentRunner {
 
     /// 流式增量回调：工具模式也能边生成边显示（不再"全想完才吐字"）。
     void Function(String delta)? onDelta,
+    void Function(String delta)? onThinking,
+    void Function()? onRoundStart,
     ApiRequestCancellation? cancellation,
   }) async {
     ToolHost.visionEnabled = localEngine?.supportsVision ?? false;
@@ -122,6 +125,7 @@ class AgentRunner {
 
     final stepLimit = maxToolSteps ?? (localEngine != null ? 3 : maxSteps);
     for (var step = 0; step < stepLimit; step++) {
+      onRoundStart?.call();
       final requestImages = List<String>.from(pendingImages);
       final requestAttachments =
           step == 0 ? attachments : const <ChatAttachment>[];
@@ -138,6 +142,10 @@ class AgentRunner {
           imagePaths: requestImages,
           attachments: requestAttachments,
           onDelta: onDelta,
+          onThinking: onThinking,
+          temp: temp,
+          topP: topP,
+          thinkingEnabled: thinkingEnabled,
           allowCloudStreaming: cloudConfig != null,
           cancellation: cancellation,
         );
@@ -221,6 +229,7 @@ class AgentRunner {
     }
 
     // 步数用尽：把已有的工具结果整理成回答。
+    onRoundStart?.call();
     final wrapUpImages = List<String>.from(pendingImages);
     late final _AgentReply wrapUp;
     try {
@@ -236,6 +245,7 @@ class AgentRunner {
         imagePaths: wrapUpImages,
         attachments: attachments,
         onDelta: onDelta,
+        onThinking: onThinking,
         temp: temp,
         topP: topP,
         thinkingEnabled: thinkingEnabled,
@@ -257,7 +267,7 @@ class AgentRunner {
     return AgentResult(
       text: (wrapUp.text == null || wrapUp.text!.isEmpty)
           ? _summarizeSteps(steps)
-          : wrapUp.text!,
+          : ToolRegistry.stripCall(wrapUp.text!),
       steps: steps,
       thinking: thinkingBuffer.toString(),
     );
@@ -334,12 +344,25 @@ class AgentRunner {
     List<String> imagePaths = const [],
     List<ChatAttachment> attachments = const [],
     void Function(String delta)? onDelta,
+    void Function(String delta)? onThinking,
     bool allowCloudStreaming = false,
     double? temp,
     double? topP,
     bool thinkingEnabled = false,
     ApiRequestCancellation? cancellation,
   }) async {
+    final decoder = AgentOutputDecoder(onText: onDelta, onThinking: onThinking);
+    _AgentReply finish(String? raw, {String? error}) {
+      if (raw != null && !decoder.hasInput) decoder.add(raw);
+      decoder.finish(
+          isToolCall: ToolRegistry.parseCall(decoder.answer) != null);
+      return _AgentReply(
+        text: raw == null ? null : decoder.answer,
+        thinking: decoder.thinking,
+        error: error,
+      );
+    }
+
     // 路由规则（严格）：
     // · 云端对话页传了 cloudConfig → 一律走那个云端配置（绝不被本地引擎劫持）；
     // · 本地对话页传了引擎 → 用本地；
@@ -369,14 +392,12 @@ class AgentRunner {
               path: path,
             ),
         ],
-        onDelta: onDelta,
+        onDelta: decoder.add,
+        onThinking: decoder.addThinking,
+        allowReasoningFallback: false,
         cancellation: cancellation,
       );
-      return _AgentReply(
-        text: cloud,
-        thinking: '',
-        error: cloud == null ? AiService.lastError : null,
-      );
+      return finish(cloud, error: cloud == null ? AiService.lastError : null);
     }
     if (cloudConfig == null && (engine == null || !engine.isLoaded)) {
       final shared = AiService.sharedLocalEngine;
@@ -441,8 +462,6 @@ class AgentRunner {
       ];
       try {
         // 用流式收集：正文与思考都拿到（工具模式也要能看到思考过程）。
-        final content = StringBuffer();
-        final thinking = StringBuffer();
         await for (final chunk in engine
             .generateStream(
               messages,
@@ -459,15 +478,11 @@ class AgentRunner {
             break;
           }
           if (chunk.content != null) {
-            content.write(chunk.content);
-            onDelta?.call(chunk.content!);
+            decoder.add(chunk.content!);
           }
-          if (chunk.thinking != null) thinking.write(chunk.thinking);
+          if (chunk.thinking != null) decoder.addThinking(chunk.thinking!);
         }
-        return _AgentReply(
-          text: content.toString(),
-          thinking: thinking.toString(),
-        );
+        return finish(decoder.answer);
       } catch (e) {
         debugPrint('[Agent] 本地推理失败: $e');
         final message = '本地模型调用失败：$e';
@@ -482,14 +497,12 @@ class AgentRunner {
       // 云端对话页把自己的配置传进来：不再依赖全局"AI 设置"选没选。
       preferredConfig: cloudConfig,
       maxTokens: maxTokens,
-      onDelta: onDelta,
+      onDelta: decoder.add,
+      onThinking: decoder.addThinking,
+      allowReasoningFallback: false,
       cancellation: cancellation,
     );
-    return _AgentReply(
-      text: cloud,
-      thinking: '',
-      error: cloud == null ? AiService.lastError : null,
-    );
+    return finish(cloud, error: cloud == null ? AiService.lastError : null);
   }
 
   /// 供测试：解析 + 执行的纯函数部分。

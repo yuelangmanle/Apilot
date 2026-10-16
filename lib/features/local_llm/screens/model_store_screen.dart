@@ -10,7 +10,6 @@ import '../../../core/services/local_llm/model_catalog.dart';
 import '../../../core/services/local_llm/community_model_service.dart';
 import '../../../core/services/local_llm/model_url_parser.dart';
 import '../../../core/services/local_llm/model_catalog_store.dart';
-import '../../../core/services/local_llm/model_repo_importer.dart';
 import '../../../core/services/local_llm/model_storage_settings.dart';
 import '../services/model_curator_service.dart';
 import '../../../core/services/local_llm/device_capabilities.dart';
@@ -70,16 +69,6 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
     });
     _refreshDownloaded();
     _loadDeviceAndCommunity();
-    // AI 通过插件找到的模型也在本页下载（同一条进度/续传链路）。
-    ModelRepoImporter.onDownload = (url, fileName) async {
-      if (!mounted) return;
-      await _downloadUrl(
-        taskId: fileName,
-        url: url,
-        fileName: fileName,
-        displayName: fileName,
-      );
-    };
   }
 
   /// AI 精选：把社区列表交给 AI 挑几个并写中文介绍，结果固定到本机。
@@ -695,7 +684,6 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
   void dispose() {
     // 复位静态下载回调：否则它一直指向已销毁的页面，AI 触发下载时会
     // 在已 dispose 的 State 上 setState。
-    ModelRepoImporter.onDownload = null;
     _progressSubscription?.cancel();
     super.dispose();
   }
@@ -1504,6 +1492,27 @@ class _ModelStoreScreenState extends State<ModelStoreScreen> {
                 style: TextStyle(fontSize: 11, color: secondary)),
             const SizedBox(height: 8),
             _buildModelCard(model),
+            if (model.projectors.isNotEmpty) ...[
+              const Text('视觉投影候选（请核对对应架构和模型尺寸）'),
+              for (final projector in model.projectors)
+                ListTile(
+                  title: Text(projector.fileName,
+                      style: const TextStyle(fontSize: 12)),
+                  subtitle: Text(projector.sizeLabel),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.download_outlined),
+                    tooltip: '只下载投影文件，之后核对并配对',
+                    onPressed: () => _downloadUrl(
+                      taskId: ModelStorageSettings.scopedProjectorFileName(
+                          model.id, projector.fileName),
+                      url: projector.downloadUrl,
+                      fileName: ModelStorageSettings.scopedProjectorFileName(
+                          model.id, projector.fileName),
+                      displayName: projector.fileName,
+                    ),
+                  ),
+                ),
+            ],
           ],
         ),
       ),

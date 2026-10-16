@@ -1,11 +1,11 @@
 # Apilot 维护交接说明
 
-更新时间：2026-10-05
+更新时间：2026-10-16
 
 ## 当前版本
 
-- 应用版本：`2.8.4+70`
-- GitHub Release 标签建议：`v2.8.4`
+- 应用版本：`2.8.5+71`
+- GitHub Release 标签建议：`v2.8.5`
 - 项目/软件名称统一为：`Apilot`
 
 ## 发布验证记录
@@ -16,6 +16,7 @@
 - 已核验该 Release 含 `Apilot-v1.20.0.apk`、`Apilot-v1.20.0.dmg`、`Apilot-v1.20.0-windows-setup.exe` 和 `Apilot-v1.20.0-windows-portable.zip` 四类资产。
 - `v2.8.3` 对应提交 `681b621`，完成本地模型稳定性、网关诊断和 Android 后端测试脚手架回归。
 - `v2.8.4` 本轮补充本地性能调参边界、云端文件上传、余额历史和一键验证脚本；发布前以 `tool/apilot_verify.sh` 和 release APK 构建结果为准。
+- `v2.8.5` 本轮补充流式输出解码、工具调用隔离、模型仓库显式下载确认、视觉投影严格配对和网关断开取消；发布前仍以 `tool/apilot_verify.sh` 和 release APK 构建结果为准。
 
 ## Android 签名策略
 

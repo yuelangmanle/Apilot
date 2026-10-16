@@ -1,4 +1,3 @@
-
 /// 社区仓库中的一个可下载文件（真实文件名/大小/下载地址）。
 class ModelFileVariant {
   final String fileName;
@@ -58,6 +57,7 @@ class LocalModelInfo {
 
   /// 视觉投影文件（多模态模型需要它才能看图，可空）。
   final String? mmProjUrl;
+  final List<ModelFileVariant> projectors;
 
   const LocalModelInfo({
     required this.id,
@@ -72,6 +72,7 @@ class LocalModelInfo {
     this.license,
     this.variants = const [],
     this.mmProjUrl,
+    this.projectors = const [],
   });
 
   String get sizeMb => '${(sizeBytes / (1024 * 1024)).toStringAsFixed(0)} MB';
@@ -86,6 +87,8 @@ class LocalModelInfo {
         'ramRequired': ramRequired,
         'tags': tags,
         if (mmProjUrl != null) 'mmProjUrl': mmProjUrl,
+        if (projectors.isNotEmpty)
+          'projectors': projectors.map((file) => file.toJson()).toList(),
         if (variants.isNotEmpty)
           'variants': variants.map((v) => v.toJson()).toList(),
       };
@@ -101,6 +104,12 @@ class LocalModelInfo {
         tags: (json['tags'] as List?)?.cast<String>() ?? const [],
         recommended: json['recommended'] == true,
         mmProjUrl: json['mmProjUrl'] as String?,
+        projectors: (json['projectors'] as List?)
+                ?.whereType<Map>()
+                .map((file) =>
+                    ModelFileVariant.fromJson(Map<String, dynamic>.from(file)))
+                .toList() ??
+            const [],
         variants: (json['variants'] as List?)
                 ?.whereType<Map>()
                 .map((v) =>

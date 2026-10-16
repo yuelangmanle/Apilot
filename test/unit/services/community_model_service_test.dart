@@ -11,12 +11,10 @@ void main() {
               'Qwen3-1.7B-Q4_K_M.gguf'),
           'Q4_K_M');
       expect(
-          CommunityModelService.quantizationFromFileName(
-              'model-q4_k_s.gguf'),
+          CommunityModelService.quantizationFromFileName('model-q4_k_s.gguf'),
           'Q4_K_S');
       expect(
-          CommunityModelService.quantizationFromFileName(
-              'model-IQ4_XS.gguf'),
+          CommunityModelService.quantizationFromFileName('model-IQ4_XS.gguf'),
           'IQ4_XS');
       expect(CommunityModelService.quantizationFromFileName('model-Q8_0.gguf'),
           'Q8_0');
@@ -24,17 +22,13 @@ void main() {
           'Q2_K');
     });
 
-    test('跳过未量化/全精度权重（体积过大）', () {
-      expect(
-          CommunityModelService.quantizationFromFileName(
-              'model-BF16.gguf'),
-          isNull);
-      expect(
-          CommunityModelService.quantizationFromFileName('model-f16.gguf'),
-          isNull);
-      expect(
-          CommunityModelService.quantizationFromFileName('model-F32.gguf'),
-          isNull);
+    test('保留全精度 GGUF，由用户在候选列表中决定是否下载', () {
+      expect(CommunityModelService.quantizationFromFileName('model-BF16.gguf'),
+          'BF16');
+      expect(CommunityModelService.quantizationFromFileName('model-f16.gguf'),
+          'F16');
+      expect(CommunityModelService.quantizationFromFileName('model-F32.gguf'),
+          'F32');
     });
 
     test('跳过分片模型（App 内无法合并多文件）', () {
@@ -45,17 +39,15 @@ void main() {
     });
 
     test('非 gguf 文件不算候选', () {
-      expect(CommunityModelService.quantizationFromFileName('README.md'),
-          isNull);
       expect(
-          CommunityModelService.quantizationFromFileName('config.json'),
+          CommunityModelService.quantizationFromFileName('README.md'), isNull);
+      expect(CommunityModelService.quantizationFromFileName('config.json'),
           isNull);
     });
   });
 
   group('pickVariant', () {
-    ModelFileVariant variant(String name, int sizeBytes) =>
-        ModelFileVariant(
+    ModelFileVariant variant(String name, int sizeBytes) => ModelFileVariant(
           fileName: name,
           downloadUrl: 'https://example.com/$name',
           sizeBytes: sizeBytes,

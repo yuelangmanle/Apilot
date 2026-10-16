@@ -130,7 +130,7 @@ class ToolRegistry {
       id: 'models',
       label: '找模型 / 入库下载',
       description: '联网搜索 HuggingFace / 魔搭 / GitHub 上的模型，'
-          '写入「我的社区模型」并可立即下载',
+          '列出真实文件并入库；下载前必须由用户确认具体文件',
     ),
     ToolCategory(
       id: 'news',
@@ -257,8 +257,8 @@ class ToolRegistry {
     // 参数细节模型大多能从键名推断，必要时再问它。
     final buffer = StringBuffer()
       ..writeln('需要工具时只输出一行：@@TOOL {"name":"工具名","args":{...}}')
-      ..writeln('（@@工具名 {参数} 也可以）。不需要工具就正常回答。')
-      ..writeln('多步任务先 todo_write 列计划；写网页先 html_check 自检再 save_html。')
+      ..writeln('工具调用不要放在思考、代码块或解释中。拿到工具结果后再回答。')
+      ..writeln('仓库或 GGUF 链接先 model_save 列出全部文件，禁止擅自下载或选择量化。')
       ..writeln('可用工具：');
     for (final tool in enabled) {
       final keys = RegExp(r'"([a-zA-Z_][a-zA-Z0-9_]*)":')
@@ -267,7 +267,7 @@ class ToolRegistry {
           .where((k) => k != 'name' && k != 'args')
           .toList();
       buffer.writeln('- ${tool.name}：${tool.description}'
-          '${keys.isEmpty ? '' : '（参数：${keys.join('/')}）'}');
+          '${compact ? ' ${tool.parameters}' : (keys.isEmpty ? '' : '（参数：${keys.join('/')}）')}');
     }
     return buffer.toString();
   }
@@ -283,7 +283,9 @@ class ToolRegistry {
     if (RegExp(r'搜索|查一下|查找|网址|网页内容|联网|新闻|百科|github|仓库').hasMatch(lower)) {
       categories.addAll(['search', 'web', 'news', 'github']);
     }
-    if (RegExp(r'模型|量化|下载|gguf|投影|mmproj').hasMatch(lower)) {
+    if (RegExp(
+            r'模型|量化|下载|gguf|投影|mmproj|huggingface|hf-mirror|modelscope|[\w.-]+/[\w.-]+')
+        .hasMatch(lower)) {
       categories.addAll(['models', 'downloads']);
     }
     if (RegExp(r'apilot|配置|api|接口|用量|请求').hasMatch(lower)) {
@@ -322,18 +324,24 @@ class ToolRegistry {
           final parsed = _fromJson(argsJson, fallbackName: name);
           if (parsed != null) return parsed;
         }
-        return (name: name, args: const <String, dynamic>{});
+        return null;
       }
     }
     // ③ 回复"恰好就是工具名"（云端模型常见）：当作无参调用执行，
     //    否则用户会收到一条内容只有 "current_time" 的回复。
     final nameOnly = text.trim().replaceAll(RegExp(r'[`。.!！?？\s]+$'), '');
-    if (nameOnly.isNotEmpty && byName(nameOnly) != null) {
+    if (nameOnly.isNotEmpty && byName(nameOnly)?.parameters == '{}') {
       return (name: nameOnly, args: const <String, dynamic>{});
     }
     // ④ 裸 JSON（含 name/tool/tool_name 字段且是我们认识的工具）。
-    final bareJson = _extractBalancedJson(text, text.indexOf('{'));
-    if (bareJson != null) {
+    final bare = text
+        .trim()
+        .replaceFirst(RegExp(r'^```(?:json)?\s*'), '')
+        .replaceFirst(RegExp(r'\s*```$'), '')
+        .trim();
+    final bareJson =
+        bare.startsWith('{') ? _extractBalancedJson(bare, 0) : null;
+    if (bareJson != null && bareJson.length == bare.length) {
       final parsed = _fromJson(bareJson);
       if (parsed != null) return parsed;
     }
@@ -364,6 +372,10 @@ class ToolRegistry {
       Map<String, dynamic> args;
       if (argsRaw is Map) {
         args = Map<String, dynamic>.from(argsRaw);
+      } else if (argsRaw is String) {
+        final decodedArgs = jsonDecode(argsRaw);
+        if (decodedArgs is! Map) return null;
+        args = Map<String, dynamic>.from(decodedArgs);
       } else {
         args = Map<String, dynamic>.from(decoded)
           ..remove('name')
@@ -453,7 +465,10 @@ class ToolRegistry {
       }
       final json =
           _extractBalancedJson(result, result.indexOf('{', match.start));
-      if (json == null) break;
+      if (json == null) {
+        result = result.substring(0, match.start);
+        break;
+      }
       final end = result.indexOf(json, match.start) + json.length;
       result = result.substring(0, match.start) + result.substring(end);
     }
@@ -511,6 +526,7 @@ class ToolRegistry {
     register(_wikipediaTool);
     register(_githubSearchTool);
     register(_downloadStatusTool);
+    register(_modelDownloadTool);
     register(_listDownloadedTool);
     register(_memorySaveTool);
     register(_memorySearchTool);
@@ -1130,15 +1146,31 @@ class ToolRegistry {
     name: 'model_save',
     category: 'models',
     description: '把一个模型仓库（HuggingFace / 魔搭 / GitHub 链接或 owner/repo）'
-        '解析成可下载条目，写入「我的社区模型」；download=true 时立即开始下载。',
-    parameters: '{"repo":"XHToken/Spark-X2.5-4B-GGUF","download":true}',
+        '解析全部 GGUF 文件并以表格返回，写入「我的社区模型」。只解析，不下载；请原样展示候选让用户选择。',
+    parameters: '{"repo":"XHToken/Spark-X2.5-4B-GGUF"}',
     run: (args) async {
       final repo = args['repo']?.toString().trim() ?? '';
       if (repo.isEmpty) return '错误：repo 不能为空';
-      final download = args['download'] == true;
       final handler = ToolHost.saveModel;
       if (handler == null) return '模型入库不可用（宿主未注册）';
-      return handler(repo, download);
+      return handler(repo);
+    },
+  );
+
+  static final AiTool _modelDownloadTool = AiTool(
+    name: 'model_download',
+    category: 'models',
+    description: '仅在用户要求下载并选择具体文件后申请下载。会弹出用户确认框；拒绝或取消不会下载。禁止自动挑文件或投影。',
+    parameters: '{"repo":"owner/repo","file_name":"model-Q4_K_M.gguf"}',
+    run: (args) async {
+      final repo = args['repo']?.toString().trim() ?? '';
+      final fileName = args['file_name']?.toString().trim() ?? '';
+      if (repo.isEmpty || fileName.isEmpty) {
+        return '未开始下载：必须先解析仓库，并由用户选择完整 file_name。';
+      }
+      final handler = ToolHost.requestModelDownload;
+      if (handler == null) return '未开始下载：请到模型商店选择文件下载。';
+      return handler(repo, fileName);
     },
   );
 
@@ -1338,8 +1370,11 @@ class ToolHost {
   /// 模型搜索（返回真实候选清单文本）。
   static Future<String> Function(String query)? searchModels;
 
-  /// 模型入库（解析仓库 → 存进"我的社区模型"，可选立即下载）。
-  static Future<String> Function(String repo, bool download)? saveModel;
+  /// 模型入库（解析仓库 → 存进"我的社区模型"，不触发下载）。
+  static Future<String> Function(String repo)? saveModel;
+
+  static Future<String> Function(String repo, String fileName)?
+      requestModelDownload;
 
   /// 下载状态（进行中/失败/未完成）。
   static Future<String> Function()? downloadStatus;

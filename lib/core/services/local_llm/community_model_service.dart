@@ -23,6 +23,8 @@ class CommunityModelService {
   static List<LocalModelInfo>? _msCache;
   static DateTime? _hfCacheAt;
   static DateTime? _msCacheAt;
+  static String? _hfCacheKey;
+  static String? _msCacheKey;
   static const Duration _cacheTtl = Duration(minutes: 10);
 
   /// 从 HuggingFace 搜索 GGUF 模型（含真实文件清单）。
@@ -33,7 +35,9 @@ class CommunityModelService {
     int? deviceRamMb,
     bool forceRefresh = false,
   }) async {
+    final cacheKey = '$query/$limit/$deviceRamMb';
     if (!forceRefresh &&
+        _hfCacheKey == cacheKey &&
         _hfCache != null &&
         _hfCacheAt != null &&
         DateTime.now().difference(_hfCacheAt!) < _cacheTtl) {
@@ -46,6 +50,7 @@ class CommunityModelService {
       if (models.isNotEmpty) {
         debugPrint('[CommunityModels] HF 数据源: $host（${models.length} 个）');
         _hfCache = models;
+        _hfCacheKey = cacheKey;
         _hfCacheAt = DateTime.now();
         return models;
       }
@@ -61,7 +66,9 @@ class CommunityModelService {
     int? deviceRamMb,
     bool forceRefresh = false,
   }) async {
+    final cacheKey = '$query/$limit/$deviceRamMb';
     if (!forceRefresh &&
+        _msCacheKey == cacheKey &&
         _msCache != null &&
         _msCacheAt != null &&
         DateTime.now().difference(_msCacheAt!) < _cacheTtl) {
@@ -71,7 +78,7 @@ class CommunityModelService {
       final client = HttpClient();
       client.connectionTimeout = _timeout;
       final uri = Uri.parse(
-        'https://modelscope.cn/api/v1/models?Search=$query&PageSize=${limit * 2}',
+        'https://modelscope.cn/api/v1/models?Search=${Uri.encodeQueryComponent(query)}&PageSize=${limit * 2}',
       );
       final request = await client.getUrl(uri);
       final response = await request.close().timeout(_timeout);
@@ -93,10 +100,11 @@ class CommunityModelService {
           .whereType<Map>()
           .map((m) => Map<String, dynamic>.from(m))
           .where((m) {
-        final path = (m['Path'] as String? ?? '').toLowerCase();
-        final name = (m['Name'] as String? ?? '').toLowerCase();
-        return path.isNotEmpty && (name.contains('gguf') || path.contains('gguf'));
-      })
+            final path = (m['Path'] as String? ?? '').toLowerCase();
+            final name = (m['Name'] as String? ?? '').toLowerCase();
+            return path.isNotEmpty &&
+                (name.contains('gguf') || path.contains('gguf'));
+          })
           .take(limit)
           .toList();
 
@@ -117,6 +125,7 @@ class CommunityModelService {
       final modelsOut = results.whereType<LocalModelInfo>().toList();
       if (modelsOut.isNotEmpty) {
         _msCache = modelsOut;
+        _msCacheKey = cacheKey;
         _msCacheAt = DateTime.now();
       }
       return modelsOut;
@@ -136,7 +145,7 @@ class CommunityModelService {
       final client = HttpClient();
       client.connectionTimeout = _timeout;
       final uri = Uri.parse(
-        '$host/api/models?search=$query&sort=downloads&limit=$limit&filter=text-generation',
+        '$host/api/models?search=${Uri.encodeQueryComponent(query)}&sort=downloads&limit=$limit',
       );
       final request = await client.getUrl(uri);
       final response = await request.close().timeout(_timeout);
@@ -154,7 +163,7 @@ class CommunityModelService {
           .map((m) => Map<String, dynamic>.from(m))
           .where((m) {
         final id = (m['id'] as String? ?? '').toLowerCase();
-        return id.isNotEmpty && id.contains('gguf');
+        return id.isNotEmpty;
       }).toList();
 
       // 逐个取真实文件清单（真实文件名 + 真实大小）。
@@ -205,8 +214,13 @@ class CommunityModelService {
         if (quant == null) continue;
         variants.add(ModelFileVariant(
           fileName: name,
-          downloadUrl: '$host/$id/resolve/main/$name',
-          sizeBytes: size,
+          downloadUrl:
+              '$host/$id/resolve/main/${name.split('/').map(Uri.encodeComponent).join('/')}',
+          sizeBytes: size > 0
+              ? size
+              : (entry['lfs'] is Map
+                  ? ((entry['lfs']['size'] as num?)?.toInt() ?? 0)
+                  : 0),
           quantization: quant,
         ));
       }
@@ -269,7 +283,10 @@ class CommunityModelService {
     String repo,
   ) async {
     final id = '$owner/$repo';
-    for (final host in const ['https://huggingface.co', 'https://hf-mirror.com']) {
+    for (final host in const [
+      'https://huggingface.co',
+      'https://hf-mirror.com'
+    ]) {
       final files = await _fetchHfFiles(host, id);
       if (files.isNotEmpty) return files;
     }
@@ -313,10 +330,10 @@ class CommunityModelService {
 
     // 2) 仓库文件树（有些人直接把 .gguf 放进仓库，或给 mmproj）。
     if (variants.isEmpty) {
-      final info = await _githubJson(
-          'https://api.github.com/repos/$owner/$repo');
-      final branch = (info is Map ? info['default_branch']?.toString() : null) ??
-          'main';
+      final info =
+          await _githubJson('https://api.github.com/repos/$owner/$repo');
+      final branch =
+          (info is Map ? info['default_branch']?.toString() : null) ?? 'main';
       final tree = await _githubJson(
           'https://api.github.com/repos/$owner/$repo/git/trees/$branch?recursive=1');
       if (tree is Map) {
@@ -329,7 +346,7 @@ class CommunityModelService {
           variants.add(ModelFileVariant(
             fileName: path.split('/').last,
             downloadUrl:
-                'https://github.com/$owner/$repo/raw/$branch/${Uri.encodeComponent(path)}',
+                'https://github.com/$owner/$repo/raw/$branch/${path.split('/').map(Uri.encodeComponent).join('/')}',
             sizeBytes: (node['size'] as num?)?.toInt() ?? 0,
             quantization: quant,
           ));
@@ -375,15 +392,16 @@ class CommunityModelService {
       return 'F16';
     }
     // 主模型的全精度权重体积过大（fp16/f32/bf16），不作为候选。
-    if (RegExp(r'(^|[-_.])(f16|fp16|f32|bf16|fp32)([-_.]|$)')
-        .hasMatch(lower)) {
-      return null;
+    if (RegExp(r'(^|[-_.])(f16|fp16|f32|bf16|fp32)([-_.]|$)').hasMatch(lower)) {
+      return lower.contains('bf16')
+          ? 'BF16'
+          : (RegExp(r'f32|fp32').hasMatch(lower) ? 'F32' : 'F16');
     }
     final match = RegExp(
       r'(IQ\d+_[A-Z0-9]+|Q\d+_K_[A-Z]+|Q\d+_K|Q\d+_\d+|MXFP4)',
       caseSensitive: false,
     ).firstMatch(fileName.toUpperCase());
-    if (match == null) return null;
+    if (match == null) return '未标注';
     return match.group(1)!.toUpperCase();
   }
 
@@ -397,9 +415,14 @@ class CommunityModelService {
     required int? deviceRamMb,
     required String tag,
   }) {
-    if (files.isEmpty) return null; // 仓库里没有可直接下载的 GGUF
-    final recommended =
-        pickVariant(files, deviceRamMb: deviceRamMb) ?? files.first;
+    final mainFiles = files
+        .where((file) => !ModelCapabilities.isProjectorFile(file.fileName))
+        .toList();
+    final projectors = files
+        .where((file) => ModelCapabilities.isProjectorFile(file.fileName))
+        .toList();
+    if (mainFiles.isEmpty) return null;
+    final recommended = pickVariant(mainFiles, deviceRamMb: deviceRamMb)!;
     final ramGb = recommended.sizeBytes > 0
         ? ((recommended.sizeBytes / (1024 * 1024 * 1024)) * 1.35)
             .toStringAsFixed(1)
@@ -415,7 +438,8 @@ class CommunityModelService {
       quantization: recommended.quantization,
       ramRequired: '~$ramGb GB',
       tags: [tag],
-      variants: files,
+      variants: mainFiles,
+      projectors: projectors,
     );
   }
 
@@ -424,16 +448,25 @@ class CommunityModelService {
     List<ModelFileVariant> variants, {
     int? deviceRamMb,
   }) {
-    if (variants.isEmpty) return null;
+    final mainFiles = variants
+        .where((file) => !ModelCapabilities.isProjectorFile(file.fileName))
+        .toList();
+    if (mainFiles.isEmpty) return null;
     const preference = [
-      'Q4_K_M', 'Q4_K_S', 'IQ4_XS', 'Q5_K_M', 'Q3_K_M',
-      'Q6_K', 'Q8_0', 'Q2_K',
+      'Q4_K_M',
+      'Q4_K_S',
+      'IQ4_XS',
+      'Q5_K_M',
+      'Q3_K_M',
+      'Q6_K',
+      'Q8_0',
+      'Q2_K',
     ];
-    Iterable<ModelFileVariant> pool = variants;
+    Iterable<ModelFileVariant> pool = mainFiles;
     if (deviceRamMb != null && deviceRamMb > 0) {
       // 可用预算：内存减系统开销 1.5GB，模型约占 60%。
       final budgetBytes = (deviceRamMb - 1500) * 0.6 * 1024 * 1024;
-      final fits = variants
+      final fits = mainFiles
           .where((v) => v.sizeBytes > 0 && v.sizeBytes <= budgetBytes)
           .toList();
       if (fits.isNotEmpty) pool = fits;
@@ -446,7 +479,7 @@ class CommunityModelService {
     // 没有常见量化：取池内最小的（体积可控优先）。
     final sorted = pool.toList()
       ..sort((a, b) => a.sizeBytes.compareTo(b.sizeBytes));
-    return sorted.isEmpty ? variants.first : sorted.first;
+    return sorted.isEmpty ? mainFiles.first : sorted.first;
   }
 
   /// 并发上限受限的 map（避免对社区 API 打太多并发请求）。

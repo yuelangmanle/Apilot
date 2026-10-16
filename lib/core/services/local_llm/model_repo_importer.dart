@@ -5,154 +5,126 @@ import 'model_capabilities.dart';
 import 'model_catalog.dart';
 import 'model_catalog_store.dart';
 
-/// 把一个模型仓库（HuggingFace / 魔搭 / GitHub 链接或 owner/repo）
-/// 解析成可下载条目，写进「我的社区模型」；可选立即开始下载。
-///
-/// 这是"让 AI 自己上网找模型 → 入库 → 下载"这条链路的落地点：
-/// 解析一律用真实 API（文件清单与体积），绝不猜文件名。
 class ModelRepoImporter {
   ModelRepoImporter._();
 
-  /// 下载回调：由界面层注入（复用模型商店的下载服务，保证进度统一）。
-  static Future<void> Function(String url, String fileName)? onDownload;
-
-  /// 返回给 AI 的可读结果。
   static Future<String> importRepo(
     String repoOrUrl, {
     int? deviceRamMb,
-    bool download = false,
   }) async {
     final target = parseTarget(repoOrUrl);
     if (target == null) {
-      return '解析失败：请给 HuggingFace / 魔搭 / GitHub 的仓库链接，'
-          '或 owner/repo 形式（例如 XHToken/Spark-X2.5-4B-GGUF）。';
+      return '解析失败：请提供 HuggingFace / 魔搭 / GitHub 仓库链接或 owner/repo。未开始下载。';
     }
-
-    List<ModelFileVariant> files;
-    switch (target.host) {
-      case 'modelscope':
-        files = await CommunityModelService.resolveModelScopeRepo(target.path);
-        break;
-      case 'github':
-        final segments = target.path.split('/');
-        files = segments.length >= 2
-            ? await CommunityModelService.resolveGitHubRepo(
-                segments[0], segments.sublist(1).join('/'))
-            : const [];
-        break;
-      default:
-        final segments = target.path.split('/');
-        files = segments.length >= 2
-            ? await CommunityModelService.resolveHuggingFaceRepo(
-                segments[0], segments.sublist(1).join('/'))
-            : const [];
-    }
-
-    if (files.isEmpty) {
-      return '在 ${target.path}（${target.host}）里没有找到可直接下载的 GGUF 文件：'
-          '可能是仓库不含 GGUF、只有分片、或该平台限流。可以换一个仓库再试。';
-    }
-
-    final mainFiles = files
-        .where((f) => !ModelCapabilities.isProjectorFile(f.fileName))
-        .toList();
-    if (mainFiles.isEmpty) {
-      return '${target.path} 里只有视觉投影文件（mmproj），没有主模型文件。';
-    }
-    final projector = files
-        .where((f) => ModelCapabilities.isProjectorFile(f.fileName))
-        .firstOrNull;
-    final recommended =
-        CommunityModelService.pickVariant(mainFiles, deviceRamMb: deviceRamMb) ??
-            mainFiles.first;
-    final name = target.path.split('/').last;
-    final totalGb = (recommended.sizeBytes + (projector?.sizeBytes ?? 0)) /
-        (1024 * 1024 * 1024);
-
-    final info = LocalModelInfo(
-      id: '${target.host}_${target.path}',
-      name: name,
-      description: 'AI 找到并入库（${target.host}）· ${mainFiles.length} 个版本可选'
-          '${projector != null ? ' · 含视觉投影（可看图）' : ''}',
-      downloadUrl: recommended.downloadUrl,
-      sizeBytes: recommended.sizeBytes,
-      quantization: recommended.quantization,
-      ramRequired: totalGb > 0
-          ? '~${(totalGb * 1.35).toStringAsFixed(1)} GB'
-          : '—',
-      tags: [
-        switch (target.host) {
-          'modelscope' => 'ModelScope',
-          'github' => 'GitHub',
-          _ => 'HuggingFace',
-        },
-        if (projector != null) '多模态',
-        if (ModelCapabilities.supportsThinking(name)) '可深度思考',
-      ],
-      variants: mainFiles,
-      mmProjUrl: projector?.downloadUrl,
-    );
-
-    await ModelCatalogStore().save(SavedModelEntry(
-      info: info,
-      source: 'ai',
-      sourceUrl: target.original,
-      addedAt: DateTime.now(),
-    ));
-
-    var message = '已入库「$name」到「我的社区模型」：'
-        '默认 ${recommended.quantization}（${recommended.sizeMb}'
-        '${projector != null ? ' + 视觉投影 ${projector.sizeLabel}' : ''}），'
-        '共 ${mainFiles.length} 个版本可在模型商店里选择。';
-
-    if (download) {
-      final onDownload = ModelRepoImporter.onDownload;
-      if (onDownload == null) {
-        message += '（当前入口没有接入下载，请到模型商店点下载）';
-      } else {
-        await onDownload(recommended.downloadUrl, recommended.fileName);
-        if (projector != null) {
-          await onDownload(projector.downloadUrl, projector.fileName);
-        }
-        message += ' 已开始下载'
-            '${projector != null ? '（主模型 + 视觉投影）' : ''}，'
-            '可在「下载管理」里看进度。';
-      }
-    }
-    return message;
+    final files = await resolve(target);
+    return saveResolved(target, files, deviceRamMb: deviceRamMb);
   }
 
-  /// 解析仓库坐标：链接或 owner/repo。
+  static Future<List<ModelFileVariant>> resolve(RepoTarget target) async {
+    final segments = target.path.split('/');
+    return switch (target.host) {
+      'modelscope' => CommunityModelService.resolveModelScopeRepo(target.path),
+      'github' =>
+        CommunityModelService.resolveGitHubRepo(segments[0], segments[1]),
+      _ =>
+        CommunityModelService.resolveHuggingFaceRepo(segments[0], segments[1]),
+    };
+  }
+
+  static Future<String> saveResolved(
+    RepoTarget target,
+    List<ModelFileVariant> files, {
+    int? deviceRamMb,
+  }) async {
+    if (files.isEmpty) {
+      return '在 ${target.path}（${target.host}）没有找到可单文件运行的 GGUF。'
+          '可能没有 GGUF、仅有分片，或文件 API 访问失败；不要猜测文件名。未开始下载。';
+    }
+    final mainFiles = files
+        .where((file) => !ModelCapabilities.isProjectorFile(file.fileName))
+        .toList();
+    final projectors = files
+        .where((file) => ModelCapabilities.isProjectorFile(file.fileName))
+        .toList();
+    if (mainFiles.isNotEmpty) {
+      final recommended = CommunityModelService.pickVariant(mainFiles,
+          deviceRamMb: deviceRamMb)!;
+      await ModelCatalogStore().save(SavedModelEntry(
+        info: LocalModelInfo(
+          id: '${target.host}_${target.path}',
+          name: target.path.split('/').last,
+          description:
+              '${target.host} · ${mainFiles.length} 个主模型文件 · ${projectors.length} 个视觉投影；下载前请选择文件',
+          downloadUrl: recommended.downloadUrl,
+          sizeBytes: recommended.sizeBytes,
+          quantization: recommended.quantization,
+          ramRequired: recommended.sizeBytes <= 0
+              ? '未知'
+              : '~${(recommended.sizeBytes * 1.35 / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB',
+          tags: [target.host, if (projectors.isNotEmpty) '含投影待核对'],
+          variants: mainFiles,
+          projectors: projectors,
+        ),
+        source: 'ai',
+        sourceUrl: target.original,
+        addedAt: DateTime.now(),
+      ));
+    }
+    final buffer = StringBuffer('已解析 ${target.path}。未开始下载，等待你选择具体文件。\n\n')
+      ..writeln('| 文件名（file_name） | 类型 | 精度/量化 | 大小 |')
+      ..writeln('| --- | --- | --- | --- |');
+    for (final file in [...mainFiles, ...projectors]) {
+      buffer.writeln('| ${file.fileName.replaceAll('|', '\\|')} | '
+          '${ModelCapabilities.isProjectorFile(file.fileName) ? '视觉投影' : '主模型'} | '
+          '${file.quantization} | ${file.sizeLabel} |');
+    }
+    buffer.writeln('\n主模型已保存在「我的社区模型」。请选择文件名再要求下载；'
+        'F16/BF16/F32 通常需要更多内存。投影不自动下载或跨模型配对，必须核对模型架构、尺寸和发布者说明。');
+    return buffer.toString();
+  }
+
+  static Future<SavedModelEntry?> savedRepo(String input) async {
+    final target = parseTarget(input);
+    if (target == null) return null;
+    final id = '${target.host}_${target.path}';
+    return (await ModelCatalogStore().list())
+        .where((entry) => entry.info.id == id)
+        .firstOrNull;
+  }
+
   static RepoTarget? parseTarget(String input) {
     final trimmed = input.trim();
-    if (trimmed.isEmpty) return null;
-
-    if (trimmed.contains('://')) {
-      final uri = Uri.tryParse(trimmed);
-      if (uri == null) return null;
-      final host = uri.host.toLowerCase();
-      final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-      if (host.contains('huggingface.co') || host.contains('hf-mirror.com')) {
-        if (segments.length < 2) return null;
-        return RepoTarget('huggingface', '${segments[0]}/${segments[1]}', trimmed);
-      }
-      if (host.contains('modelscope.cn')) {
-        final idx = segments.indexOf('models');
-        if (idx < 0 || idx + 2 >= segments.length) return null;
-        return RepoTarget(
-            'modelscope', '${segments[idx + 1]}/${segments[idx + 2]}', trimmed);
-      }
-      if (host.contains('github.com')) {
-        if (segments.length < 2) return null;
-        final repo = segments[1].replaceAll(RegExp(r'\.git$'), '');
-        return RepoTarget('github', '${segments[0]}/$repo', trimmed);
-      }
-      return null;
-    }
-
     if (RegExp(r'^[\w.\-]+/[\w.\-]+$').hasMatch(trimmed)) {
-      // 裸 owner/repo：默认 HuggingFace（最常见）。
       return RepoTarget('huggingface', trimmed, trimmed);
+    }
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null || !['http', 'https'].contains(uri.scheme)) return null;
+    final host = uri.host.toLowerCase();
+    final segments =
+        uri.pathSegments.where((segment) => segment.isNotEmpty).toList();
+    if (['huggingface.co', 'www.huggingface.co', 'hf.co', 'hf-mirror.com']
+        .contains(host)) {
+      if (segments.length < 2) return null;
+      return RepoTarget(
+          'huggingface', '${segments[0]}/${segments[1]}', trimmed);
+    }
+    if ([
+      'modelscope.cn',
+      'www.modelscope.cn',
+      'modelscope.ai',
+      'www.modelscope.ai'
+    ].contains(host)) {
+      final index = segments.indexOf('models');
+      if (index < 0 || index + 2 >= segments.length) return null;
+      return RepoTarget('modelscope',
+          '${segments[index + 1]}/${segments[index + 2]}', trimmed);
+    }
+    if (['github.com', 'www.github.com'].contains(host)) {
+      if (segments.length < 2) return null;
+      return RepoTarget(
+          'github',
+          '${segments[0]}/${segments[1].replaceFirst(RegExp(r'\.git$'), '')}',
+          trimmed);
     }
     return null;
   }
@@ -164,10 +136,9 @@ class ModelRepoImporter {
   static String? pathForTest(String input) => parseTarget(input)?.path;
 }
 
-/// 解析出的仓库坐标。
 class RepoTarget {
-  final String host; // huggingface / modelscope / github
-  final String path; // owner/repo
+  final String host;
+  final String path;
   final String original;
 
   const RepoTarget(this.host, this.path, this.original);

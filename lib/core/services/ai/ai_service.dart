@@ -118,6 +118,8 @@ class AiService {
 
     /// 流式增量回调（云端工具模式用它显示进度）。
     void Function(String delta)? onDelta,
+    void Function(String delta)? onThinking,
+    bool allowReasoningFallback = true,
 
     /// 返回 true 时停止继续消费云端流；用于停止按钮，确保底层连接及时关闭。
     bool Function()? shouldStop,
@@ -187,6 +189,8 @@ class AiService {
               history: history,
               attachments: attachments,
               onDelta: onDelta,
+              onThinking: onThinking,
+              allowReasoningFallback: allowReasoningFallback,
               shouldStop: shouldStop,
               cancellation: cancellation)
           .timeout(_timeout);
@@ -208,6 +212,8 @@ class AiService {
     List<Map<String, String>> history = const [],
     List<ChatAttachment> attachments = const [],
     void Function(String delta)? onDelta,
+    void Function(String delta)? onThinking,
+    bool allowReasoningFallback = true,
     bool Function()? shouldStop,
     ApiRequestCancellation? cancellation,
   }) async {
@@ -255,6 +261,7 @@ class AiService {
         }
         if (event.reasoning != null && event.reasoning!.isNotEmpty) {
           reasoningFallback.write(event.reasoning);
+          onThinking?.call(event.reasoning!);
         }
         if (event.isDone && event.response != null) {
           final response = event.response!;
@@ -271,7 +278,11 @@ class AiService {
       return buffer.isEmpty ? null : buffer.toString();
     }
     if (buffer.isNotEmpty) return buffer.toString();
-    if (reasoningFallback.isNotEmpty) return reasoningFallback.toString();
+    if (reasoningFallback.isNotEmpty) {
+      if (allowReasoningFallback) return reasoningFallback.toString();
+      lastError = '模型只返回了思考过程，没有返回正文；请增加输出预算或关闭深度思考后重试';
+      return null;
+    }
     // 流式不可用（部分中转站不接受 stream / stream_options）→ 回退非流式，
     // 否则用户会看到"AI 未配置、调用失败"，而其实只是协议差异。
     debugPrint('[AiService] 云端流式失败，回退非流式: $streamError');
